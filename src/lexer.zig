@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const Token = @import("token.zig");
 const Allocator = std.mem.Allocator;
+const panic = std.debug.panic;
 
 /// Lexer reads the source code and turns it into tokens
 const Lexer = @This();
@@ -9,7 +10,11 @@ const Lexer = @This();
 /// Source code that is being tokenized
 source: []const u8,
 /// Current position in the source
-current: usize = 0,
+position: usize = 0,
+/// Current line in the source
+line: usize = 0,
+/// Current column in the source
+col: usize = 0,
 
 /// Creates a new lexer using the given source code
 pub fn init(source: []const u8) Lexer {
@@ -20,27 +25,17 @@ pub fn init(source: []const u8) Lexer {
 /// Parses the source and returns the next token found
 pub fn next(self: *Lexer) ?Token {
     self.skipWhitespace();
-
-    const start = self.current;
-    const token_type: Token.TokenType = switch (self.readChar().?) {
-        ',' => .comma,
-        '.' => .period,
-        ';' => .semicolon,
-        '(' => .l_paren,
-        ')' => .r_paren,
-        '{' => .l_brace,
-        '}' => .r_brace,
-        '[' => .l_bracket,
-        ']' => .r_bracket,
-        '"' => blk: {
-            self.readString();
-            defer _ = self.readChar();
-            break :blk .string;
-        },
-        '$' => blk: {
-            break :blk .strat;
-        },
-        else => |char| blk: {
+    const start = self.position;
+    const char = self.peek().?;
+    self.consume();
+    const token_type: Token.TokenType = switch (char) {
+        ',', '.', ';', '(', ')', '{', '}', '[', ']', '"' => .val,
+        '$' => .strat,
+        '/' => if (self.peek() == '/')
+            .comment
+        else
+            .infix,
+        else => blk: {
             if (isIdentChar(char)) {
                 if (isUpper(char))
                     self.readVal()
@@ -53,14 +48,18 @@ pub fn next(self: *Lexer) ?Token {
             } else if (isInfix(char)) {
                 self.readInfix();
                 break :blk .integer;
-            } else return null;
+            } // This is a debug error only, as Sifu should never encounter an error during lexing
+            else panic(
+                "Parser Error: Unknown character '{}' at line {}, col {}",
+                .{ char, self.line, self.col },
+            );
         },
     };
 
     return Token{
         .token_type = token_type,
         .start = start,
-        .end = self.current,
+        .end = self.position,
     };
 }
 
@@ -78,117 +77,108 @@ pub fn tokenize(self: *Lexer, allocator: Allocator) ![]const Token {
 }
 
 /// Returns the next character but does not increase the Lexer's position, or
-/// returns null
-fn peekChar(self: Lexer) ?u8 {
-    return if (self.current < self.source.len)
-        self.source[self.current]
+/// returns null if there are no more characters left to tokenize.
+fn peek(self: Lexer) ?u8 {
+    return if (self.position < self.source.len)
+        self.source[self.position]
     else
         null;
 }
 
-/// Reads exactly one character, or returns null
-fn readChar(self: *Lexer) ?u8 {
-    defer self.current += 1;
-    // Use `.?` here to short-circuit the deferred `self.current += 1`
-    return self.peekChar().?;
+/// Advances one character, or panics (should only be called after `peek`)
+fn consume(self: *Lexer) void {
+    if (self.peek()) |_|
+        self.position += 1
+    else
+        @panic("Attempted to advance to next token but EOF reached");
 }
 
-/// Skips whitespace until a non-whitespace character is found. Not guarantee
+/// Skips whitespace until a non-whitespace character is found. Not guaranteed
 /// to skip anything
 fn skipWhitespace(self: *Lexer) void {
-    while (self.peekChar()) |char|
-        _ = if (isWhitespace(char))
-            self.readChar()
-        else
-            break;
-}
-
-fn readToken(self: *Lexer, tokenFn: fn (*Lexer) void) ?Token {
-    const start = self.current;
-    tokenFn().?;
-    return self.source[start..self.current];
+    while (self.peek()) |char| {
+        switch (char) {
+            '\n' => {
+                self.col = 0;
+                self.line += 1;
+            },
+            ' ', '\t', '\r' => self.col += 1,
+            else => break,
+        }
+        self.consume();
+    }
 }
 
 /// Reads the next characters as a strat
 fn strat(self: *Lexer) void {
-    while (if (self.readChar()) |char|
-        isIdentChar(char) or isDigit(char))
-    {}
-    // if ()
-    //     continue
-    // else
-    //     break;
+    while (self.peek()) |char|
+        if (isIdentChar(char) or isDigit(char))
+            self.consume()
+        else
+            break;
 }
 
 /// Reads the next characters as an identifier
 fn val(self: *Lexer) void {
-    while (self.readChar()) |char|
-        _ = if (isIdentChar(char))
-            self.readChar()
+    while (self.peek()) |char|
+        if (isIdentChar(char))
+            self.consume()
         else
             break;
 }
 
 /// Reads the next characters as an identifier
 fn @"var"(self: *Lexer) void {
-    while (self.readChar()) |char|
-        _ = if (isIdentChar(char))
-            self.readChar()
+    while (self.peek()) |char|
+        if (isIdentChar(char))
+            self.consume()
         else
             break;
 }
 
 /// Reads the next characters as an identifier
 fn infix(self: *Lexer) void {
-    while (self.readChar()) |char|
-        _ = if (isInfix(char))
-            self.readChar()
+    while (self.peek()) |char|
+        if (isInfix(char))
+            self.consume()
         else
             break;
 }
 
 /// Reads the next characters as number
 fn readInt(self: *Lexer) void {
-    while (self.peekChar()) |nextChar|
+    while (self.peek()) |nextChar|
         _ = if (isDigit(nextChar))
-            self.readChar()
+            self.consume()
         else
             break;
 }
 
 /// Reads the next characters as number
 fn readDouble(self: *Lexer) void {
-    while (self.peekChar()) |nextChar|
-        _ = if (isDigit(nextChar) || nextChar == '.')
-            self.readChar()
+    while (self.peek()) |nextChar|
+        if (isDigit(nextChar) || nextChar == '.')
+            self.consume()
         else
             break;
 }
 
-/// Reads a string from the current character
-fn readString(self: *Lexer) void {
-    while (self.peekChar()) |nextChar|
-        _ = if (nextChar != '"')
-            self.readChar()
+/// Reads a value wrappen in double-quotes from the current character
+fn string(self: *Lexer) void {
+    while (self.peek()) |nextChar|
+        if (nextChar != '"')
+            self.consume()
         else
             break;
 }
 
 /// Reads until the end of the line or EOF
 fn readLine(self: *Lexer) void {
-    while (self.peekChar()) |nextChar|
-        _ = if (nextChar != '\n')
-            self.readChar()
+    while (self.peek()) |nextChar|
+        if (nextChar != '\n')
+            self.consume()
         else
             break;
-}
-
-/// Returns true if the given character is considered whitespace
-fn isWhitespace(char: u8) bool {
-    return switch (char) {
-        ' ', '\t', '\n', '\r' => true,
-        else => false,
-    };
 }
 
 /// Returns true if the given character is a digit
@@ -216,7 +206,8 @@ fn isLower(char: u8) bool {
 
 fn isInfix(char: u8) bool {
     return switch (char) {
-        'a'...'z' => true,
+        // TODO: ".:-^*+=<>$%^*&|/"
+        // 'a'...'z' => true,
         else => false,
     };
 }

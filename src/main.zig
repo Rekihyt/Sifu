@@ -93,7 +93,8 @@ fn builder(gpa: Allocator, file_path: []const u8, output_name: ?[]const u8) !voi
     var cu = sifu.compiler.compile(gpa, source, errors) catch {
         return errors.write(source, std.io.getStdErr().writer());
     };
-    defer cu.deinit();
+    _ = cu;
+    // defer cu.deinit();
 
     const final_output_name = output_name orelse blk: {
         const base = std.fs.path.basename(file_path);
