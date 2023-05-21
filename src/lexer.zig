@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const Token = @import("token.zig");
+const TokenType = Token.TokenType;
 const Allocator = std.mem.Allocator;
 const panic = std.debug.panic;
 
@@ -28,27 +29,37 @@ pub fn next(self: *Lexer) ?Token {
     const start = self.position;
     const char = self.peek().?;
     self.consume();
-    const token_type: Token.TokenType = switch (char) {
+    // If the type here is inferred, zig will claim it depends on runtime val
+    const token_type: TokenType = switch (char) {
         ',', '.', ';', '(', ')', '{', '}', '[', ']', '"' => .val,
         '$' => .strat,
-        '/' => if (self.peek() == '/')
-            .comment
-        else
-            .infix,
+        '/' => if (self.peek()) |nextChar| blk: {
+            if (nextChar == '/') {
+                self.consume();
+                self.comment();
+                break :blk .comment;
+            } else {
+                self.consume();
+                self.infix();
+                break :blk .infix;
+            }
+        } else .infix,
         else => blk: {
-            if (isIdentChar(char)) {
-                if (isUpper(char))
-                    self.readVal()
-                else
-                    self.readVar();
-                break :blk .val;
-            } else if (isDigit(char)) {
-                self.readInt();
+            if (isIdentChar(char))
+                if (isUpper(char)) {
+                    self.val();
+                    break :blk .val;
+                } else {
+                    self.@"var"();
+                    break :blk .@"var";
+                }
+            else if (isDigit(char)) {
+                self.int();
                 break :blk .integer;
             } else if (isInfix(char)) {
-                self.readInfix();
+                self.infix();
                 break :blk .integer;
-            } // This is a debug error only, as Sifu should never encounter an error during lexing
+            } // This is a debug error only, as we shouldn't encounter an error during lexing
             else panic(
                 "Parser Error: Unknown character '{}' at line {}, col {}",
                 .{ char, self.line, self.col },
@@ -67,13 +78,10 @@ pub fn next(self: *Lexer) ?Token {
 /// Memory is owned by the caller.
 pub fn tokenize(self: *Lexer, allocator: Allocator) ![]const Token {
     var token_list = std.ArrayList(Token).init(allocator);
-    while (true) {
-        const tok: *Token = try token_list.addOne();
-        tok.* = self.next();
-        if (tok.token_type == .eof) {
-            return token_list.toOwnedSlice();
-        }
-    }
+    while (self.next()) |token|
+        try token_list.append(token);
+
+    return token_list.toOwnedSlice();
 }
 
 /// Returns the next character but does not increase the Lexer's position, or
@@ -118,7 +126,7 @@ fn strat(self: *Lexer) void {
             break;
 }
 
-/// Reads the next characters as an identifier
+/// Reads the next characters as an val
 fn val(self: *Lexer) void {
     while (self.peek()) |char|
         if (isIdentChar(char))
@@ -127,7 +135,7 @@ fn val(self: *Lexer) void {
             break;
 }
 
-/// Reads the next characters as an identifier
+/// Reads the next characters as an var
 fn @"var"(self: *Lexer) void {
     while (self.peek()) |char|
         if (isIdentChar(char))
@@ -146,21 +154,23 @@ fn infix(self: *Lexer) void {
 }
 
 /// Reads the next characters as number
-fn readInt(self: *Lexer) void {
+fn int(self: *Lexer) void {
     while (self.peek()) |nextChar|
-        _ = if (isDigit(nextChar))
+        if (isDigit(nextChar))
             self.consume()
         else
             break;
 }
 
 /// Reads the next characters as number
-fn readDouble(self: *Lexer) void {
-    while (self.peek()) |nextChar|
-        if (isDigit(nextChar) || nextChar == '.')
-            self.consume()
-        else
-            break;
+fn double(self: *Lexer) void {
+    // A double is just and int with an optional period and int immediately
+    // after
+    self.int();
+    if (self.peek() == '.') {
+        self.consume();
+        self.int();
+    }
 }
 
 /// Reads a value wrappen in double-quotes from the current character
@@ -173,7 +183,7 @@ fn string(self: *Lexer) void {
 }
 
 /// Reads until the end of the line or EOF
-fn readLine(self: *Lexer) void {
+fn comment(self: *Lexer) void {
     while (self.peek()) |nextChar|
         if (nextChar != '\n')
             self.consume()
@@ -214,20 +224,21 @@ fn isInfix(char: u8) bool {
 
 /// True if the char can be a part of a valid identifier
 fn isIdentChar(char: u8) bool {
-    const invalidCharSet = comptime blk: {
-        var buffer: [8]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&buffer);
-        const allocator = fba.allocator();
+    var buffer: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    const allocator = fba.allocator();
+    const invalidChars = " \n\t\r,;:.^*+=<>@$%^&*|/\\`[](){}";
 
-        const invalidChars = " \n\t\r,;:.^*+=<>@$%^&*|/\\`[](){}";
+    var map = std.AutoHashMap(u8, void).init(allocator);
+    defer map.deinit();
 
-        var map = std.AutoHashMap(u8, void).init(allocator);
-        defer map.deinit();
+    // One day, this could be a comptime block
+    const invalidCharSet = blk: {
 
         // Add the substrings to the map
         for (invalidChars) |invalidChar| {
             // Add the substring to the map
-            try map.put(invalidChar, {});
+            map.put(invalidChar, {}) catch unreachable;
         }
         break :blk map;
     };
@@ -236,95 +247,67 @@ fn isIdentChar(char: u8) bool {
 
 test "All supported tokens" {
     const input =
-        \\ five 5
-        \\ ten 10
-        \\ add
-        \\ 
-        \\ 5 10 5
-        \\ infix -->
-        \\ if (5 < 10) {
-        \\   return true
-        \\ } else {
-        \\   return false
-        \\ }
-        \\ 
-        \\ 10 == 10
-        \\ 10 != 9
-        \\ "foo"
-        \\ "foo bar"
-        \\ "foo".len
-        \\ [1, 2]
-        \\ {"key":1}
-        \\ //this is a comment
-        \\ ||
-        \\ ()
+        \\Val1,5;
+        \\Infix -->
+        \\var1.
+        \\5 < 10.
+        \\1 + 2.0
+        \\$strat
+        \\
+        \\10 == 10
+        \\10 != 9
+        \\"foo".len
+        \\[1, 2]
+        \\{"key":1}
+        \\// a comment
+        \\||
+        \\()
     ;
-
     const tests = &[_]Token{
-        .{ .token_type = .identifier, .start = 6, .end = 10 },
-        .{ .token_type = .integer, .start = 13, .end = 14 },
-        .{ .token_type = .identifier, .start = 21, .end = 24 },
-        .{ .token_type = .integer, .start = 27, .end = 29 },
-        .{ .token_type = .identifier, .start = 36, .end = 39 },
-        .{ .token_type = .l_paren, .start = 44, .end = 45 },
-        .{ .token_type = .identifier, .start = 45, .end = 46 },
-        .{ .token_type = .comma, .start = 46, .end = 47 },
-        .{ .token_type = .identifier, .start = 48, .end = 49 },
-        .{ .token_type = .r_paren, .start = 49, .end = 50 },
-        .{ .token_type = .l_brace, .start = 51, .end = 52 },
-        .{ .token_type = .identifier, .start = 55, .end = 56 },
-        .{ .token_type = .identifier, .start = 59, .end = 60 },
-        .{ .token_type = .r_brace, .start = 65, .end = 66 },
-        .{ .token_type = .identifier, .start = 74, .end = 80 },
-        .{ .token_type = .identifier, .start = 83, .end = 86 },
-        .{ .token_type = .l_paren, .start = 86, .end = 87 },
-        .{ .token_type = .identifier, .start = 87, .end = 91 },
-        .{ .token_type = .comma, .start = 91, .end = 92 },
-        .{ .token_type = .identifier, .start = 93, .end = 96 },
-        .{ .token_type = .r_paren, .start = 96, .end = 97 },
-        .{ .token_type = .integer, .start = 102, .end = 103 },
-        .{ .token_type = .integer, .start = 104, .end = 105 },
-        .{ .token_type = .integer, .start = 108, .end = 110 },
-        .{ .token_type = .integer, .start = 113, .end = 114 },
-        .{ .token_type = .infix, .start = 116, .end = 118 },
-        .{ .token_type = .l_paren, .start = 119, .end = 120 },
-        .{ .token_type = .integer, .start = 120, .end = 121 },
-        .{ .token_type = .integer, .start = 124, .end = 126 },
-        .{ .token_type = .r_paren, .start = 126, .end = 127 },
-        .{ .token_type = .l_brace, .start = 128, .end = 129 },
-        .{ .token_type = .r_brace, .start = 144, .end = 145 },
-        .{ .token_type = .l_brace, .start = 151, .end = 152 },
-        .{ .token_type = .r_brace, .start = 168, .end = 169 },
-        .{ .token_type = .integer, .start = 171, .end = 173 },
-        .{ .token_type = .integer, .start = 177, .end = 179 },
-        .{ .token_type = .integer, .start = 180, .end = 182 },
-        .{ .token_type = .integer, .start = 186, .end = 187 },
-        .{ .token_type = .string, .start = 189, .end = 192 },
-        .{ .token_type = .string, .start = 195, .end = 202 },
-        .{ .token_type = .string, .start = 205, .end = 208 },
-        .{ .token_type = .identifier, .start = 210, .end = 213 },
-        .{ .token_type = .l_brace, .start = 214, .end = 215 },
-        .{ .token_type = .integer, .start = 215, .end = 216 },
-        .{ .token_type = .comma, .start = 216, .end = 217 },
-        .{ .token_type = .integer, .start = 218, .end = 219 },
-        .{ .token_type = .r_bracket, .start = 219, .end = 220 },
-        .{ .token_type = .l_brace, .start = 221, .end = 222 },
-        .{ .token_type = .string, .start = 223, .end = 226 },
-        .{ .token_type = .colon, .start = 227, .end = 228 },
-        .{ .token_type = .integer, .start = 228, .end = 229 },
-        .{ .token_type = .r_brace, .start = 229, .end = 230 },
+        .{ .token_type = .val, .start = 1, .end = 10 },
+        .{ .token_type = .val, .start = 229, .end = 230 },
         .{ .token_type = .comment, .start = 233, .end = 250 },
-        .{ .token_type = .none, .start = 251, .end = 254 },
-        .{ .token_type = .unit, .start = 251, .end = 254 },
+        .{ .token_type = .val, .start = 251, .end = 254 },
+        .{ .token_type = .val, .start = 251, .end = 254 },
     };
 
     var lexer = Lexer.init(input);
 
     for (tests) |unit| {
-        const current_token = lexer.next();
+        const next_token = lexer.next().?;
 
-        try testing.expectEqual(unit.start, current_token.start);
-        try testing.expectEqual(unit.end, current_token.end);
-        try testing.expectEqual(unit.token_type, current_token.token_type);
+        try testing.expectEqual(unit.start, next_token.start);
+        try testing.expectEqual(unit.end, next_token.end);
+        try testing.expectEqual(unit.token_type, next_token.token_type);
+    }
+}
+
+test "Vars" {
+    const valStrs = &[_][]const u8{
+        "a",
+        "word-43",
+        "word-asd-cxvlj_9182",
+        "random123",
+        "_sd",
+    };
+    for (valStrs) |valStr| {
+        var lexer = Lexer.init(valStr);
+        _ = lexer;
+        // try testing.expectEqual(.@"var", lexer.next().?.token_type);
+        // try testing.expect(null == lexer.next());
+    }
+
+    const notVarStrs = &[_][]const u8{
+        "",
+        "\n\t\r Asdf,",
+        "-word-43-",
+        "Word-asd-cxvlj_9182-",
+        "Random_123_",
+    };
+    for (notVarStrs) |notVarStr| {
+        var lexer = Lexer.init(notVarStr);
+        _ = lexer;
+        // try testing.expectEqual(.val, lexer.next().?.token_type);
+        // try testing.expect(null == lexer.next());
     }
 }

@@ -29,6 +29,11 @@ pub fn build(b: *std.build.Builder) void {
     exe_tests.setTarget(target);
     exe_tests.setBuildMode(mode);
 
+    const lexer_tests = b.addTest("src/lexer.zig");
+    lexer_tests.setTarget(target);
+    lexer_tests.setBuildMode(mode);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&exe_tests.step);
+    test_step.dependOn(&lexer_tests.step);
 }
