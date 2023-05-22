@@ -4,6 +4,7 @@ const Token = @import("token.zig");
 const TokenType = Token.TokenType;
 const Allocator = std.mem.Allocator;
 const panic = std.debug.panic;
+const CharSet = std.AutoHashMap(u8, void);
 
 /// Lexer reads the source code and turns it into tokens
 const Lexer = @This();
@@ -15,19 +16,30 @@ position: usize = 0,
 /// Current line in the source
 line: usize = 0,
 /// Current column in the source
-col: usize = 0,
+col: usize = 1,
+
+var char_sets_buffer: [1024]u8 = undefined;
+var non_ident_char_set: CharSet = undefined;
+var infix_char_set: CharSet = undefined;
 
 /// Creates a new lexer using the given source code
 pub fn init(source: []const u8) Lexer {
-    var lexer = Lexer{ .source = source };
-    return lexer;
+    const infix_chars = ".:-^*+=<>%^*&|/@";
+    const non_ident_chars = " \n\t\r,;:.^*+=<>@$%^&*|/\\`[](){}";
+    var fba = std.heap.FixedBufferAllocator.init(&char_sets_buffer);
+    const allocator = fba.allocator();
+    non_ident_char_set = charSetFromStr(non_ident_chars, allocator);
+    infix_char_set = charSetFromStr(infix_chars, allocator);
+    return Lexer{
+        .source = source,
+    };
 }
 
 /// Parses the source and returns the next token found
 pub fn next(self: *Lexer) ?Token {
     self.skipWhitespace();
     const start = self.position;
-    const char = self.peek().?;
+    const char = self.peek() orelse return null;
     self.consume();
     // If the type here is inferred, zig will claim it depends on runtime val
     const token_type: TokenType = switch (char) {
@@ -45,7 +57,7 @@ pub fn next(self: *Lexer) ?Token {
             }
         } else .infix,
         else => blk: {
-            if (isIdentChar(char))
+            if (!non_ident_char_set.contains(char))
                 if (isUpper(char)) {
                     self.val();
                     break :blk .val;
@@ -107,7 +119,7 @@ fn skipWhitespace(self: *Lexer) void {
     while (self.peek()) |char| {
         switch (char) {
             '\n' => {
-                self.col = 0;
+                self.col = 1;
                 self.line += 1;
             },
             ' ', '\t', '\r' => self.col += 1,
@@ -120,7 +132,7 @@ fn skipWhitespace(self: *Lexer) void {
 /// Reads the next characters as a strat
 fn strat(self: *Lexer) void {
     while (self.peek()) |char|
-        if (isIdentChar(char) or isDigit(char))
+        if (!non_ident_char_set.contains(char) or isDigit(char))
             self.consume()
         else
             break;
@@ -129,7 +141,7 @@ fn strat(self: *Lexer) void {
 /// Reads the next characters as an val
 fn val(self: *Lexer) void {
     while (self.peek()) |char|
-        if (isIdentChar(char))
+        if (!non_ident_char_set.contains(char))
             self.consume()
         else
             break;
@@ -138,7 +150,7 @@ fn val(self: *Lexer) void {
 /// Reads the next characters as an var
 fn @"var"(self: *Lexer) void {
     while (self.peek()) |char|
-        if (isIdentChar(char))
+        if (!non_ident_char_set.contains(char))
             self.consume()
         else
             break;
@@ -147,7 +159,7 @@ fn @"var"(self: *Lexer) void {
 /// Reads the next characters as an identifier
 fn infix(self: *Lexer) void {
     while (self.peek()) |char|
-        if (isInfix(char))
+        if (infix_char_set.contains(char))
             self.consume()
         else
             break;
@@ -216,41 +228,36 @@ fn isLower(char: u8) bool {
 
 fn isInfix(char: u8) bool {
     return switch (char) {
-        // TODO: ".:-^*+=<>$%^*&|/"
+        // TODO:
         // 'a'...'z' => true,
         else => false,
     };
 }
 
-/// True if the char can be a part of a valid identifier
-fn isIdentChar(char: u8) bool {
-    var buffer: [512]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
-    const allocator = fba.allocator();
-    const invalidChars = " \n\t\r,;:.^*+=<>@$%^&*|/\\`[](){}";
+// Owned by caller, which should call `deinit`.
+fn charSetFromStr(str: []const u8, allocator: Allocator) CharSet {
+    var invalid_char_set = std.AutoHashMap(u8, void).init(allocator);
+    // This could be a comptime block in a future compiler
+    // Add the substrings to the map
+    for (str) |char|
+        // Add the substring to the map
+        invalid_char_set.put(char, {}) catch unreachable;
 
-    var map = std.AutoHashMap(u8, void).init(allocator);
-    defer map.deinit();
-
-    // One day, this could be a comptime block
-    const invalidCharSet = blk: {
-
-        // Add the substrings to the map
-        for (invalidChars) |invalidChar| {
-            // Add the substring to the map
-            map.put(invalidChar, {}) catch unreachable;
-        }
-        break :blk map;
-    };
-    return !invalidCharSet.contains(char);
+    return invalid_char_set;
 }
 
-test "All supported tokens" {
+/// True if the char isn't in the set
+fn anyNotIn(char: u8, set: CharSet) bool {
+    return !set.contains(char);
+}
+
+// TODO: add more tests after committing to using either spans or indices
+test "all tokens" {
     const input =
         \\Val1,5;
-        \\Infix -->
         \\var1.
-        \\5 < 10.
+        \\Infix -->
+        \\5 < 10.V
         \\1 + 2.0
         \\$strat
         \\
@@ -264,11 +271,10 @@ test "All supported tokens" {
         \\()
     ;
     const tests = &[_]Token{
-        .{ .token_type = .val, .start = 1, .end = 10 },
-        .{ .token_type = .val, .start = 229, .end = 230 },
-        .{ .token_type = .comment, .start = 233, .end = 250 },
-        .{ .token_type = .val, .start = 251, .end = 254 },
-        .{ .token_type = .val, .start = 251, .end = 254 },
+        .{ .token_type = .val, .start = 0, .end = 4 },
+        .{ .token_type = .val, .start = 4, .end = 5 },
+        .{ .token_type = .val, .start = 5, .end = 6 },
+        .{ .token_type = .val, .start = 6, .end = 7 },
     };
 
     var lexer = Lexer.init(input);
@@ -276,25 +282,39 @@ test "All supported tokens" {
     for (tests) |unit| {
         const next_token = lexer.next().?;
 
+        try std.io.getStdErr().writer().print("{}\n", .{next_token});
         try testing.expectEqual(unit.start, next_token.start);
         try testing.expectEqual(unit.end, next_token.end);
         try testing.expectEqual(unit.token_type, next_token.token_type);
     }
 }
 
-test "Vars" {
+test "Vals" {
     const valStrs = &[_][]const u8{
+        "A",
+        "Word-43",
+        "Word-asd-cxvlj_9182",
+        "Random123",
+        "-sd",
+    };
+    for (valStrs) |valStr| {
+        var lexer = Lexer.init(valStr);
+        try testing.expectEqual(@as(TokenType, .@"var"), lexer.next().?.token_type);
+        try testing.expectEqual(@as(?Token, null), lexer.next());
+    }
+}
+test "Vars" {
+    const varStrs = &[_][]const u8{
         "a",
         "word-43",
         "word-asd-cxvlj_9182",
         "random123",
         "_sd",
     };
-    for (valStrs) |valStr| {
-        var lexer = Lexer.init(valStr);
-        _ = lexer;
-        // try testing.expectEqual(.@"var", lexer.next().?.token_type);
-        // try testing.expect(null == lexer.next());
+    for (varStrs) |varStr| {
+        var lexer = Lexer.init(varStr);
+        try testing.expectEqual(@as(TokenType, .@"var"), lexer.next().?.token_type);
+        try testing.expectEqual(@as(?Token, null), lexer.next());
     }
 
     const notVarStrs = &[_][]const u8{
@@ -306,8 +326,7 @@ test "Vars" {
     };
     for (notVarStrs) |notVarStr| {
         var lexer = Lexer.init(notVarStr);
-        _ = lexer;
-        // try testing.expectEqual(.val, lexer.next().?.token_type);
-        // try testing.expect(null == lexer.next());
+        try testing.expectEqual(@as(TokenType, .@"var"), lexer.next().?.token_type);
+        try testing.expectEqual(@as(?Token, null), lexer.next());
     }
 }
