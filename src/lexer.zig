@@ -18,6 +18,7 @@ line: usize = 0,
 /// Current column in the source
 col: usize = 1,
 
+// These could be done at comptime in a future compiler
 var char_sets_buffer: [1024]u8 = undefined;
 var non_ident_char_set: CharSet = undefined;
 var infix_char_set: CharSet = undefined;
@@ -46,37 +47,25 @@ pub fn next(self: *Lexer) ?Token {
         ',', '.', ';', '(', ')', '{', '}', '[', ']', '"' => .val,
         '$' => .strat,
         '/' => if (self.peek()) |nextChar| blk: {
-            if (nextChar == '/') {
-                self.consume();
-                self.comment();
-                break :blk .comment;
-            } else {
-                self.consume();
+            self.consume();
+            break :blk if (nextChar == '/')
+                self.comment()
+            else
                 self.infix();
-                break :blk .infix;
-            }
         } else .infix,
-        else => blk: {
-            if (!non_ident_char_set.contains(char))
-                if (isUpper(char)) {
-                    self.val();
-                    break :blk .val;
-                } else {
-                    self.@"var"();
-                    break :blk .@"var";
-                }
-            else if (isDigit(char)) {
-                self.int();
-                break :blk .integer;
-            } else if (isInfix(char)) {
-                self.infix();
-                break :blk .integer;
-            } // This is a debug error only, as we shouldn't encounter an error during lexing
-            else panic(
+        else => if (isUpper(char))
+            self.val()
+        else if (isLower(char))
+            self.@"var"()
+        else if (isDigit(char))
+            self.int()
+        else if (isInfix(char))
+            self.infix()
+        else // This is a debug error only, as we shouldn't encounter an error during lexing
+            panic(
                 "Parser Error: Unknown character '{}' at line {}, col {}",
                 .{ char, self.line, self.col },
-            );
-        },
+            ),
     };
 
     return Token{
@@ -130,52 +119,62 @@ fn skipWhitespace(self: *Lexer) void {
 }
 
 /// Reads the next characters as a strat
-fn strat(self: *Lexer) void {
+fn strat(self: *Lexer) TokenType {
     while (self.peek()) |char|
         if (!non_ident_char_set.contains(char) or isDigit(char))
             self.consume()
         else
             break;
+
+    return .strat;
 }
 
 /// Reads the next characters as an val
-fn val(self: *Lexer) void {
+fn val(self: *Lexer) TokenType {
     while (self.peek()) |char|
         if (!non_ident_char_set.contains(char))
             self.consume()
         else
             break;
+
+    return .val;
 }
 
 /// Reads the next characters as an var
-fn @"var"(self: *Lexer) void {
+fn @"var"(self: *Lexer) TokenType {
     while (self.peek()) |char|
         if (!non_ident_char_set.contains(char))
             self.consume()
         else
             break;
+
+    return .@"var";
 }
 
 /// Reads the next characters as an identifier
-fn infix(self: *Lexer) void {
+fn infix(self: *Lexer) TokenType {
     while (self.peek()) |char|
         if (infix_char_set.contains(char))
             self.consume()
         else
             break;
+
+    return .infix;
 }
 
 /// Reads the next characters as number
-fn int(self: *Lexer) void {
+fn int(self: *Lexer) TokenType {
     while (self.peek()) |nextChar|
         if (isDigit(nextChar))
             self.consume()
         else
             break;
+
+    return .integer;
 }
 
 /// Reads the next characters as number
-fn double(self: *Lexer) void {
+fn double(self: *Lexer) TokenType {
     // A double is just and int with an optional period and int immediately
     // after
     self.int();
@@ -183,24 +182,29 @@ fn double(self: *Lexer) void {
         self.consume();
         self.int();
     }
+    return .double;
 }
 
 /// Reads a value wrappen in double-quotes from the current character
-fn string(self: *Lexer) void {
+fn string(self: *Lexer) TokenType {
     while (self.peek()) |nextChar|
         if (nextChar != '"')
             self.consume()
         else
             break;
+
+    return .string;
 }
 
 /// Reads until the end of the line or EOF
-fn comment(self: *Lexer) void {
+fn comment(self: *Lexer) TokenType {
     while (self.peek()) |nextChar|
         if (nextChar != '\n')
             self.consume()
         else
             break;
+
+    return .comment;
 }
 
 /// Returns true if the given character is a digit
@@ -237,7 +241,6 @@ fn isInfix(char: u8) bool {
 // Owned by caller, which should call `deinit`.
 fn charSetFromStr(str: []const u8, allocator: Allocator) CharSet {
     var invalid_char_set = std.AutoHashMap(u8, void).init(allocator);
-    // This could be a comptime block in a future compiler
     // Add the substrings to the map
     for (str) |char|
         // Add the substring to the map
@@ -273,20 +276,34 @@ test "all tokens" {
     const tests = &[_]Token{
         .{ .token_type = .val, .start = 0, .end = 4 },
         .{ .token_type = .val, .start = 4, .end = 5 },
-        .{ .token_type = .val, .start = 5, .end = 6 },
+        .{ .token_type = .integer, .start = 5, .end = 6 },
         .{ .token_type = .val, .start = 6, .end = 7 },
     };
 
     var lexer = Lexer.init(input);
 
-    for (tests) |unit| {
+    const err_option: ?error{TestExpectedEqual} =
+        for (tests) |unit|
+    {
         const next_token = lexer.next().?;
 
-        try std.io.getStdErr().writer().print("{}\n", .{next_token});
-        try testing.expectEqual(unit.start, next_token.start);
-        try testing.expectEqual(unit.end, next_token.end);
-        try testing.expectEqual(unit.token_type, next_token.token_type);
+        testing.expectEqual(unit.start, next_token.start) catch |e|
+            break e;
+        testing.expectEqual(unit.end, next_token.end) catch |e|
+            break e;
+        testing.expectEqual(unit.token_type, next_token.token_type) catch |e|
+            break e;
+    } else null;
+
+    if (err_option) |err| {
+        try std.io.getStdErr().writer().print("{?}\n", .{err});
+        return err;
     }
+
+    // if (err == error.TestExpectedEqual) {
+    //     try std.io.getStdErr().writer().print("{}\n", .{next_token});
+    //     try std.io.getStdErr().writer().print("{s}\n", .{input[next_token.start..next_token.end]});
+    // }
 }
 
 test "Vals" {
@@ -303,6 +320,7 @@ test "Vals" {
         try testing.expectEqual(@as(?Token, null), lexer.next());
     }
 }
+
 test "Vars" {
     const varStrs = &[_][]const u8{
         "a",
