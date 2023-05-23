@@ -26,7 +26,7 @@ var infix_char_set: CharSet = undefined;
 /// Creates a new lexer using the given source code
 pub fn init(source: []const u8) Lexer {
     const infix_chars = ".:-^*+=<>%^*&|/@";
-    const non_ident_chars = " \n\t\r,;:.^*+=<>@$%^&*|/\\`[](){}";
+    const non_ident_chars = " \n\t\r,;:.^*=<>@$%^&*|/\\`[](){}";
     var fba = std.heap.FixedBufferAllocator.init(&char_sets_buffer);
     const allocator = fba.allocator();
     non_ident_char_set = charSetFromStr(non_ident_chars, allocator);
@@ -44,26 +44,20 @@ pub fn next(self: *Lexer) ?Token {
     self.consume();
     // If the type here is inferred, zig will claim it depends on runtime val
     const token_type: TokenType = switch (char) {
-        ',', '.', ';', '(', ')', '{', '}', '[', ']', '"' => .val,
+        ',', '.', ';', '(', ')', '{', '}', '[', ']', '"', '`' => .val,
         '$' => .strat,
-        '/' => if (self.peek()) |nextChar| blk: {
-            self.consume();
-            break :blk if (nextChar == '/')
-                self.comment()
-            else
-                self.infix();
-        } else .infix,
+        '#' => self.comment(),
         else => if (isUpper(char))
             self.val()
-        else if (isLower(char))
+        else if (isLower(char) or char == '_')
             self.@"var"()
         else if (isDigit(char))
             self.int()
-        else if (isInfix(char))
+        else if (infix_char_set.contains(char))
             self.infix()
         else // This is a debug error only, as we shouldn't encounter an error during lexing
             panic(
-                "Parser Error: Unknown character '{}' at line {}, col {}",
+                "Parser Error: Unknown character '{c}' at line {}, col {}",
                 .{ char, self.line, self.col },
             ),
     };
@@ -96,10 +90,16 @@ fn peek(self: Lexer) ?u8 {
 
 /// Advances one character, or panics (should only be called after `peek`)
 fn consume(self: *Lexer) void {
-    if (self.peek()) |_|
-        self.position += 1
-    else
-        @panic("Attempted to advance to next token but EOF reached");
+    if (self.peek()) |char| {
+        self.position += 1;
+        switch (char) {
+            '\n' => {
+                self.col = 1;
+                self.line += 1;
+            },
+            else => self.col += 1,
+        }
+    } else @panic("Attempted to advance to next token but EOF reached");
 }
 
 /// Skips whitespace until a non-whitespace character is found. Not guaranteed
@@ -107,14 +107,9 @@ fn consume(self: *Lexer) void {
 fn skipWhitespace(self: *Lexer) void {
     while (self.peek()) |char| {
         switch (char) {
-            '\n' => {
-                self.col = 1;
-                self.line += 1;
-            },
-            ' ', '\t', '\r' => self.col += 1,
+            '\n', ' ', '\t', '\r' => self.consume(),
             else => break,
         }
-        self.consume();
     }
 }
 
@@ -230,14 +225,6 @@ fn isLower(char: u8) bool {
     };
 }
 
-fn isInfix(char: u8) bool {
-    return switch (char) {
-        // TODO:
-        // 'a'...'z' => true,
-        else => false,
-    };
-}
-
 // Owned by caller, which should call `deinit`.
 fn charSetFromStr(str: []const u8, allocator: Allocator) CharSet {
     var invalid_char_set = std.AutoHashMap(u8, void).init(allocator);
@@ -282,50 +269,45 @@ test "all tokens" {
 
     var lexer = Lexer.init(input);
 
-    const err_option: ?error{TestExpectedEqual} =
-        for (tests) |unit|
-    {
+    for (tests) |unit| {
         const next_token = lexer.next().?;
 
-        testing.expectEqual(unit.start, next_token.start) catch |e|
-            break e;
-        testing.expectEqual(unit.end, next_token.end) catch |e|
-            break e;
-        testing.expectEqual(unit.token_type, next_token.token_type) catch |e|
-            break e;
-    } else null;
-
-    if (err_option) |err| {
-        try std.io.getStdErr().writer().print("{?}\n", .{err});
-        return err;
+        try testing.expectEqual(unit.start, next_token.start);
+        try testing.expectEqual(unit.end, next_token.end);
+        try testing.expectEqual(unit.token_type, next_token.token_type);
     }
-
-    // if (err == error.TestExpectedEqual) {
-    //     try std.io.getStdErr().writer().print("{}\n", .{next_token});
-    //     try std.io.getStdErr().writer().print("{s}\n", .{input[next_token.start..next_token.end]});
-    // }
 }
 
 test "Vals" {
-    const valStrs = &[_][]const u8{
+    const val_strs = &[_][]const u8{
         "A",
         "Word-43",
-        "Word-asd-cxvlj_9182",
+        "Word-asd-cxvlj_9182--+",
         "Random123",
-        "-sd",
+        "Ssag-123+d",
     };
-    for (valStrs) |valStr| {
-        var lexer = Lexer.init(valStr);
-        try testing.expectEqual(@as(TokenType, .@"var"), lexer.next().?.token_type);
+
+    for (val_strs) |val_str| {
+        var lexer = Lexer.init(val_str);
+        const next_token = lexer.next().?;
+        // try std.io.getStdErr().writer().print("{}\n", .{next_token});
+        // try std.io.getStdErr().writer().print("{s}\n", .{val_str[next_token.start..next_token.end]});
+        try testing.expectEqual(@as(TokenType, .val), next_token.token_type);
         try testing.expectEqual(@as(?Token, null), lexer.next());
     }
+
+    var lexer = Lexer.init("-Sd+ ++V"); // Should be -, Sd+, ++, V
+    try testing.expectEqual(@as(TokenType, .infix), lexer.next().?.token_type);
+    try testing.expectEqual(@as(TokenType, .val), lexer.next().?.token_type);
+    try testing.expectEqual(@as(TokenType, .infix), lexer.next().?.token_type);
+    try testing.expectEqual(@as(TokenType, .val), lexer.next().?.token_type);
 }
 
 test "Vars" {
     const varStrs = &[_][]const u8{
         "a",
         "word-43",
-        "word-asd-cxvlj_9182",
+        "word-asd-cxvlj_9182-",
         "random123",
         "_sd",
     };
@@ -336,15 +318,15 @@ test "Vars" {
     }
 
     const notVarStrs = &[_][]const u8{
-        "",
         "\n\t\r Asdf,",
-        "-word-43-",
+        "-Word-43-",
         "Word-asd-cxvlj_9182-",
         "Random_123_",
     };
     for (notVarStrs) |notVarStr| {
         var lexer = Lexer.init(notVarStr);
-        try testing.expectEqual(@as(TokenType, .@"var"), lexer.next().?.token_type);
-        try testing.expectEqual(@as(?Token, null), lexer.next());
+        while (lexer.next()) |token| {
+            try testing.expect(.@"var" != token.token_type);
+        }
     }
 }
