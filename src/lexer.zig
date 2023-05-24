@@ -1,3 +1,10 @@
+/// The lexer for Sifu tries to make as few decisions as possible. Mostly, it
+/// greedily lexes seperators like commas into their own tokens, separates
+/// vars and vals based on the first character's case, and lexes numbers.
+/// There are no errors, all tokens will eventually be recognized, as well as
+/// utf-8.
+const Lexer = @This();
+
 const std = @import("std");
 const testing = std.testing;
 const Token = @import("token.zig");
@@ -5,9 +12,6 @@ const TokenType = Token.TokenType;
 const Allocator = std.mem.Allocator;
 const panic = std.debug.panic;
 const CharSet = std.AutoHashMap(u8, void);
-
-/// Lexer reads the source code and turns it into tokens
-const Lexer = @This();
 
 /// Source code that is being tokenized
 source: []const u8,
@@ -31,6 +35,7 @@ pub fn init(source: []const u8) Lexer {
     const allocator = fba.allocator();
     non_ident_char_set = charSetFromStr(non_ident_chars, allocator);
     infix_char_set = charSetFromStr(infix_chars, allocator);
+
     return Lexer{
         .source = source,
     };
@@ -44,8 +49,9 @@ pub fn next(self: *Lexer) ?Token {
     self.consume();
     // If the type here is inferred, zig will claim it depends on runtime val
     const token_type: TokenType = switch (char) {
-        ',', '.', ';', '(', ')', '{', '}', '[', ']', '"', '`' => .val,
-        '$' => .strat,
+        // Parse separators greedily
+        '\n', ',', '.', ';', '(', ')', '{', '}', '[', ']', '"', '`' => .val,
+        '$' => self.strat(),
         '#' => self.comment(),
         else => if (isUpper(char))
             self.val()
@@ -66,6 +72,7 @@ pub fn next(self: *Lexer) ?Token {
         .token_type = token_type,
         .start = start,
         .end = self.position,
+        .str = self.source[start..self.position],
     };
 }
 
@@ -103,11 +110,11 @@ fn consume(self: *Lexer) void {
 }
 
 /// Skips whitespace until a non-whitespace character is found. Not guaranteed
-/// to skip anything
+/// to skip anything. Newlines are separators, and thus treated as tokens.
 fn skipWhitespace(self: *Lexer) void {
     while (self.peek()) |char| {
         switch (char) {
-            '\n', ' ', '\t', '\r' => self.consume(),
+            ' ', '\t', '\r' => self.consume(),
             else => break,
         }
     }
@@ -236,11 +243,6 @@ fn charSetFromStr(str: []const u8, allocator: Allocator) CharSet {
     return invalid_char_set;
 }
 
-/// True if the char isn't in the set
-fn anyNotIn(char: u8, set: CharSet) bool {
-    return !set.contains(char);
-}
-
 // TODO: add more tests after committing to using either spans or indices
 test "all tokens" {
     const input =
@@ -261,10 +263,10 @@ test "all tokens" {
         \\()
     ;
     const tests = &[_]Token{
-        .{ .token_type = .val, .start = 0, .end = 4 },
-        .{ .token_type = .val, .start = 4, .end = 5 },
-        .{ .token_type = .integer, .start = 5, .end = 6 },
-        .{ .token_type = .val, .start = 6, .end = 7 },
+        .{ .token_type = .val, .start = 0, .end = 4, .str = "Val1" },
+        .{ .token_type = .val, .start = 4, .end = 5, .str = "," },
+        .{ .token_type = .integer, .start = 5, .end = 6, .str = "5" },
+        .{ .token_type = .val, .start = 6, .end = 7, .str = ";" },
     };
 
     var lexer = Lexer.init(input);
@@ -291,7 +293,7 @@ test "Vals" {
         var lexer = Lexer.init(val_str);
         const next_token = lexer.next().?;
         // try std.io.getStdErr().writer().print("{}\n", .{next_token});
-        // try std.io.getStdErr().writer().print("{s}\n", .{val_str[next_token.start..next_token.end]});
+        // try std.io.getStdErr().writer().print("{s}\n", .{val_str[next_token.val]});
         try testing.expectEqual(@as(TokenType, .val), next_token.token_type);
         try testing.expectEqual(@as(?Token, null), lexer.next());
     }
