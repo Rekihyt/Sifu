@@ -48,16 +48,6 @@ pub fn parse(allocator: Allocator, source: []const u8) !*Ast {
 pub const Parser = struct {
     /// Lexer that tokenized all tokens and is used to retrieve the next token
     lexer: Lexer,
-
-    // / Parses the current token into an integer literal Ast
-    // fn parseIntLit(self: *Parser) Ast {
-    //     const literal = try self.allocator.create(Ast.IntLit);
-    //     const string_number = self.source[self.current.start..self.current.end];
-    //     const value = try std.fmt.parseInt(usize, string_number, 10);
-
-    //     literal.* = .{ .token = self.current, .value = value };
-    //     return Ast{ .int_lit = literal };
-    // }
 };
 
 const testing = std.testing;

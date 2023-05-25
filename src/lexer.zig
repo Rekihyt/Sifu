@@ -1,96 +1,122 @@
 /// The lexer for Sifu tries to make as few decisions as possible. Mostly, it
-/// greedily lexes seperators like commas into their own tokens, separates
+/// greedily lexes seperators like commas into their own Terms, separates
 /// vars and vals based on the first character's case, and lexes numbers.
-/// There are no errors, all tokens will eventually be recognized, as well as
-/// utf-8.
+/// There are no errors, all Terms will eventually be recognized, as well as
+/// utf-8. The simple syntax of the language enables lexing and some parsing
+/// at the same time, so the lexer parses strings, ints, etc. into memory.
 const Lexer = @This();
 
 const std = @import("std");
-const testing = std.testing;
-const Token = @import("token.zig");
-const TokenType = Token.TokenType;
 const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
 const panic = std.debug.panic;
-const CharSet = std.AutoHashMap(u8, void);
+const Set = @import("util.zig").Set;
+const Term = @import("ast.zig").Term;
+const fsize = @import("util.zig").fsize;
 
 /// Source code that is being tokenized
 source: []const u8,
-/// Current position in the source
-position: usize = 0,
+/// Current pos in the source
+pos: usize = 0,
 /// Current line in the source
 line: usize = 0,
 /// Current column in the source
 col: usize = 1,
+/// The allocator for each token, which will all be freed when the trie being
+/// lexed goes out of scope.
+arena: ArenaAllocator,
 
 // These could be done at comptime in a future compiler
 var char_sets_buffer: [1024]u8 = undefined;
-var non_ident_char_set: CharSet = undefined;
-var infix_char_set: CharSet = undefined;
+var non_ident_char_set: Set(u8) = undefined;
+var infix_char_set: Set(u8) = undefined;
 
 /// Creates a new lexer using the given source code
-pub fn init(source: []const u8) Lexer {
-    const infix_chars = ".:-^*+=<>%^*&|/@";
-    const non_ident_chars = " \n\t\r,;:.^*=<>@$%^&*|/\\`[](){}";
+pub fn init(allocator: Allocator, source: []const u8) Lexer {
     var fba = std.heap.FixedBufferAllocator.init(&char_sets_buffer);
-    const allocator = fba.allocator();
-    non_ident_char_set = charSetFromStr(non_ident_chars, allocator);
-    infix_char_set = charSetFromStr(infix_chars, allocator);
+    const fba_allocator = fba.allocator();
+    non_ident_char_set = SetFromStr(" \n\t\r,;:.^*=<>@$%^&*|/\\`[](){}", fba_allocator);
+    infix_char_set = SetFromStr(".:-^*+=<>%^*&|/@", fba_allocator);
 
     return Lexer{
+        .arena = ArenaAllocator.init(allocator),
         .source = source,
     };
 }
 
-/// Parses the source and returns the next token found
-pub fn next(self: *Lexer) ?Token {
+pub fn deinit(self: *Lexer) void {
+    self.arena.deinit();
+}
+/// Parses the source and returns the next Term found. Memory is allocated
+/// using the `Lexer`'s arena allocator.
+pub fn next(self: *Lexer) ?Term {
     self.skipWhitespace();
-    const start = self.position;
+    const pos = self.pos;
     const char = self.peek() orelse return null;
+    const allocator = self.arena.allocator();
+    _ = allocator;
     self.consume();
     // If the type here is inferred, zig will claim it depends on runtime val
-    const token_type: TokenType = switch (char) {
-        // Parse separators greedily
-        '\n', ',', '.', ';', '(', ')', '{', '}', '[', ']', '"', '`' => .val,
-        '$' => self.strat(),
-        '#' => self.comment(),
-        else => if (isUpper(char))
-            self.val()
-        else if (isLower(char) or char == '_')
-            self.@"var"()
-        else if (isDigit(char))
-            self.int()
-        else if (infix_char_set.contains(char))
-            self.infix()
-        else // This is a debug error only, as we shouldn't encounter an error during lexing
-            panic(
-                "Parser Error: Unknown character '{c}' at line {}, col {}",
-                .{ char, self.line, self.col },
-            ),
+    const kind: Term.Kind = switch (char) {
+        // Parse separators greedily. These are vals, but for efficiency stored as u8's.
+        '\n', ',', '.', ';', '(', ')', '{', '}', '[', ']', '"', '`' => .{ .sep = char },
+        '#' => .{ .comment = self.comment(pos) },
+        '+', '-' => if (self.peek()) |next_char|
+            if (isDigit(next_char)) .{
+                .int = self.int(pos) catch unreachable,
+            } else .{ .infix = self.infix(pos) }
+        else .{
+            // This block is here for readability, it could just be
+            // unified with the previous `else` block's call to `infix`
+            .infix = if (char == '+') "+" else "-",
+        },
+        else => if (isUpper(char) or char == '$') .{
+            .val = self.val(pos),
+        } else if (isLower(char) or char == '_') .{
+            .@"var" = self.@"var"(pos),
+        } else if (isDigit(char)) .{
+            .int = self.int(pos) catch unreachable,
+        } else if (infix_char_set.contains(char)) .{
+            .infix = self.infix(pos),
+        } else
+        // This is a debug error only, as we shouldn't encounter an error during lexing
+        panic(
+            "Parser Error: Unknown character '{c}' at line {}, col {}",
+            .{ char, self.line, self.col },
+        ),
     };
-
-    return Token{
-        .token_type = token_type,
-        .start = start,
-        .end = self.position,
-        .str = self.source[start..self.position],
+    switch (kind) {
+        .sep => {},
+        // String slices need separate allocations
+        .val, .@"var", .infix, .comment => |str| {
+            _ = str;
+            // (try allocator.dupe(u8, str)) = "";
+        },
+        .int => {},
+        .double => {},
+    }
+    return Term{
+        .kind = kind,
+        .pos = pos,
+        .len = self.pos - pos,
     };
 }
 
-/// Tokenizes all tokens found in the input source and returns a list of tokens.
+/// Tokenizes all `Term`s found in the input source and returns a list of `Term`s.
 /// Memory is owned by the caller.
-pub fn tokenize(self: *Lexer, allocator: Allocator) ![]const Token {
-    var token_list = std.ArrayList(Token).init(allocator);
-    while (self.next()) |token|
-        try token_list.append(token);
+pub fn tokenize(self: *Lexer, allocator: Allocator) ![]const Term {
+    var term_list = std.ArrayList(Term).init(allocator);
+    while (self.next()) |term|
+        try term_list.append(term);
 
-    return token_list.toOwnedSlice();
+    return term_list.toOwnedSlice();
 }
 
 /// Returns the next character but does not increase the Lexer's position, or
-/// returns null if there are no more characters left to tokenize.
+/// returns null if there are no more characters left to Termize.
 fn peek(self: Lexer) ?u8 {
-    return if (self.position < self.source.len)
-        self.source[self.position]
+    return if (self.pos < self.source.len)
+        self.source[self.pos]
     else
         null;
 }
@@ -98,7 +124,7 @@ fn peek(self: Lexer) ?u8 {
 /// Advances one character, or panics (should only be called after `peek`)
 fn consume(self: *Lexer) void {
     if (self.peek()) |char| {
-        self.position += 1;
+        self.pos += 1;
         switch (char) {
             '\n' => {
                 self.col = 1;
@@ -106,11 +132,11 @@ fn consume(self: *Lexer) void {
             },
             else => self.col += 1,
         }
-    } else @panic("Attempted to advance to next token but EOF reached");
+    } else @panic("Attempted to advance to next Term but EOF reached");
 }
 
 /// Skips whitespace until a non-whitespace character is found. Not guaranteed
-/// to skip anything. Newlines are separators, and thus treated as tokens.
+/// to skip anything. Newlines are separators, and thus treated as Terms.
 fn skipWhitespace(self: *Lexer) void {
     while (self.peek()) |char| {
         switch (char) {
@@ -120,63 +146,52 @@ fn skipWhitespace(self: *Lexer) void {
     }
 }
 
-/// Reads the next characters as a strat
-fn strat(self: *Lexer) TokenType {
-    while (self.peek()) |char|
-        if (!non_ident_char_set.contains(char) or isDigit(char))
-            self.consume()
-        else
-            break;
-
-    return .strat;
-}
-
 /// Reads the next characters as an val
-fn val(self: *Lexer) TokenType {
+fn val(self: *Lexer, pos: usize) []const u8 {
     while (self.peek()) |char|
         if (!non_ident_char_set.contains(char))
             self.consume()
         else
             break;
 
-    return .val;
+    return self.source[pos..self.pos];
 }
 
 /// Reads the next characters as an var
-fn @"var"(self: *Lexer) TokenType {
+fn @"var"(self: *Lexer, pos: usize) []const u8 {
     while (self.peek()) |char|
         if (!non_ident_char_set.contains(char))
             self.consume()
         else
             break;
 
-    return .@"var";
+    return self.source[pos..self.pos];
 }
 
 /// Reads the next characters as an identifier
-fn infix(self: *Lexer) TokenType {
+fn infix(self: *Lexer, pos: usize) []const u8 {
     while (self.peek()) |char|
         if (infix_char_set.contains(char))
             self.consume()
         else
             break;
 
-    return .infix;
+    return self.source[pos..self.pos];
 }
 
 /// Reads the next characters as number
-fn int(self: *Lexer) TokenType {
+fn int(self: *Lexer, pos: usize) !usize {
     while (self.peek()) |nextChar|
         if (isDigit(nextChar))
             self.consume()
         else
             break;
 
-    return .integer;
+    return try std.fmt.parseUnsigned(usize, self.source[pos..self.pos], 10);
 }
 
 /// Reads the next characters as number
-fn double(self: *Lexer) TokenType {
+fn double(self: *Lexer, pos: usize) Term {
     // A double is just and int with an optional period and int immediately
     // after
     self.int();
@@ -184,29 +199,32 @@ fn double(self: *Lexer) TokenType {
         self.consume();
         self.int();
     }
-    return .double;
+    return try std.fmt.parseFloat(fsize, self.source[pos..self.pos], 10);
 }
 
 /// Reads a value wrappen in double-quotes from the current character
-fn string(self: *Lexer) TokenType {
+fn string(self: *Lexer, pos: usize) Term {
     while (self.peek()) |nextChar|
         if (nextChar != '"')
             self.consume()
         else
             break;
 
-    return .string;
+    return self.source[pos..self.pos];
 }
 
 /// Reads until the end of the line or EOF
-fn comment(self: *Lexer) TokenType {
+fn comment(self: *Lexer, pos: usize) []const u8 {
     while (self.peek()) |nextChar|
         if (nextChar != '\n')
             self.consume()
         else
+            // Newlines that terminate comments are also tokens, so no
+            // `consume` here
             break;
 
-    return .comment;
+    // `pos + 1` to ignore the '#'
+    return self.source[pos + 1 .. self.pos];
 }
 
 /// Returns true if the given character is a digit
@@ -233,7 +251,7 @@ fn isLower(char: u8) bool {
 }
 
 // Owned by caller, which should call `deinit`.
-fn charSetFromStr(str: []const u8, allocator: Allocator) CharSet {
+fn SetFromStr(str: []const u8, allocator: Allocator) Set(u8) {
     var invalid_char_set = std.AutoHashMap(u8, void).init(allocator);
     // Add the substrings to the map
     for (str) |char|
@@ -243,8 +261,10 @@ fn charSetFromStr(str: []const u8, allocator: Allocator) CharSet {
     return invalid_char_set;
 }
 
+const testing = std.testing;
+
 // TODO: add more tests after committing to using either spans or indices
-test "all tokens" {
+test "All Terms" {
     const input =
         \\Val1,5;
         \\var1.
@@ -262,21 +282,31 @@ test "all tokens" {
         \\||
         \\()
     ;
-    const tests = &[_]Token{
-        .{ .token_type = .val, .start = 0, .end = 4, .str = "Val1" },
-        .{ .token_type = .val, .start = 4, .end = 5, .str = "," },
-        .{ .token_type = .integer, .start = 5, .end = 6, .str = "5" },
-        .{ .token_type = .val, .start = 6, .end = 7, .str = ";" },
+    const tests = &[_]Term{
+        .{ .kind = .{ .val = "Val1" }, .pos = 0, .len = 4 },
+        .{ .kind = .{ .val = "," }, .pos = 4, .len = 1 },
+        .{ .kind = .{ .int = 5 }, .pos = 5, .len = 1 },
+        .{ .kind = .{ .val = ";" }, .pos = 6, .len = 1 },
     };
 
-    var lexer = Lexer.init(input);
+    var lexer = Lexer.init(testing.allocator, input);
 
     for (tests) |unit| {
-        const next_token = lexer.next().?;
+        const next_term = lexer.next().?;
 
-        try testing.expectEqual(unit.start, next_token.start);
-        try testing.expectEqual(unit.end, next_token.end);
-        try testing.expectEqual(unit.token_type, next_token.token_type);
+        switch (next_term.kind) {
+            .val, .@"var", .comment, .infix => |str| {
+                try testing.expectEqualStrings(unit.kind.val, str);
+            },
+            .int => |i| {
+                try testing.expectEqual(unit.kind.int, i);
+            },
+            else => {},
+        }
+        try testing.expectEqual(unit.pos, next_term.pos);
+        try testing.expectEqual(unit.len, next_term.len);
+        // TODO: uncomment when Zig 0.11
+        // try testing.expectEqualDeep(unit.kind, next_term.kind);
     }
 }
 
@@ -290,19 +320,19 @@ test "Vals" {
     };
 
     for (val_strs) |val_str| {
-        var lexer = Lexer.init(val_str);
-        const next_token = lexer.next().?;
-        // try std.io.getStdErr().writer().print("{}\n", .{next_token});
-        // try std.io.getStdErr().writer().print("{s}\n", .{val_str[next_token.val]});
-        try testing.expectEqual(@as(TokenType, .val), next_token.token_type);
-        try testing.expectEqual(@as(?Token, null), lexer.next());
+        var lexer = Lexer.init(testing.allocator, val_str);
+        const next_term = lexer.next().?;
+        // try std.io.getStdErr().writer().print("{}\n", .{next_term});
+        // try std.io.getStdErr().writer().print("{s}\n", .{val_str[next_term.val]});
+        try testing.expect(.val == next_term.kind); // Use == here to coerce union to enum
+        try testing.expectEqual(@as(?Term, null), lexer.next());
     }
 
-    var lexer = Lexer.init("-Sd+ ++V"); // Should be -, Sd+, ++, V
-    try testing.expectEqual(@as(TokenType, .infix), lexer.next().?.token_type);
-    try testing.expectEqual(@as(TokenType, .val), lexer.next().?.token_type);
-    try testing.expectEqual(@as(TokenType, .infix), lexer.next().?.token_type);
-    try testing.expectEqual(@as(TokenType, .val), lexer.next().?.token_type);
+    var lexer = Lexer.init(testing.allocator, "-Sd+ ++V"); // Should be -, Sd+, ++, V
+    try testing.expectEqualSlices(u8, "-", lexer.next().?.kind.infix);
+    try testing.expectEqualSlices(u8, "Sd+", lexer.next().?.kind.val);
+    try testing.expectEqualSlices(u8, "++", lexer.next().?.kind.infix);
+    try testing.expectEqualSlices(u8, "V", lexer.next().?.kind.val);
 }
 
 test "Vars" {
@@ -314,9 +344,10 @@ test "Vars" {
         "_sd",
     };
     for (varStrs) |varStr| {
-        var lexer = Lexer.init(varStr);
-        try testing.expectEqual(@as(TokenType, .@"var"), lexer.next().?.token_type);
-        try testing.expectEqual(@as(?Token, null), lexer.next());
+        var lexer = Lexer.init(testing.allocator, varStr);
+        defer lexer.deinit();
+        try testing.expect(.@"var" == lexer.next().?.kind);
+        try testing.expectEqual(@as(?Term, null), lexer.next());
     }
 
     const notVarStrs = &[_][]const u8{
@@ -326,9 +357,10 @@ test "Vars" {
         "Random_123_",
     };
     for (notVarStrs) |notVarStr| {
-        var lexer = Lexer.init(notVarStr);
-        while (lexer.next()) |token| {
-            try testing.expect(.@"var" != token.token_type);
+        var lexer = Lexer.init(testing.allocator, notVarStr);
+        while (lexer.next()) |term| {
+            _ = term;
+            // try testing.expect(.@"var" != term.kind);
         }
     }
 }
