@@ -16,6 +16,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const panic = std.debug.panic;
 const Set = @import("util.zig").Set;
 const Ast = @import("ast.zig").Ast;
+const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const ArrayList = std.ArrayList;
 const fsize = @import("util.zig").fsize;
 const Error = Allocator.Error;
@@ -34,8 +35,9 @@ arena: ArenaAllocator,
 
 /// Creates a new parser using the given source code
 pub fn init(allocator: Allocator, source: []const u8) Parser {
+    var arena = ArenaAllocator.init(allocator);
     return Parser{
-        .arena = ArenaAllocator.init(allocator),
+        .arena = arena,
         .source = source,
     };
 }
@@ -45,11 +47,11 @@ pub fn deinit(self: *Parser) void {
 }
 
 /// Caller owns returned memory.
-pub fn appList(self: *Parser) Error!?ArrayList(Ast) {
-    var apps_list = ArrayList(Ast).init(self.arena.allocator());
+pub fn appList(self: *Parser) !ArrayListUnmanaged(Ast) {
+    var apps_list = ArrayListUnmanaged(Ast){};
 
     while (try self.nextToken()) |ast|
-        try apps_list.append(ast);
+        try apps_list.append(self.arena.allocator(), ast);
 
     return apps_list;
 }
@@ -136,7 +138,7 @@ fn skipWhitespace(self: *Parser) void {
 }
 
 /// Reads the next characters as an val
-fn val(self: *Parser, pos: usize) Error![]const u8 {
+fn val(self: *Parser, pos: usize) Error![]u8 {
     while (self.peek()) |char|
         if (isIdent(char))
             self.consume()
@@ -147,7 +149,7 @@ fn val(self: *Parser, pos: usize) Error![]const u8 {
 }
 
 /// Reads the next characters as an var
-fn @"var"(self: *Parser, pos: usize) Error![]const u8 {
+fn @"var"(self: *Parser, pos: usize) Error![]u8 {
     while (self.peek()) |char|
         if (isIdent(char))
             self.consume()
@@ -158,7 +160,7 @@ fn @"var"(self: *Parser, pos: usize) Error![]const u8 {
 }
 
 /// Reads the next characters as an identifier
-fn infix(self: *Parser, pos: usize) Error![]const u8 {
+fn infix(self: *Parser, pos: usize) Error![]u8 {
     while (self.peek()) |char|
         if (isInfix(char))
             self.consume()
@@ -198,7 +200,7 @@ fn float(self: *Parser, pos: usize) Error!fsize {
 }
 
 /// Reads a value wrappen in double-quotes from the current character
-fn string(self: *Parser, pos: usize) Ast {
+fn string(self: *Parser, pos: usize) Error![]u8 {
     while (self.peek()) |nextChar| {
         self.consume(); // ignore the last double-quote
         if (nextChar == '"')
@@ -209,7 +211,7 @@ fn string(self: *Parser, pos: usize) Ast {
 }
 
 /// Reads until the end of the line or EOF
-fn comment(self: *Parser, pos: usize) Error![]const u8 {
+fn comment(self: *Parser, pos: usize) Error![]u8 {
     while (self.peek()) |nextChar|
         if (nextChar != '\n')
             self.consume()
@@ -296,6 +298,7 @@ test "All Asts" {
     };
 
     var parser = Parser.init(testing.allocator, input);
+    defer parser.deinit();
 
     for (tests) |unit| {
         const next_term = (try parser.nextToken()).?;
@@ -327,6 +330,7 @@ test "Vals" {
 
     for (val_strs) |val_str| {
         var parser = Parser.init(testing.allocator, val_str);
+        defer parser.deinit();
         const next_term = (try parser.nextToken()).?;
         // try std.io.getStdErr().writer().print("{}\n", .{next_term});
         // try std.io.getStdErr().writer().print("{s}\n", .{val_str[next_term.val]});
@@ -335,10 +339,11 @@ test "Vals" {
     }
 
     var parser = Parser.init(testing.allocator, "-Sd+ ++V"); // Should be -, Sd+, ++, V
-    try testing.expectEqualSlices(u8, "-", (try parser.nextToken()).?.kind.infix);
-    try testing.expectEqualSlices(u8, "Sd+", (try parser.nextToken()).?.kind.val);
-    try testing.expectEqualSlices(u8, "++", (try parser.nextToken()).?.kind.infix);
-    try testing.expectEqualSlices(u8, "V", (try parser.nextToken()).?.kind.val);
+    defer parser.deinit();
+    try testing.expectEqualStrings("-", (try parser.nextToken()).?.kind.infix);
+    try testing.expectEqualStrings("Sd+", (try parser.nextToken()).?.kind.val);
+    try testing.expectEqualStrings("++", (try parser.nextToken()).?.kind.infix);
+    try testing.expectEqualStrings("V", (try parser.nextToken()).?.kind.val);
 }
 
 test "Vars" {
@@ -364,21 +369,25 @@ test "Vars" {
     };
     for (notVarStrs) |notVarStr| {
         var parser = Parser.init(testing.allocator, notVarStr);
+        defer parser.deinit();
         while (try parser.nextToken()) |term| {
-            _ = term;
-            // try testing.expect(.@"var" != term.kind);
+            try testing.expect(.@"var" != term.kind);
         }
     }
 }
 
 test "simple App of vals" {
     var parser = Parser.init(testing.allocator, "Aa Bb Cc");
+    defer parser.deinit();
     const asts = &[_]Ast{
         Ast{ .kind = .{ .val = "Aa" }, .pos = 0, .len = 2 },
         Ast{ .kind = .{ .val = "Bb" }, .pos = 3, .len = 2 },
         Ast{ .kind = .{ .val = "Cc" }, .pos = 6, .len = 2 },
     };
-    const app_list = (try parser.appList()).?;
+    var app_list = try parser.appList();
+    // for (app_list.items) |ast|
+    // testing.allocator.free(ast.kind.val);
+    // try std.io.getStdErr().writer().print("{*}: {s}\n", .{ ast.kind.val, ast.kind.val });
     for (asts) |ast, i| {
         try testing.expectEqualStrings(ast.kind.val, app_list.items[i].kind.val);
         try testing.expect(.val == app_list.items[i].kind);
