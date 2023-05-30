@@ -37,11 +37,13 @@
   Ord => { Gt, Eq, Lt }
   Bool => { True, False }
 
-  # A function `IsEq` that takes an ord, and returns True if it is Eq. `_` is just another var, meant to be unused. 
+  # A function `IsEq` that takes an ord, and returns True if it is Eq. `_` is
+  # just another var, meant to be unused. 
   IsEq Eq => True
   IsEq _ => False
 
-  # A function that compares bools using Case, a function that takes a list of tags and another arg and applies them against the arg until one matches:
+  # A function that compares bools using Case, a function that takes a list of
+  # tags and another arg and applies them against the arg until one matches:
   Compare (b1 : Bool) (b2 : Bool) => Case [
       (True, False) => Gt,
       (False, True) => Lt,
@@ -53,16 +55,16 @@
 
 - ### Core Language
   
-  <input type="checkbox" checked > Parser/Lexer </input>
+  - [x] Parser/Lexer </input>
 
-  <input type="checkbox"> TrieMap Construction </input>
+  - [ ] TrieMap Construction </input>
 
-  <input type="checkbox"> TrieMap Error handling </input>
+  - [ ] TrieMap Error handling </input>
 
-  <input type="checkbox"> TrieMap Matching </input>
+  - [ ] TrieMap Matching </input>
 
 - ### Compiler
 
-  <input type="checkbox"> Basic Stdlib using the Core Language </input>
+  - [ ] Basic Stdlib using the Core Language </input>
 
-  <input type="checkbox"> File Parsing </input>
+  - [ ] File Parsing </input>
