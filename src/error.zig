@@ -81,7 +81,7 @@ pub const Errors = struct {
     /// finds the line ending in the given slice
     fn findEnd(slice: []const u8) usize {
         var count: usize = 0;
-        for (slice) |c, i| count += if (c == '\n') return i else @as(usize, 1);
+        for (slice, 0..) |c, i| count += if (c == '\n') return i else @as(usize, 1);
         return count;
     }
 };
