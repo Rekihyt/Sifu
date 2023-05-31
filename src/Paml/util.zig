@@ -1,4 +1,6 @@
 const std = @import("std");
+const math = std.math;
+const Order = math.Order;
 
 pub fn Set(comptime T: type) type {
     return std.AutoHashMap(T, void);
@@ -30,4 +32,31 @@ pub fn first(comptime T: type, slice: []const T) ?T {
 
 pub fn last(comptime T: type, slice: []const T) ?T {
     if (slice.len == 0) null else slice[slice.len - 1];
+}
+
+/// Compare two slices whose elements can be compared by the `order` function.
+/// May panic on slices of different length.
+pub fn orderWith(
+    lhs: anytype,
+    rhs: anytype,
+    op: fn (anytype, anytype) Order,
+) Order {
+    const n = math.min(lhs.len, rhs.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        switch (op(lhs[i], rhs[i])) {
+            .eq => continue,
+            .lt => return .lt,
+            .gt => return .gt,
+        }
+    }
+    return math.order(lhs.len, rhs.len);
+}
+
+const testing = std.testing;
+
+test "slices of different len" {
+    const s1 = &[_]usize{ 1, 2 };
+    const s2 = &[_]usize{ 1, 2, 3 };
+    try testing.expectEqual(@as(Order, .lt), orderWith(s1, s2, math.order));
 }

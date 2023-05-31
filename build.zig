@@ -1,4 +1,5 @@
 const std = @import("std");
+const FileSource = std.build.FileSource;
 
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
@@ -40,12 +41,6 @@ pub fn build(b: *std.Build) void {
     // files, this ensures they will be present and in the expected location.
     run_cmd.step.dependOn(b.getInstallStep());
 
-    // This allows the user to pass arguments to the application in the build
-    // command itself, like this: `zig build run -- arg1 arg2 etc`
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
-
     // This creates a build step. It will be visible in the `zig build --help` menu,
     // and can be selected like this: `zig build run`
     // This will evaluate the `run` step rather than the default, which is "install".
@@ -55,26 +50,21 @@ pub fn build(b: *std.Build) void {
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const unit_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = FileSource.relative("src/test.zig"),
         .target = target,
         .optimize = optimize,
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
-
-    const parser_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/parser.zig" },
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_parser_tests = b.addRunArtifact(parser_tests);
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+        run_unit_tests.addArgs(args);
+    }
 
     const verbose_tests = b.option(bool, "VerboseTests", "VerboseTests") orelse false;
     const build_options = b.addOptions();
     build_options.addOption(bool, "verbose_tests", verbose_tests);
     unit_tests.addOptions("build_options", build_options);
-    parser_tests.addOptions("build_options", build_options);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
-    test_step.dependOn(&run_parser_tests.step);
 }

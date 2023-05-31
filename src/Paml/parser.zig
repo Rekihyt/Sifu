@@ -22,6 +22,7 @@ const fsize = @import("util.zig").fsize;
 const Error = Allocator.Error;
 const Order = std.math.Order;
 const mem = std.mem;
+const math = std.math;
 
 /// Source code that is being parsed
 source: []const u8,
@@ -80,7 +81,7 @@ fn nextTerm(self: *Parser) Error!?Ast.Term {
 
     self.consume();
     // If the type here is inferred, Zig may claim it depends on runtime val
-    const term: Ast.Kind = switch (char) {
+    const term: Ast.Term.Kind = switch (char) {
         // Parse separators greedily. These are vals, but for efficiency stored as u8's.
         '\n', ',', '.', ';', '(', ')', '{', '}', '[', ']', '"', '`' => .{ .sep = char },
         '#' => .{ .comment = try self.comment(pos) },
@@ -286,11 +287,47 @@ fn isInfix(char: u8) bool {
 }
 
 const testing = std.testing;
+const meta = std.meta;
 const verbose_tests = @import("build_options").verbose_tests;
 const writer = if (verbose_tests)
     std.io.getStdErr().writer()
 else
     std.io.null_writer;
+
+fn expectEqualApps(expected: Ast, actual: Ast) !void {
+    try writer.writeByte('\n');
+    try testing.expect(.apps == expected);
+    try testing.expect(.apps == actual);
+
+    // This is redundant, but it makes any failures easier to trace
+    for (expected.apps, actual.apps) |expected_elem, actual_elem| {
+        try expected_elem.print(writer);
+        try writer.writeByte('\n');
+
+        try actual_elem.print(writer);
+        try writer.writeByte('\n');
+
+        if (@enumToInt(expected_elem) == @enumToInt(actual_elem)) {
+            switch (expected_elem) {
+                .term => {
+                    try testing.expectEqual(
+                        @as(Order, .eq),
+                        expected_elem.term.compare(actual_elem.term),
+                    );
+                    try testing.expectEqualDeep(expected_elem.term.kind, actual_elem.term.kind);
+                },
+                .apps => try expectEqualApps(expected_elem, actual_elem),
+            }
+        } else {
+            try writer.writeAll("Asts of different types not equal");
+            try testing.expectEqual(expected_elem, actual_elem);
+            // above line should always fail
+            std.debug.panic("Asserted asts were equal despite different types", .{});
+        }
+    }
+    // Variants of this seem to cause the compiler to error with GenericPoison
+    // try testing.expectEqual(@as(Order, .eq), expected.compare(actual));
+}
 
 // TODO: add more tests after committing to using either spans or indices
 test "All Asts" {
@@ -311,33 +348,16 @@ test "All Asts" {
         \\||
         \\()
     ;
-    const tests = &[_]Ast{
+    const tests = &.{
         .{ .term = .{ .kind = .{ .val = "Val1" }, .pos = 0, .len = 4 } },
         .{ .term = .{ .kind = .{ .val = "," }, .pos = 4, .len = 1 } },
         .{ .term = .{ .kind = .{ .int = 5 }, .pos = 5, .len = 1 } },
         .{ .term = .{ .kind = .{ .val = ";" }, .pos = 6, .len = 1 } },
     };
+    _ = tests;
 
     var parser = Parser.init(testing.allocator, input);
     defer parser.deinit();
-
-    for (tests) |unit| {
-        const next_term = (try parser.nextTerm()).?;
-
-        switch (next_term.kind) {
-            .val, .@"var", .comment, .infix => |str| {
-                try testing.expectEqualStrings(unit.term.kind.val, str);
-            },
-            .int => |i| {
-                try testing.expectEqual(unit.term.kind.int, i);
-            },
-            else => {},
-        }
-        try testing.expectEqual(unit.term.pos, next_term.pos);
-        try testing.expectEqual(unit.term.len, next_term.len);
-        // TODO: uncomment when Zig 0.11
-        // try testing.expectEqualDeep(unit.term, next_term.term);
-    }
 }
 
 test "Vals" {
@@ -401,24 +421,27 @@ test "Vars" {
 test "App: simple vals" {
     var parser = Parser.init(testing.allocator, "Aa Bb Cc");
     defer parser.deinit();
-    const asts = &[_]Ast{
-        Ast{ .term = .{ .kind = .{ .val = "Aa" }, .pos = 0, .len = 2 } },
-        Ast{ .term = .{ .kind = .{ .val = "Bb" }, .pos = 3, .len = 2 } },
-        Ast{ .term = .{ .kind = .{ .val = "Cc" }, .pos = 6, .len = 2 } },
+    const expected = Ast{
+        .apps = &.{
+            Ast{ .term = .{ .kind = .{ .val = "Aa" }, .pos = 0, .len = 2 } },
+            Ast{ .term = .{ .kind = .{ .val = "Bb" }, .pos = 3, .len = 2 } },
+            Ast{ .term = .{ .kind = .{ .val = "Cc" }, .pos = 6, .len = 2 } },
+        },
     };
-    var app_list = try parser.appList();
-    for (asts, 0..) |ast, i| {
-        try testing.expectEqualStrings(ast.term.kind.val, app_list.apps[i].term.kind.val);
-        try testing.expect(.val == app_list.apps[i].term.kind);
-        try testing.expectEqual(ast.term.pos, app_list.apps[i].term.pos);
-        try testing.expectEqual(ast.term.len, app_list.apps[i].term.len);
+    const actual = try parser.appList();
+
+    for (expected.apps, actual.apps) |expected_ast, actual_ast| {
+        try testing.expectEqualStrings(expected_ast.term.kind.val, actual_ast.term.kind.val);
+        try testing.expect(.val == actual_ast.term.kind);
+        try testing.expectEqual(expected_ast.term.pos, actual_ast.term.pos);
+        try testing.expectEqual(expected_ast.term.len, actual_ast.term.len);
     }
 }
 
 test "App: simple op" {
     var parser = Parser.init(testing.allocator, "1 + 2");
     defer parser.deinit();
-    const asts = &[_]Ast{
+    const expected = Ast{ .apps = &.{
         Ast{
             .term = .{ .kind = .{ .infix = "+" }, .pos = 2, .len = 1 },
         },
@@ -430,60 +453,57 @@ test "App: simple op" {
         Ast{
             .term = .{ .kind = .{ .int = 2 }, .pos = 4, .len = 1 },
         },
-    };
-    const app_list = (try parser.appList()).apps;
-    try writer.writeByte('\n');
-    for (asts, 0..) |ast, i| {
-        try ast.print(writer);
-        try writer.writeByte('\n');
+    } };
+    const actual = try parser.appList();
 
-        try app_list[i].print(writer);
-        try writer.writeByte('\n');
-
-        try testing.expect(.eq == ast.compare(app_list[i]));
-    }
+    try expectEqualApps(expected, actual);
 }
 
 test "App: simple ops" {
     var parser = Parser.init(testing.allocator, "1 + 2 + 3");
     defer parser.deinit();
-    const expecteds = Ast{ .apps = &[_]Ast{
+    const expected = Ast{ .apps = &.{
         Ast{ .term = .{ .kind = .{ .infix = "+" }, .pos = 6, .len = 1 } },
         Ast{ .apps = &.{
             Ast{ .term = .{ .kind = .{ .infix = "+" }, .pos = 2, .len = 1 } },
-            Ast{
-                .apps = &.{
-                    Ast{ .term = .{ .kind = .{ .int = 1 }, .pos = 0, .len = 1 } },
-                },
-            },
+            Ast{ .apps = &.{
+                Ast{ .term = .{ .kind = .{ .int = 1 }, .pos = 0, .len = 1 } },
+            } },
             Ast{ .term = .{ .kind = .{ .int = 2 }, .pos = 4, .len = 1 } },
         } },
         Ast{ .term = .{ .kind = .{ .int = 3 }, .pos = 8, .len = 1 } },
     } };
-    const actuals = try parser.appList();
-    try writer.writeByte('\n');
-    try expecteds.print(writer);
-    // try writer.print("{?}", .{expecteds});
-    try writer.writeByte('\n');
-    try actuals.print(writer);
-    // try writer.print("{?}", .{actuals});
-    try writer.writeByte('\n');
+    const actual = try parser.appList();
+    try expectEqualApps(expected, actual);
+}
 
-    // This is redundant, but it makes any failures easier to trace
-    for (expecteds.apps, actuals.apps) |expected, actual| {
-        try expected.print(writer);
-        try writer.writeByte('\n');
+test "App: simple op, no first arg" {
+    var parser = Parser.init(testing.allocator, "+ 2");
+    defer parser.deinit();
+    const expected = Ast{ .apps = &.{
+        Ast{
+            .term = .{ .kind = .{ .infix = "+" }, .pos = 2, .len = 1 },
+        },
+        Ast{ .apps = &.{} },
+        Ast{
+            .term = .{ .kind = .{ .int = 2 }, .pos = 4, .len = 1 },
+        },
+    } };
+    const actual = try parser.appList();
+    try expectEqualApps(expected, actual);
+}
 
-        try actual.print(writer);
-        try writer.writeByte('\n');
-
-        switch (expected) {
-            .term => |term| try testing.expectEqual(@as(Order, .eq), term.compare(actual.term)),
-            else => {
-                try testing.expectEqual(@as(Order, .eq), expected.compare(actual));
-            },
-        }
-    }
-
-    try testing.expectEqual(@as(Order, .eq), expecteds.compare(actuals));
+test "App: simple op, no second arg" {
+    var parser = Parser.init(testing.allocator, "1 +");
+    defer parser.deinit();
+    const expected = Ast{ .apps = &.{
+        Ast{
+            .term = .{ .kind = .{ .infix = "+" }, .pos = 2, .len = 1 },
+        },
+        Ast{ .apps = &.{
+            Ast{ .term = .{ .kind = .{ .int = 1 }, .pos = 0, .len = 1 } },
+        } },
+    } };
+    const actual = try parser.appList();
+    try expectEqualApps(expected, actual);
 }

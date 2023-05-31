@@ -1,3 +1,6 @@
+///
+/// Credit: Luukdegram, https://github.com/Luukdegram/luf
+///
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 

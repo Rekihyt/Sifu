@@ -1,2 +1,7 @@
-pub const compiler = @import("compiler.zig");
-pub const Errors = @import("error.zig").Errors;
+pub const compiler = @import("Sifu/compiler.zig");
+pub const Errors = @import("Sifu/errors.zig").Errors;
+
+test "Submodules" {
+    _ = @import("Sifu/compiler.zig");
+    _ = @import("Sifu/errors.zig");
+}

@@ -9,6 +9,8 @@
 
   - No turing completeness, everything terminates by matching tags less than (or equal, with other checks) to themselves
 
+  - Everything is a trie (sortof, lookups have to deal with sub-lookups so not exactly tries)
+
   - Core language is just a dynamic pattern-matching/rewrite engine
     - only builtins are triemap entries (tags `=>`) and triemap queries (matches `:`)
     - match / set membership / typeof is the same thing (`:`)
@@ -42,8 +44,12 @@
   IsEq Eq => True
   IsEq _ => False
 
-  # A function that compares bools using Case, a function that takes a list of
-  # tags and another arg and applies them against the arg until one matches:
+  # This function compares bools using Case, a function that takes a list of
+  # tags and another arg and applies them against the arg until one matches.
+  # The matches on the lhs of the tag are sub-matches, which are matched
+  # recursively, then bind their computations to the variables `b1` and `b2`.
+  # If either one doesn't match at least once, the parent match doesn't as
+  # well.
   Compare (b1 : Bool) (b2 : Bool) => Case [
       (True, False) => Gt,
       (False, True) => Lt,
@@ -63,8 +69,18 @@
 
   - [ ] TrieMap Matching </input>
 
-- ### Compiler
+- ### Sifu Interpreter
+
+  - [ ] File Parsing </input>
 
   - [ ] Basic Stdlib using the Core Language </input>
 
-  - [ ] File Parsing </input>
+- ### Sifu Compiler
+
+  - [ ] Perfect Hashmaps / Conversion to switch statements
+
+
+---
+
+
+Thanks to Luukdegram for giving me a starting point with their compiler [Luf](https://github.com/Luukdegram/luf)
