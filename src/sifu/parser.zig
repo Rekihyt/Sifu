@@ -14,11 +14,13 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const panic = std.debug.panic;
-const Set = @import("util.zig").Set;
-const Ast = @import("ast.zig").Ast;
+const util = @import("../util.zig");
+const Set = util.Set;
+const fsize = fsize;
+const Term = @import("Term.zig");
+const Ast = @import("../paml/ast.zig").Ast(Term); // TODO: move paml to its own library
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const ArrayList = std.ArrayList;
-const fsize = @import("util.zig").fsize;
 const Error = Allocator.Error;
 const Order = std.math.Order;
 const mem = std.mem;
@@ -56,32 +58,32 @@ pub fn appList(self: *Parser) !Ast {
 
     while (try self.nextTerm()) |term| {
         switch (term.kind) {
-            // The current list becomes the first argument to the infix, then
-            // we add any following asts to that
+            // The current list becomes the first argument to the infix, then we
+            // add any following asts to that
             .infix => {
                 var infix_apps = ArrayListUnmanaged(Ast){};
-                try infix_apps.append(allocator, term.toAst());
+                try infix_apps.append(allocator, Ast.of(term));
                 try infix_apps.append(allocator, Ast{
                     .apps = try result.toOwnedSlice(allocator),
                 });
                 result = infix_apps;
             },
-            else => try result.append(allocator, term.toAst()),
+            else => try result.append(allocator, Ast.of(term)),
         }
     }
     return Ast{ .apps = try result.toOwnedSlice(allocator) };
 }
 
 /// Parses the source and returns the next sequence of terms forming an App,
-/// adding them to the arraylist. Allocates the
-fn nextTerm(self: *Parser) Error!?Ast.Term {
+/// adding them to the arraylis.
+fn nextTerm(self: *Parser) Error!?Term {
     self.skipWhitespace();
     const pos = self.pos;
     const char = self.peek() orelse return null;
 
     self.consume();
     // If the type here is inferred, Zig may claim it depends on runtime val
-    const term: Ast.Term.Kind = switch (char) {
+    const term: Term.Kind = switch (char) {
         // Parse separators greedily. These are vals, but for efficiency stored as u8's.
         '\n', ',', '.', ';', '(', ')', '{', '}', '[', ']', '"', '`' => .{ .sep = char },
         '#' => .{ .comment = try self.comment(pos) },
@@ -113,7 +115,7 @@ fn nextTerm(self: *Parser) Error!?Ast.Term {
             .{ char, self.line, self.col },
         ),
     };
-    return Ast.Term{
+    return Term{
         .kind = term,
         .pos = pos,
         .len = self.pos - pos,
@@ -376,11 +378,13 @@ test "Vals" {
 
         try writer.print("{s}\n", .{next_term.kind.val});
 
-        try testing.expect(.val == next_term.kind); // Use == here to coerce union to enum
-        try testing.expectEqual(@as(?Ast.Term, null), try parser.nextTerm());
+        // Use == here to coerce union to enum
+        try testing.expect(.val == next_term.kind);
+        try testing.expectEqual(@as(?Term, null), try parser.nextTerm());
     }
 
-    var parser = Parser.init(testing.allocator, "-Sd+ ++V"); // Should be -, Sd+, ++, V
+    // Should be -, Sd+, ++, V
+    var parser = Parser.init(testing.allocator, "-Sd+ ++V");
     defer parser.deinit();
     try testing.expectEqualStrings("-", (try parser.nextTerm()).?.kind.infix);
     try testing.expectEqualStrings("Sd+", (try parser.nextTerm()).?.kind.val);
@@ -400,7 +404,7 @@ test "Vars" {
         var parser = Parser.init(testing.allocator, varStr);
         defer parser.deinit();
         try testing.expect(.@"var" == (try parser.nextTerm()).?.kind);
-        try testing.expectEqual(@as(?Ast.Term, null), try parser.nextTerm());
+        try testing.expectEqual(@as(?Term, null), try parser.nextTerm());
     }
 
     const notVarStrs = &[_][]const u8{
@@ -431,7 +435,10 @@ test "App: simple vals" {
     const actual = try parser.appList();
 
     for (expected.apps, actual.apps) |expected_ast, actual_ast| {
-        try testing.expectEqualStrings(expected_ast.term.kind.val, actual_ast.term.kind.val);
+        try testing.expectEqualStrings(
+            expected_ast.term.kind.val,
+            actual_ast.term.kind.val,
+        );
         try testing.expect(.val == actual_ast.term.kind);
         try testing.expectEqual(expected_ast.term.pos, actual_ast.term.pos);
         try testing.expectEqual(expected_ast.term.len, actual_ast.term.len);

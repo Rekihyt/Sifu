@@ -9,7 +9,7 @@
 
   - No turing completeness, everything terminates by matching tags less than (or equal, with other checks) to themselves
 
-  - Everything is a trie (sortof, lookups have to deal with sub-lookups so not exactly tries)
+  - Everything is a pattern map (like tries, but lookups have to deal with sub-lookups)
 
   - Core language is just a dynamic pattern-matching/rewrite engine
     - only builtins are triemap entries (tags `=>`) and triemap queries (matches `:`)
@@ -61,24 +61,34 @@
 
 - ### Core Language
   
-  - [x] Parser/Lexer </input>
+  - [x] Parser/Lexer
 
-  - [ ] TrieMap Construction </input>
+  - [ ] Patterns
+    - [ ] Construction
+    - [ ] Error handling
+    - [ ] Matching
+      - [ ] Vals
+      - [ ] Apps
+      - [ ] Vars
 
-  - [ ] TrieMap Error handling </input>
-
-  - [ ] TrieMap Matching </input>
+  - [ ]
 
 - ### Sifu Interpreter
 
-  - [ ] File Parsing </input>
+  - [ ] Builtin Patterns / Syntax
+    - [ ] Lists (brackets)
+    - [ ] Patterns (braces)
+    - [ ] Tuples (parens)
 
-  - [ ] Basic Stdlib using the Core Language </input>
+  - [ ] File I/O
+
+  - [ ] Basic Stdlib using the Core Language
 
 - ### Sifu Compiler
 
   - [ ] Perfect Hashmaps / Conversion to switch statements
 
+  - [ ] LLVM
 
 ---
 

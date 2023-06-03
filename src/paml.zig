@@ -1,5 +1,4 @@
 const std = @import("std");
-const parser = @import("Paml/parser.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -19,7 +18,6 @@ arena: Allocator,
 // }
 
 test "Submodules" {
-    _ = @import("Paml/util.zig");
-    _ = @import("Paml/ast.zig");
-    _ = @import("Paml/parser.zig");
+    _ = @import("paml/ast.zig");
+    _ = @import("paml/pattern.zig");
 }
