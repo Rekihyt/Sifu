@@ -52,7 +52,7 @@ pub fn deinit(self: *Parser) void {
 }
 
 /// Memory valid until deinit is called on this parser
-pub fn appList(self: *Parser) !Ast {
+pub fn apps(self: *Parser) !Ast {
     var result = ArrayListUnmanaged(Ast){};
     const allocator = self.arena.allocator();
 
@@ -432,7 +432,7 @@ test "App: simple vals" {
             Ast{ .term = .{ .kind = .{ .val = "Cc" }, .pos = 6, .len = 2 } },
         },
     };
-    const actual = try parser.appList();
+    const actual = try parser.apps();
 
     for (expected.apps, actual.apps) |expected_ast, actual_ast| {
         try testing.expectEqualStrings(
@@ -461,7 +461,7 @@ test "App: simple op" {
             .term = .{ .kind = .{ .int = 2 }, .pos = 4, .len = 1 },
         },
     } };
-    const actual = try parser.appList();
+    const actual = try parser.apps();
 
     try expectEqualApps(expected, actual);
 }
@@ -480,7 +480,7 @@ test "App: simple ops" {
         } },
         Ast{ .term = .{ .kind = .{ .int = 3 }, .pos = 8, .len = 1 } },
     } };
-    const actual = try parser.appList();
+    const actual = try parser.apps();
     try expectEqualApps(expected, actual);
 }
 
@@ -496,7 +496,7 @@ test "App: simple op, no first arg" {
             .term = .{ .kind = .{ .int = 2 }, .pos = 4, .len = 1 },
         },
     } };
-    const actual = try parser.appList();
+    const actual = try parser.apps();
     try expectEqualApps(expected, actual);
 }
 
@@ -511,6 +511,6 @@ test "App: simple op, no second arg" {
             Ast{ .term = .{ .kind = .{ .int = 1 }, .pos = 0, .len = 1 } },
         } },
     } };
-    const actual = try parser.appList();
+    const actual = try parser.apps();
     try expectEqualApps(expected, actual);
 }
