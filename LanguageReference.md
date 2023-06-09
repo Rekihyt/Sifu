@@ -10,13 +10,17 @@ an abstract syntax tree.
 - Pattern: a specification for how to match a particular Ast. Patterns and Asts
 are intimately connected, because to match a nested structure, patterns must be
 nested in the same way.
+- Ast: A synonym for Pattern but implies usage as data, not computation. Behind the scenes, Sifu doesn't even use Asts, everything is just a pattern.
 - Return: a shorthand for "evaluate to"
 - Function: a nickname for multi-term patterns that start with a constant (the
 "function" name) and take "arguments" as variables in its subsequent terms.
-- Tag: a definition of a pattern with a value, like `Foo => Bar`.
+- Tag: a definition of a pattern with a value, like `Foo -> Bar`.
   - Key: the left-hand side (`Foo`)
   - Val, Value, Body: the right-hand side (`Bar`) 
 - Sub-term: a term inside an app, which is the containing term
+- Match: an expression with a pattern that it will be matched with. A match like
+`Foo : Bool` will match `Foo` against the pattern `Bool`, but first needs to
+match `Bool` until it gets a pattern (like `{True, False}`).
 
 ---
 
@@ -30,8 +34,10 @@ nested in the same way.
 Parentheses do more than just specify precedence, they force their contained
 expression into a single-term App. This has a somewhat unexpected consequence:
 single-terms inside parentheses are apps instead of terms. While this is weird
-for expressions, is makes sense for patterns. If the key `(Foo Bar)` doesn't
+for expressions, is makes sense for matching. If the key `(Foo Bar)` doesn't
 match `Foo Bar`, then `(Foo)` shouldn't match `Foo`.
+
+(These technically make the language into a Lisp, but don't tell anyone, I want _some_ users)
 
 ### Infix Operators
 
@@ -49,15 +55,15 @@ the same way, but have different type checking semantics.
 
 The simplest patterns are single-term literals, and resemble constants in other
 languages:
-`Foo => 123`
+`Foo -> 123`
 This pattern would only match an Ast with a single term:
 `Foo`, which would return `123`.
 
 Multi-term literals aren't that much different, only they match multiple terms:
-`Foo Bar Baz => "*-oriented programming is overrated"`
+`Foo Bar Baz -> "*-oriented programming is overrated"`
 
 Nested patterns are Apps that contain other Apps:
-`(Foo Bar) Baz => 42`
+`(Foo Bar) Baz -> 42`
 This will only match `(Foo Bar) Baz`, and not `Foo Bar Baz`.
 
 ### Variables
@@ -83,9 +89,9 @@ For example, consider the `Map` function which is defined pretty much
 identically to a typical functional language:
 ```
 # `[]` is the empty list literal
-Map fn [] => []
+Map fn [] -> []
 # `:>` is the cons operator
-Map fn (x :> xs) => fn x :> Map fn xs
+Map fn (x :> xs) -> fn x :> Map fn xs
 ```
 This will match expressions like `Map (+1) [1,2,3]`, which after desugaring into
 `Map (+1) (1 :> 2 :> 3 :> [])` matches and binds `x` to the term `1` and `xs` to
@@ -93,11 +99,17 @@ the app `2 :> 3 :> []`. The recursive call will terminate because it contains
 at least one term, `xs`, that is a sub-term of its corresponding term in the
 key, `(x :> xs)`.
 
+Recursive tags that do not make progress are definable, but when matched will only rewrite other terms, not the recursive tag. For example, the following is allowed:
+```
+Foo x y -> Foo y x
+```
+An expression like `Foo 1 2` would match, and return `Foo 2 1`.
+
 Sifu must also guard against infinite loops that don't have direct recursive
 calls. Consider, for example, the following tags:
 ```
-F => G
-G => F
+F -> G
+G -> F
 ```
 To prevent a match to either `F` or `G` from recursing forever, patterns only
 match tags defined before the current one. So after defining these two tags,
@@ -108,6 +120,6 @@ first tag, and finally return `G` again.
 
 ## Semantics and Syntax Isomorphism
 
-All syntax in Sifu can be parsed into an Ast, then mapped back into the original
+All syntax in Sifu can be parsed into a Pattern, then mapped back into the original
 syntax (although it will be desugared). This implies that _all_ syntax has
 semantics, i.e. parentheses have meaning (they add one layer of Apps).

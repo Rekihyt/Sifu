@@ -17,8 +17,8 @@ const panic = std.debug.panic;
 const util = @import("../util.zig");
 const Set = util.Set;
 const fsize = fsize;
-const Term = @import("Term.zig");
-const Ast = @import("../paml/ast.zig").Ast(Term); // TODO: move paml to its own library
+const Term = @import("tokens.zig");
+const Ast = @import("../pattern.zig").Ast(Term);
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const ArrayList = std.ArrayList;
 const Error = Allocator.Error;
@@ -34,8 +34,7 @@ pos: usize = 0,
 line: usize = 0,
 /// Current column in the source
 col: usize = 1,
-/// The allocator for each term, which will all be freed when the trie being
-/// lexed goes out of scope.
+/// The allocator for each term
 arena: ArenaAllocator,
 
 /// Creates a new parser using the given source code
