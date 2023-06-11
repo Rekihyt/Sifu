@@ -15,6 +15,28 @@ const Order = math.Order;
 const math = std.math;
 const assert = std.debug.assert;
 
+/// The AST is the first form of structure given to the source code. It handles
+/// infix and separator operators but does not differentiate between builtins.
+/// Context is meant for metainfo such as `Span`, and is parameterized because
+/// many computations on the Ast don't need it.
+pub fn Ast(comptime Context: type) type {
+    return union(enum) {
+        apps: []const Ast,
+        term: Term(Context),
+    };
+}
+
+/// These form the leaves (or atoms) of the AST.
+pub fn Term(comptime Context: type) type {
+    return struct {
+        token: union(enum) {
+            @"var": []const u8,
+            lit: Lit,
+        },
+        ctx: Context,
+    };
+}
+
 /// The location info for Sifu tokens.
 pub const Span = struct {
     pos: usize,
@@ -37,7 +59,7 @@ pub const Lit = union(enum) {
             switch (self) {
                 .infix => |str| mem.order(u8, str, other.infix),
                 .val => |str| mem.order(u8, str, other.val),
-                .comment => |str| std.mem.order(u8, str, other.comment),
+                .comment => |str| mem.order(u8, str, other.comment),
                 .int => |num| math.order(num, other.int),
                 .float => |num| math.order(num, other.float),
                 .sep => |sep| math.order(sep, other.sep),
@@ -96,8 +118,8 @@ test "equal strings with different pointers, len, or pos should be equal" {
     const str2 = try testing.allocator.dupe(u8, str1);
     defer testing.allocator.free(str2);
 
-    const term1 = Lit{ .kind = .{ .val = str1 }, .len = 0, .pos = 0 };
-    const term2 = Lit{ .kind = .{ .val = str2 }, .len = 1, .pos = 1 };
+    const term1 = Lit{ .val = str1, .len = 0, .pos = 0 };
+    const term2 = Lit{ .val = str2, .len = 1, .pos = 1 };
 
     try testing.expect(term1.equalTo(term2));
 }
@@ -107,8 +129,8 @@ test "equal strings with different kinds should not be equal" {
     const str2 = try testing.allocator.dupe(u8, str1);
     defer testing.allocator.free(str2);
 
-    const term1 = Lit{ .kind = .{ .val = str1 }, .len = 0, .pos = 0 };
-    const term2 = Lit{ .kind = .{ .infix = str2 }, .len = 0, .pos = 0 };
+    const term1 = Lit{ .val = str1, .len = 0, .pos = 0 };
+    const term2 = Lit{ .infix = str2, .len = 0, .pos = 0 };
 
     try testing.expect(!term1.equalTo(term2));
 }

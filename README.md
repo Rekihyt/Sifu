@@ -61,31 +61,40 @@
 
 - ### Core Language
   
-  - [x] Parser/Lexer
+  - [ ] Parser/Lexer
+    - [ ] Lexer
+    - [ ] Parser
+    - [ ] Error handling
 
   - [ ] Patterns
+    - [x] Definition
     - [ ] Construction
-    - [ ] Error handling
     - [ ] Matching
       - [ ] Vals
       - [ ] Apps
       - [ ] Vars
 
-  - [ ]
-
 - ### Sifu Interpreter
 
-  - [ ] Builtin Patterns / Syntax
-    - [ ] Lists (brackets)
-    - [ ] Patterns (braces)
-    - [ ] Tuples (parens)
+  - Syntax
+      - [ ] Lists (brackets)
+      - [ ] Patterns (braces)
+      - [ ] Tuples (parens)
 
-  - [ ] File I/O
+  - [ ] Effects / FFI
+    - [ ] Builtin Patterns
+    - [ ] File I/O
 
   - [ ] Basic Stdlib using the Core Language
 
 - ### Sifu Compiler
 
+  - [ ] Effects / FFI
+    - [ ] Effect analysis
+      - [ ] Tracking
+      - [ ] Propagation
+    - [ ] User error reporting
+      
   - [ ] Perfect Hashmaps / Conversion to switch statements
 
   - [ ] LLVM

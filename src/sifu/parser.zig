@@ -1,12 +1,13 @@
-/// The parser for Sifu tries to make as few decisions as possible. Mostly, it
-/// greedily lexes seperators like commas into their own Ast nodes, separates
-/// vars and vals based on the first character's case, and lexes numbers.
-/// There are no errors, any utf-8 text is parsable.
+/// The parser for Sifu tries to make as few decisions as possible. Mostly,
+/// it greedily lexes seperators like commas into their own ast nodes,
+/// separates vars and vals based on the first character's case, and lexes
+/// numbers. There are no errors, any utf-8 text is parsable.
 ///
-// The simple syntax of the language enables lexing and parsing at the same
-// time, so the parser lexes strings, ints, etc. into memory. Parsing always
-// begins with a new `App` node. Each term is
-// lexed, then a
+// Simple syntax enables lexing and parsing at the same time. Parsing begins
+// with a new `App` ast node. Each term is lexed, parsed into a `Term`, then added
+// to the top-level `Ast`.
+// Pattern construction happens after this, as does error reporting on invalid
+// asts.
 //
 const Parser = @This();
 
@@ -15,13 +16,17 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const panic = std.debug.panic;
 const util = @import("../util.zig");
-const Set = util.Set;
 const fsize = fsize;
-const Term = @import("tokens.zig");
-const Ast = @import("../pattern.zig").Ast(Term);
+const ast = @import("ast.zig");
+const Ast = ast.Ast;
+const Span = ast.Span;
+const Term = ast.Term;
+const Token = ast.Token;
+const Lit = ast.Lit;
+const Set = util.Set;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const ArrayList = std.ArrayList;
-const Error = Allocator.Error;
+const Oom = Allocator.Error;
 const Order = std.math.Order;
 const mem = std.mem;
 const math = std.math;
@@ -75,14 +80,14 @@ pub fn apps(self: *Parser) !Ast {
 
 /// Parses the source and returns the next sequence of terms forming an App,
 /// adding them to the arraylis.
-fn nextTerm(self: *Parser) Error!?Term {
+fn nextTerm(self: *Parser) Oom!?Term {
     self.skipWhitespace();
     const pos = self.pos;
     const char = self.peek() orelse return null;
 
     self.consume();
     // If the type here is inferred, Zig may claim it depends on runtime val
-    const term: Term.Kind = switch (char) {
+    const term: Term = switch (char) {
         // Parse separators greedily. These are vals, but for efficiency stored as u8's.
         '\n', ',', '.', ';', '(', ')', '{', '}', '[', ']', '"', '`' => .{ .sep = char },
         '#' => .{ .comment = try self.comment(pos) },
@@ -114,15 +119,17 @@ fn nextTerm(self: *Parser) Error!?Term {
             .{ char, self.line, self.col },
         ),
     };
-    return Term{
-        .kind = term,
-        .pos = pos,
-        .len = self.pos - pos,
+    return Token{
+        .term = term,
+        .span = .{
+            .pos = pos,
+            .len = self.pos - pos,
+        },
     };
 }
 
 /// Returns the next character but does not increase the Parser's position, or
-/// returns null if there are no more characters left to Astize.
+/// returns null if there are no more characters left to .
 fn peek(self: Parser) ?u8 {
     return if (self.pos < self.source.len)
         self.source[self.pos]
@@ -145,7 +152,7 @@ fn consume(self: *Parser) void {
 }
 
 /// Skips whitespace until a non-whitespace character is found. Not guaranteed
-/// to skip anything. Newlines are separators, and thus treated as Asts.
+/// to skip anything. Newlines are separators, and thus treated as AstAst.
 fn skipWhitespace(self: *Parser) void {
     while (self.peek()) |char| {
         switch (char) {
@@ -155,8 +162,8 @@ fn skipWhitespace(self: *Parser) void {
     }
 }
 
-/// Reads the next characters as an val
-fn val(self: *Parser, pos: usize) Error![]const u8 {
+/// Reads the next characters as a val
+fn val(self: *Parser, pos: usize) Oom![]const u8 {
     while (self.peek()) |char|
         if (isIdent(char))
             self.consume()
@@ -167,7 +174,7 @@ fn val(self: *Parser, pos: usize) Error![]const u8 {
 }
 
 /// Reads the next characters as an var
-fn @"var"(self: *Parser, pos: usize) Error![]const u8 {
+fn @"var"(self: *Parser, pos: usize) Oom![]const u8 {
     while (self.peek()) |char|
         if (isIdent(char))
             self.consume()
@@ -177,8 +184,8 @@ fn @"var"(self: *Parser, pos: usize) Error![]const u8 {
     return try self.arena.allocator().dupe(u8, self.source[pos..self.pos]);
 }
 
-/// Reads the next characters as an identifier
-fn infix(self: *Parser, pos: usize) Error![]const u8 {
+/// Reads the next characters as an identifier.
+fn infix(self: *Parser, pos: usize) Oom![]const u8 {
     while (self.peek()) |char|
         if (isInfix(char))
             self.consume()
@@ -188,13 +195,21 @@ fn infix(self: *Parser, pos: usize) Error![]const u8 {
     return try self.arena.allocator().dupe(u8, self.source[pos..self.pos]);
 }
 
-/// Reads the next characters as number
-fn int(self: *Parser, pos: usize) !usize {
-    while (self.peek()) |nextChar|
-        if (isDigit(nextChar))
+fn consumeDigits(self: *Parser) void {
+    while (self.peek()) |next_char|
+        if (isDigit(next_char))
             self.consume()
         else
             break;
+}
+
+/// Reads the next characters as number.
+///
+/// Errors:
+/// `Overflow` - if the number cannot fit in a `usize`, and should be stored as
+///    a `largeInt`.
+fn int(self: *Parser, pos: usize) error.Overflow!usize {
+    consumeDigits();
 
     return if (std.fmt.parseUnsigned(usize, self.source[pos..self.pos], 10)) |i|
         i
@@ -204,24 +219,24 @@ fn int(self: *Parser, pos: usize) !usize {
         err;
 }
 
-/// Reads the next characters as number
-fn float(self: *Parser, pos: usize) Error!fsize {
-    // A float is just and int with an optional period and int immediately
-    // after. This could still be implemented better though
-    _ = try self.int();
+/// Reads the next characters as number. `parseFloat` only throws
+/// `InvalidCharacter`, so this function cannot fail.
+fn float(self: *Parser, pos: usize) fsize {
+    consumeDigits();
     if (self.peek() == '.') {
         self.consume();
-        _ = try self.int();
+        consumeDigits();
     }
+
     return try std.fmt.parseFloat(fsize, self.source[pos..self.pos], 10) catch
         unreachable; // we only consumed digits, and maybe one decimal point
 }
 
 /// Reads a value wrappen in double-quotes from the current character
-fn string(self: *Parser, pos: usize) Error![]const u8 {
-    while (self.peek()) |nextChar| {
+fn string(self: *Parser, pos: usize) Oom![]const u8 {
+    while (self.peek()) |next_char| {
         self.consume(); // ignore the last double-quote
-        if (nextChar == '"')
+        if (next_char == '"')
             break;
     }
 
@@ -229,9 +244,9 @@ fn string(self: *Parser, pos: usize) Error![]const u8 {
 }
 
 /// Reads until the end of the line or EOF
-fn comment(self: *Parser, pos: usize) Error![]const u8 {
-    while (self.peek()) |nextChar|
-        if (nextChar != '\n')
+fn comment(self: *Parser, pos: usize) Oom![]const u8 {
+    while (self.peek()) |next_char|
+        if (next_char != '\n')
             self.consume()
         else
             // Newlines that terminate comments are also terms, so no

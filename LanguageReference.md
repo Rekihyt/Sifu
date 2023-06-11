@@ -10,7 +10,7 @@ an abstract syntax tree.
 - Pattern: a specification for how to match a particular Ast. Patterns and Asts
 are intimately connected, because to match a nested structure, patterns must be
 nested in the same way.
-- Ast: A synonym for Pattern but implies usage as data, not computation. Behind the scenes, Sifu doesn't even use Asts, everything is just a pattern.
+- Ast: A near synonym for Pattern but implies usage as data, not computation. It is also a tree, whereas Patterns are more like tries.
 - Return: a shorthand for "evaluate to"
 - Function: a nickname for multi-term patterns that start with a constant (the
 "function" name) and take "arguments" as variables in its subsequent terms.

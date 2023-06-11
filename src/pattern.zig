@@ -11,15 +11,15 @@ const Order = math.Order;
 /// A trie-like type based on the given term type. Each pattern contains zero or
 /// more children.
 ///
-/// Patterns also play the role of the AST in Sifu, abstracting both infix
-/// operations and juxtaposition into apps. The term and var type must be
-/// hashable. Nodes track context, the recursive structures (apps, match) do
-/// not.
+/// The term and var type must be hashable. Nodes track context, the recursive
+/// structures (apps, match) do not.
 ///
-/// @params
+/// Params
 /// `Lit` - the type of literal keys
 /// `Var` - the type of variable keys
 /// `Val` - the type of values that a successful key match will evaluate to
+/// `Context` - arbitrary data, not used for matching
+///
 pub fn Pattern(
     comptime Lit: type,
     comptime Var: type,
@@ -52,6 +52,7 @@ pub fn Pattern(
             // Apps and Matches are the branches of the AST
 
             apps: Map,
+
             match: Match,
 
             pub fn ofMap() Kind {
@@ -84,7 +85,7 @@ pub fn Pattern(
         kind: Kind,
 
         /// The value this pattern holds, if any.
-        val: ?Lit,
+        val: ?Val,
 
         /// `Context` is intended for optional debug/tooling information like
         /// `Span`.
@@ -125,7 +126,17 @@ pub fn Pattern(
             current.val = val;
         }
 
-        pub fn match(self: *Self, key: Self) ?Lit {
+        pub fn match(self: *Self, key: Self) ?Val {
+            _ = key;
+            _ = self;
+        }
+
+        /// Match the key against the given pattern `other`, and if that doesn't
+        /// match, fallback to matching this pattern.
+        pub fn matchUnion(self: *Self, key: Self, other: Self) ?Val {
+            if (other.match(key)) |result|
+                return result;
+
             // var var_map = AutoArrayHashMapUnmanaged(Self, Lit){};
             var current = self.*;
             var i: usize = 0;
@@ -167,7 +178,7 @@ pub fn Pattern(
 const testing = std.testing;
 
 test "should behave like a set when given void" {
-    const Pat = Pattern(usize, void, void);
+    const Pat = Pattern(usize, void, void, void);
     const Kind = Pat.Kind;
     var pat = Kind.ofMap();
     pat.val = {};
