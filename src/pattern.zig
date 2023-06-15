@@ -82,7 +82,7 @@ pub fn Pattern(
 
         /// The kind primarily determines how this pattern matches, and stores
         /// sub-patterns, if any.
-        kind: Kind,
+        // kind: Kind,
 
         /// The value this pattern holds, if any.
         val: ?Val,

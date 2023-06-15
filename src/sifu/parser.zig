@@ -4,7 +4,7 @@
 /// numbers. There are no errors, any utf-8 text is parsable.
 ///
 // Simple syntax enables lexing and parsing at the same time. Parsing begins
-// with a new `App` ast node. Each term is lexed, parsed into a `Term`, then added
+// with a new `App` ast node. Each term is lexed, parsed into a `Token`, then added
 // to the top-level `Ast`.
 // Pattern construction happens after this, as does error reporting on invalid
 // asts.
@@ -18,11 +18,10 @@ const panic = std.debug.panic;
 const util = @import("../util.zig");
 const fsize = fsize;
 const ast = @import("ast.zig");
-const Ast = ast.Ast;
 const Span = ast.Span;
-const Term = ast.Term;
-const Token = ast.Token;
 const Lit = ast.Lit;
+const Ast = ast.Ast(Span);
+const Token = ast.Token(Span);
 const Set = util.Set;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const ArrayList = std.ArrayList;
@@ -60,68 +59,79 @@ pub fn apps(self: *Parser) !Ast {
     var result = ArrayListUnmanaged(Ast){};
     const allocator = self.arena.allocator();
 
-    while (try self.nextTerm()) |term| {
-        switch (term.kind) {
-            // The current list becomes the first argument to the infix, then we
-            // add any following asts to that
-            .infix => {
-                var infix_apps = ArrayListUnmanaged(Ast){};
-                try infix_apps.append(allocator, Ast.of(term));
-                try infix_apps.append(allocator, Ast{
-                    .apps = try result.toOwnedSlice(allocator),
-                });
-                result = infix_apps;
+    while (try self.nextToken()) |token| {
+        switch (token.term) {
+            .lit => |lit| switch (lit) {
+                // The current list becomes the first argument to the infix, then we
+                // add any following asts to that
+                .infix => {
+                    var infix_apps = ArrayListUnmanaged(Ast){};
+                    try infix_apps.append(allocator, Ast.of(token));
+                    try infix_apps.append(allocator, Ast{
+                        .apps = try result.toOwnedSlice(allocator),
+                    });
+                    result = infix_apps;
+                },
+                else => try result.append(allocator, Ast.of(token)),
             },
-            else => try result.append(allocator, Ast.of(term)),
+            .@"var" => try result.append(allocator, Ast.of(token)),
         }
     }
     return Ast{ .apps = try result.toOwnedSlice(allocator) };
 }
 
 /// Parses the source and returns the next sequence of terms forming an App,
-/// adding them to the arraylis.
-fn nextTerm(self: *Parser) Oom!?Term {
+/// adding them to the arraylist.
+fn nextToken(self: *Parser) Oom!?Token {
     self.skipWhitespace();
     const pos = self.pos;
     const char = self.peek() orelse return null;
 
     self.consume();
     // If the type here is inferred, Zig may claim it depends on runtime val
-    const term: Term = switch (char) {
-        // Parse separators greedily. These are vals, but for efficiency stored as u8's.
-        '\n', ',', '.', ';', '(', ')', '{', '}', '[', ']', '"', '`' => .{ .sep = char },
-        '#' => .{ .comment = try self.comment(pos) },
-        '+', '-' => if (self.peek()) |next_char|
-            if (isDigit(next_char)) .{
-                .int = self.int(pos) catch unreachable,
-            } else .{ .infix = try self.infix(pos) }
-        else
-            .{
-                // This block is here for readability, it could just be
-                // unified with the previous `else` block's call to `infix`
-                .infix = if (char == '+') "+" else "-",
+    const term: Token.Term = if (isLower(char) or char == '_')
+        .{ .@"var" = try self.@"var"(pos) }
+    else
+        .{
+            .lit = switch (char) {
+                // Parse separators greedily. These are vals, but for efficiency
+                // stored as u8's.
+                '\n', ',', '.', ';', '(', ')', '{', '}', '[', ']', '"', '`' => Lit{
+                    .sep = char,
+                },
+                '#' => .{ .comment = try self.comment(pos) },
+                '+', '-' => if (self.peek()) |next_char|
+                    if (isDigit(next_char)) .{
+                        // Cannot fail, we saw at least one int
+                        .int = self.int(pos) catch unreachable,
+                    } else .{ .infix = try self.infix(pos) }
+                else
+                    // This block is here for readability, it could be unified
+                    // with the previous `else` block's call to `infix`
+                    .{
+                        .infix = if (char == '+') "+" else "-",
+                    },
+                else => if (isUpper(char) or char == '$') .{
+                    .val = try self.val(pos),
+                } else if (isDigit(char)) .{
+                    .int = self.int(pos) catch panic(
+                        \\Parser Error: Arbitrary width integers not supported
+                        \\yet: '{s}' at line {}, col {}"
+                    , .{ self.source[pos..self.pos], self.line, self.col }),
+                } else if (isInfix(char)) .{
+                    .infix = try self.infix(pos),
+                } else
+                // This is a debug error only, as we shouldn't encounter an error
+                // during lexing
+                panic(
+                    "Parser Error: Unknown character '{c}' at line {}, col {}",
+                    .{ char, self.line, self.col },
+                ),
             },
-        else => if (isUpper(char) or char == '$') .{
-            .val = try self.val(pos),
-        } else if (isLower(char) or char == '_') .{
-            .@"var" = try self.@"var"(pos),
-        } else if (isDigit(char)) .{
-            .int = self.int(pos) catch panic(
-                \\Parser Error: Arbitrary width integers not supported yet:
-                \\ '{s}' at line {}, col {}"
-            , .{ self.source[pos..self.pos], self.line, self.col }),
-        } else if (isInfix(char)) .{
-            .infix = try self.infix(pos),
-        } else
-        // This is a debug error only, as we shouldn't encounter an error during lexing
-        panic(
-            "Parser Error: Unknown character '{c}' at line {}, col {}",
-            .{ char, self.line, self.col },
-        ),
-    };
+        };
     return Token{
         .term = term,
-        .span = .{
+        .ctx = .{
             .pos = pos,
             .len = self.pos - pos,
         },
@@ -208,24 +218,24 @@ fn consumeDigits(self: *Parser) void {
 /// Errors:
 /// `Overflow` - if the number cannot fit in a `usize`, and should be stored as
 ///    a `largeInt`.
-fn int(self: *Parser, pos: usize) error.Overflow!usize {
-    consumeDigits();
+fn int(self: *Parser, pos: usize) error{Overflow}!usize {
+    self.consumeDigits();
 
     return if (std.fmt.parseUnsigned(usize, self.source[pos..self.pos], 10)) |i|
         i
-    else |err| if (err == error.InvalidCharacter)
-        unreachable // we only consumed digits
-    else
-        err;
+    else |err| switch (err) {
+        error.InvalidCharacter => unreachable, // we only consumed digits
+        else => |e| e, // recapture to narrow the error type
+    };
 }
 
 /// Reads the next characters as number. `parseFloat` only throws
 /// `InvalidCharacter`, so this function cannot fail.
 fn float(self: *Parser, pos: usize) fsize {
-    consumeDigits();
+    self.consumeDigits();
     if (self.peek() == '.') {
         self.consume();
-        consumeDigits();
+        self.consumeDigits();
     }
 
     return try std.fmt.parseFloat(fsize, self.source[pos..self.pos], 10) catch
@@ -325,12 +335,15 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
 
         if (@enumToInt(expected_elem) == @enumToInt(actual_elem)) {
             switch (expected_elem) {
-                .term => {
+                .token => |token| {
                     try testing.expectEqual(
                         @as(Order, .eq),
-                        expected_elem.term.compare(actual_elem.term),
+                        token.compare(actual_elem.token),
                     );
-                    try testing.expectEqualDeep(expected_elem.term.kind, actual_elem.term.kind);
+                    try testing.expectEqualDeep(
+                        token.term,
+                        actual_elem.token.term,
+                    );
                 },
                 .apps => try expectEqualApps(expected_elem, actual_elem),
             }
@@ -338,7 +351,10 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
             try writer.writeAll("Asts of different types not equal");
             try testing.expectEqual(expected_elem, actual_elem);
             // above line should always fail
-            std.debug.panic("Asserted asts were equal despite different types", .{});
+            std.debug.panic(
+                "Asserted asts were equal despite different types",
+                .{},
+            );
         }
     }
     // Variants of this seem to cause the compiler to error with GenericPoison
@@ -365,10 +381,22 @@ test "All Asts" {
         \\()
     ;
     const tests = &.{
-        .{ .term = .{ .kind = .{ .val = "Val1" }, .pos = 0, .len = 4 } },
-        .{ .term = .{ .kind = .{ .val = "," }, .pos = 4, .len = 1 } },
-        .{ .term = .{ .kind = .{ .int = 5 }, .pos = 5, .len = 1 } },
-        .{ .term = .{ .kind = .{ .val = ";" }, .pos = 6, .len = 1 } },
+        .{ .token = .{
+            .term = .{ .lit = .{ .val = "Val1" } },
+            .ctx = .{ .pos = 0, .len = 4 },
+        } },
+        .{ .token = .{
+            .term = .{ .lit = .{ .val = "," } },
+            .ctx = .{ .pos = 4, .len = 1 },
+        } },
+        .{ .token = .{
+            .term = .{ .lit = .{ .int = 5 } },
+            .ctx = .{ .pos = 5, .len = 1 },
+        } },
+        .{ .token = .{
+            .term = .{ .lit = .{ .val = ";" } },
+            .ctx = .{ .pos = 6, .len = 1 },
+        } },
     };
     _ = tests;
 
@@ -388,22 +416,34 @@ test "Vals" {
     for (val_strs) |val_str| {
         var parser = Parser.init(testing.allocator, val_str);
         defer parser.deinit();
-        const next_term = (try parser.nextTerm()).?;
+        const next_token = (try parser.nextToken()).?;
 
-        try writer.print("{s}\n", .{next_term.kind.val});
+        try writer.print("{s}\n", .{next_token.term.lit.val});
 
         // Use == here to coerce union to enum
-        try testing.expect(.val == next_term.kind);
-        try testing.expectEqual(@as(?Term, null), try parser.nextTerm());
+        try testing.expect(.lit == next_token.term);
+        try testing.expectEqual(@as(?Token, null), try parser.nextToken());
     }
 
     // Should be -, Sd+, ++, V
     var parser = Parser.init(testing.allocator, "-Sd+ ++V");
     defer parser.deinit();
-    try testing.expectEqualStrings("-", (try parser.nextTerm()).?.kind.infix);
-    try testing.expectEqualStrings("Sd+", (try parser.nextTerm()).?.kind.val);
-    try testing.expectEqualStrings("++", (try parser.nextTerm()).?.kind.infix);
-    try testing.expectEqualStrings("V", (try parser.nextTerm()).?.kind.val);
+    try testing.expectEqualStrings(
+        "-",
+        (try parser.nextToken()).?.term.lit.infix,
+    );
+    try testing.expectEqualStrings(
+        "Sd+",
+        (try parser.nextToken()).?.term.lit.val,
+    );
+    try testing.expectEqualStrings(
+        "++",
+        (try parser.nextToken()).?.term.lit.infix,
+    );
+    try testing.expectEqualStrings(
+        "V",
+        (try parser.nextToken()).?.term.lit.val,
+    );
 }
 
 test "Vars" {
@@ -417,8 +457,8 @@ test "Vars" {
     for (varStrs) |varStr| {
         var parser = Parser.init(testing.allocator, varStr);
         defer parser.deinit();
-        try testing.expect(.@"var" == (try parser.nextTerm()).?.kind);
-        try testing.expectEqual(@as(?Term, null), try parser.nextTerm());
+        try testing.expect(.@"var" == (try parser.nextToken()).?.term);
+        try testing.expectEqual(@as(?Token, null), try parser.nextToken());
     }
 
     const notVarStrs = &[_][]const u8{
@@ -430,8 +470,8 @@ test "Vars" {
     for (notVarStrs) |notVarStr| {
         var parser = Parser.init(testing.allocator, notVarStr);
         defer parser.deinit();
-        while (try parser.nextTerm()) |term| {
-            try testing.expect(.@"var" != term.kind);
+        while (try parser.nextToken()) |token| {
+            try testing.expect(.@"var" != token.term);
         }
     }
 }
@@ -441,21 +481,30 @@ test "App: simple vals" {
     defer parser.deinit();
     const expected = Ast{
         .apps = &.{
-            Ast{ .term = .{ .kind = .{ .val = "Aa" }, .pos = 0, .len = 2 } },
-            Ast{ .term = .{ .kind = .{ .val = "Bb" }, .pos = 3, .len = 2 } },
-            Ast{ .term = .{ .kind = .{ .val = "Cc" }, .pos = 6, .len = 2 } },
+            Ast{ .token = .{
+                .term = .{ .lit = .{ .val = "Aa" } },
+                .ctx = .{ .pos = 0, .len = 2 },
+            } },
+            Ast{ .token = .{
+                .term = .{ .lit = .{ .val = "Bb" } },
+                .ctx = .{ .pos = 3, .len = 2 },
+            } },
+            Ast{ .token = .{
+                .term = .{ .lit = .{ .val = "Cc" } },
+                .ctx = .{ .pos = 6, .len = 2 },
+            } },
         },
     };
     const actual = try parser.apps();
 
     for (expected.apps, actual.apps) |expected_ast, actual_ast| {
         try testing.expectEqualStrings(
-            expected_ast.term.kind.val,
-            actual_ast.term.kind.val,
+            expected_ast.token.term.lit.val,
+            actual_ast.token.term.lit.val,
         );
-        try testing.expect(.val == actual_ast.term.kind);
-        try testing.expectEqual(expected_ast.term.pos, actual_ast.term.pos);
-        try testing.expectEqual(expected_ast.term.len, actual_ast.term.len);
+        try testing.expect(.val == actual_ast.token.term.lit);
+        try testing.expectEqual(expected_ast.token.ctx.pos, actual_ast.token.ctx.pos);
+        try testing.expectEqual(expected_ast.token.ctx.len, actual_ast.token.ctx.len);
     }
 }
 
@@ -464,15 +513,24 @@ test "App: simple op" {
     defer parser.deinit();
     const expected = Ast{ .apps = &.{
         Ast{
-            .term = .{ .kind = .{ .infix = "+" }, .pos = 2, .len = 1 },
+            .token = .{
+                .term = .{ .lit = .{ .infix = "+" } },
+                .ctx = .{ .pos = 2, .len = 1 },
+            },
         },
         Ast{ .apps = &.{
             Ast{
-                .term = .{ .kind = .{ .int = 1 }, .pos = 0, .len = 1 },
+                .token = .{
+                    .term = .{ .lit = .{ .int = 1 } },
+                    .ctx = .{ .pos = 0, .len = 1 },
+                },
             },
         } },
         Ast{
-            .term = .{ .kind = .{ .int = 2 }, .pos = 4, .len = 1 },
+            .token = .{
+                .term = .{ .lit = .{ .int = 2 } },
+                .ctx = .{ .pos = 4, .len = 1 },
+            },
         },
     } };
     const actual = try parser.apps();
@@ -484,15 +542,30 @@ test "App: simple ops" {
     var parser = Parser.init(testing.allocator, "1 + 2 + 3");
     defer parser.deinit();
     const expected = Ast{ .apps = &.{
-        Ast{ .term = .{ .kind = .{ .infix = "+" }, .pos = 6, .len = 1 } },
-        Ast{ .apps = &.{
-            Ast{ .term = .{ .kind = .{ .infix = "+" }, .pos = 2, .len = 1 } },
-            Ast{ .apps = &.{
-                Ast{ .term = .{ .kind = .{ .int = 1 }, .pos = 0, .len = 1 } },
-            } },
-            Ast{ .term = .{ .kind = .{ .int = 2 }, .pos = 4, .len = 1 } },
+        Ast{ .token = .{
+            .term = .{ .lit = .{ .infix = "+" } },
+            .ctx = .{ .pos = 6, .len = 1 },
         } },
-        Ast{ .term = .{ .kind = .{ .int = 3 }, .pos = 8, .len = 1 } },
+        Ast{ .apps = &.{
+            Ast{ .token = .{
+                .term = .{ .lit = .{ .infix = "+" } },
+                .ctx = .{ .pos = 2, .len = 1 },
+            } },
+            Ast{ .apps = &.{
+                Ast{ .token = .{
+                    .term = .{ .lit = .{ .int = 1 } },
+                    .ctx = .{ .pos = 0, .len = 1 },
+                } },
+            } },
+            Ast{ .token = .{
+                .term = .{ .lit = .{ .int = 2 } },
+                .ctx = .{ .pos = 4, .len = 1 },
+            } },
+        } },
+        Ast{ .token = .{
+            .term = .{ .lit = .{ .int = 3 } },
+            .ctx = .{ .pos = 8, .len = 1 },
+        } },
     } };
     const actual = try parser.apps();
     try expectEqualApps(expected, actual);
@@ -503,11 +576,17 @@ test "App: simple op, no first arg" {
     defer parser.deinit();
     const expected = Ast{ .apps = &.{
         Ast{
-            .term = .{ .kind = .{ .infix = "+" }, .pos = 2, .len = 1 },
+            .token = .{
+                .term = .{ .lit = .{ .infix = "+" } },
+                .ctx = .{ .pos = 2, .len = 1 },
+            },
         },
         Ast{ .apps = &.{} },
         Ast{
-            .term = .{ .kind = .{ .int = 2 }, .pos = 4, .len = 1 },
+            .token = .{
+                .term = .{ .lit = .{ .int = 2 } },
+                .ctx = .{ .pos = 4, .len = 1 },
+            },
         },
     } };
     const actual = try parser.apps();
@@ -519,10 +598,16 @@ test "App: simple op, no second arg" {
     defer parser.deinit();
     const expected = Ast{ .apps = &.{
         Ast{
-            .term = .{ .kind = .{ .infix = "+" }, .pos = 2, .len = 1 },
+            .token = .{
+                .term = .{ .lit = .{ .infix = "+" } },
+                .ctx = .{ .pos = 2, .len = 1 },
+            },
         },
         Ast{ .apps = &.{
-            Ast{ .term = .{ .kind = .{ .int = 1 }, .pos = 0, .len = 1 } },
+            Ast{ .token = .{
+                .term = .{ .lit = .{ .int = 1 } },
+                .ctx = .{ .pos = 0, .len = 1 },
+            } },
         } },
     } };
     const actual = try parser.apps();
