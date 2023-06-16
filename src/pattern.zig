@@ -29,12 +29,12 @@ pub fn Pattern(
     return struct {
         pub const Self = @This();
 
-        pub const Kind = union(enum) {
-            // Hashmaps can be used as keys because they are (probably) created
-            // deterministically, as long as they have only had elements
-            // inserted and not removed.
-            pub const Map = AutoArrayHashMapUnmanaged(*Self, Self);
+        // Hashmaps can be used as keys because they are (probably) created
+        // deterministically, as long as they have only had elements
+        // inserted and not removed.
+        pub const Map = AutoArrayHashMapUnmanaged(*Self, Self);
 
+        pub const Kind = union(enum) {
             pub const Match = struct {
                 key: *Self,
                 pat: *Self,
@@ -54,35 +54,11 @@ pub fn Pattern(
             apps: Map,
 
             match: Match,
-
-            pub fn ofMap() Kind {
-                return .{
-                    .apps = Map{},
-                };
-            }
-
-            /// Create a singleton kind from one key
-            pub fn ofMapWith(allocator: Allocator, key: Self) Kind {
-                var m = Map{};
-                m.put(allocator, key, null);
-                return .{ .apps = m };
-            }
-
-            pub fn ofVar(key: Self) Kind {
-                return .{ .@"var" = key };
-            }
-
-            pub fn ofMatch(sub_key: Self, sub_pat: Self, val: ?Lit) Self {
-                _ = val;
-                _ = sub_pat;
-                _ = sub_key;
-                return .{};
-            }
         };
 
         /// The kind primarily determines how this pattern matches, and stores
         /// sub-patterns, if any.
-        // kind: Kind,
+        kind: Kind,
 
         /// The value this pattern holds, if any.
         val: ?Val,
@@ -90,6 +66,49 @@ pub fn Pattern(
         /// `Context` is intended for optional debug/tooling information like
         /// `Span`.
         context: Context,
+
+        pub fn ofMap(val: ?Val, context: Context) Self {
+            return .{
+                .kind = .{ .apps = Map{} },
+                .val = val,
+                .context = context,
+            };
+        }
+
+        pub fn ofLit(
+            lit: Lit,
+            val: ?Val,
+            context: Context,
+        ) Self {
+            return .{
+                .kind = .{ .lit = lit },
+                .val = val,
+                .context = context,
+            };
+        }
+
+        pub fn ofVar(key: Self, val: ?Val, context: Context) Self {
+            return .{
+                .@"var" = key,
+                .val = val,
+                .context = context,
+            };
+        }
+
+        pub fn ofMatch(
+            sub_key: Self,
+            sub_pat: Self,
+            val: ?Lit,
+            context: Context,
+        ) Self {
+            _ = context;
+            return .{
+                .kind = .{
+                    .match = .{ .key = sub_key, .pat = sub_pat },
+                },
+                .val = val,
+            };
+        }
 
         /// Inserts the value for this array of keys. The keys must already be
         /// converted to pattern kinds.
@@ -178,28 +197,34 @@ pub fn Pattern(
 const testing = std.testing;
 
 test "should behave like a set when given void" {
-    const Pat = Pattern(usize, void, void, void);
-    const Kind = Pat.Kind;
-    var pat = Kind.ofMap();
-    pat.val = {};
+    const Pat = Pattern(usize, void, void, ?void);
+    var pat = Pat.ofMap({}, {});
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const al = arena.allocator();
+    _ = al;
 
-    var nodes1: [1]Pat.Kind = undefined;
-    var nodes3: [3]Pat.Kind = undefined;
-
-    for (&nodes1, 0..) |*node, i|
-        node.* = Kind.ofMapWith(al, i);
+    // TODO: insert some apps here once insert is implemented
+    // var nodes1: [1]Pat = undefined;
+    // var nodes3: [3]Pat = undefined;
+    // for (&nodes1, 0..) |*node, i| {
+    //     node.* = Pat.ofLit(i, {}, {});
+    // }
+    // try testing.expectEqual(@as(?void, null), pat.match(nodes1));
+    // try testing.expectEqual(@as(?void, null), pat.match(nodes3));
 
     // Empty pattern
-    try testing.expectEqual(@as(?void, {}), pat.match(&.{}));
-    try testing.expectEqual(@as(?void, null), pat.match(nodes1));
-    try testing.expectEqual(@as(?void, null), pat.match(nodes3));
+    try testing.expectEqual(@as(?void, {}), pat.match(.{
+        .val = {},
+        .kind = .{ .apps = Pat.Map{} },
+        .context = null,
+    }));
+}
 
-    // Singleton
+test "insert single lit" {}
 
+test "insert multiple lits" {
     // Multiple keys
-    try pat.insert(&.{ 1, 2, 3 }, {}, al);
+    // try pat.insert(&.{ 1, 2, 3 }, {}, al);
     // try testing.expect(pat.kind.apps.contains(1));
 }

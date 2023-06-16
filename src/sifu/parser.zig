@@ -361,7 +361,6 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
     // try testing.expectEqual(@as(Order, .eq), expected.compare(actual));
 }
 
-// TODO: add more tests after committing to using either spans or indices
 test "All Asts" {
     const input =
         \\Val1,5;

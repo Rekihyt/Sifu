@@ -12,7 +12,7 @@
   - Everything is a pattern map (like tries, but lookups have to deal with sub-lookups)
 
   - Core language is just a dynamic pattern-matching/rewrite engine
-    - only builtins are triemap entries (tags `=>`) and triemap queries (matches `:`)
+    - only builtins are triemap entries (tags `->`) and triemap queries (matches `:`)
     - match / set membership / typeof is the same thing (`:`)
     - files are just triemaps with entries separated by newlines
     - no keywords other than the two builtin ops
@@ -21,8 +21,8 @@
     - vars match anything (lower-case idents)
 
   - Values and Variables
-    - variables are just tags `x => 2` and match anything
-    - values are as well `Val1 => 2` and are treated as literals (strings are just an escaped value)
+    - variables are just tags `x -> 2` and match anything
+    - values are as well `Val1 -> 2` and are treated as literals (strings are just an escaped value)
 
   - Types
     - types are just triemaps of values
@@ -36,13 +36,13 @@
 ## Examples
   ```python
   # Implement some simple types
-  Ord => { Gt, Eq, Lt }
-  Bool => { True, False }
+  Ord -> { Gt, Eq, Lt }
+  Bool -> { True, False }
 
   # A function `IsEq` that takes an ord, and returns True if it is Eq. `_` is
   # just another var, meant to be unused. 
-  IsEq Eq => True
-  IsEq _ => False
+  IsEq Eq -> True
+  IsEq _ -> False
 
   # This function compares bools using Case, a function that takes a list of
   # tags and another arg and applies them against the arg until one matches.
@@ -50,10 +50,10 @@
   # recursively, then bind their computations to the variables `b1` and `b2`.
   # If either one doesn't match at least once, the parent match doesn't as
   # well.
-  Compare (b1 : Bool) (b2 : Bool) => Case [
-      (True, False) => Gt,
-      (False, True) => Lt,
-      _ => Eq,
+  Compare (b1 : Bool) (b2 : Bool) -> Case [
+      (True, False) -> Gt,
+      (False, True) -> Lt,
+      _ -> Eq,
     ] (b1, b2)
   ```
 

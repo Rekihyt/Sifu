@@ -120,6 +120,7 @@ pub fn Token(comptime Context: type) type {
         }
     };
 }
+
 /// The location info for Sifu tokens.
 pub const Span = struct {
     pos: usize,
@@ -128,6 +129,7 @@ pub const Span = struct {
 
 /// Literals in Sifu are all terms other than vars.
 pub const Lit = union(enum) {
+    // none: u0,
     sep: u8,
     // word: u64,
     val: []const u8,
@@ -139,7 +141,8 @@ pub const Lit = union(enum) {
 
     /// Compares by value, not by len, pos, or pointers.
     pub fn compare(self: Lit, other: Lit) Order {
-        return if (@enumToInt(self) == @enumToInt(other))
+        const order = math.order(@enumToInt(self), @enumToInt(other));
+        return if (order == .eq)
             switch (self) {
                 .infix => |str| mem.order(u8, str, other.infix),
                 .val => |str| mem.order(u8, str, other.val),
@@ -149,7 +152,7 @@ pub const Lit = union(enum) {
                 .sep => |sep| math.order(sep, other.sep),
             }
         else
-            math.order(@enumToInt(self), @enumToInt(other));
+            order;
     }
 
     pub fn eql(self: Lit, other: Lit) bool {
