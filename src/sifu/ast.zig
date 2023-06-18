@@ -1,5 +1,5 @@
 ///
-/// Tokens are either lowercase `Variables` or some kind of `Lit`. Instead
+/// Tokens are either lowercase `Variables` or some kind of `TokenType`. Instead
 /// of having separate literal definitions, the various kinds are wrapped
 /// together to match the structure of patterns.
 ///
@@ -14,10 +14,13 @@ const fsize = util.fsize();
 const Order = math.Order;
 const math = std.math;
 const assert = std.debug.assert;
+const Oom = Allocator.Error;
+const Pattern = @import("../pattern.zig")
+    .Pattern(Token(Location), []const u8, Ast(Location));
 
 /// The AST is the first form of structure given to the source code. It handles
 /// infix and separator operators but does not differentiate between builtins.
-/// The Context type is intended for metainfo such as `Span`.
+/// The Context type is intended for metainfo such as `Location`.
 pub fn Ast(comptime Context: type) type {
     return union(enum) {
         apps: []const Self,
@@ -31,6 +34,23 @@ pub fn Ast(comptime Context: type) type {
 
         pub fn ofApps(apps: []const Self) Self {
             return .{ .apps = apps };
+        }
+
+        /// This function is responsible for actually giving meaning to the AST
+        /// by converting it into a Pattern. Sifu builtin operators change how
+        /// this happens.
+        /// Input - an Ast of apps parsed by the function in `Parser`. These
+        /// should have placed infix operators correctly by nesting them into
+        /// apps.
+        /// Output - a map pattern representing the file as a trie.
+        pub fn toPattern(self: Self, allocator: Allocator) Oom!Pattern {
+            _ = allocator;
+            var result = Pattern.ofMap();
+            _ = result;
+            switch (self) {
+                .token => |token| Pattern.ofTokenType(token, null),
+                .apps => |apps| switch (apps) {},
+            }
         }
 
         pub fn print(self: Self, writer: anytype) !void {
@@ -79,120 +99,73 @@ pub fn Ast(comptime Context: type) type {
     };
 }
 
-/// Any term with context, including vars.
+/// Any word with with context, including vars.
 pub fn Token(comptime Context: type) type {
     return struct {
-        pub const Term = union(enum) {
-            @"var": []const u8,
-            lit: Lit,
-        };
+        /// The string value of this token.
+        lit: []const u8,
 
-        term: Term,
-        ctx: Context,
+        /// `Context` is intended for optional debug/tooling information like
+        /// `Location`.
+        context: Context,
 
         pub const Self = @This();
 
-        pub fn ofVar(v: []const u8, ctx: Context) Self {
-            return .{ .term = .{ .@"var" = v }, .ctx = ctx };
-        }
-
-        pub fn of(lit: Lit, ctx: Context) Self {
-            return .{ .term = .{ .lit = lit }, .ctx = ctx };
-        }
-
         /// Ignores Context.
-        pub fn compare(self: Self, other: Self) Order {
-            const order = math.order(
-                @enumToInt(self.term),
-                @enumToInt(other.term),
-            );
-            return if (order == .eq)
-                switch (self.term) {
-                    .@"var" => |v| mem.order(u8, v, other.term.@"var"),
-                    .lit => |lit| lit.compare(other.term.lit),
-                }
-            else
-                order;
+        pub fn order(self: Self, other: Self) Order {
+            return mem.order(u8, self.lit, other.lit);
         }
 
         pub fn eql(self: Self, other: Self) bool {
-            return .eq == self.compare(other);
+            return .eq == self.order(other);
         }
     };
 }
 
-/// The location info for Sifu tokens.
-pub const Span = struct {
+/// The location info for Sifu tokens. The end position can be calulated from
+/// the slice, so it isn't stored.
+// TODO: Store a URI pointer here.
+pub const Location = struct {
     pos: usize,
-    len: usize,
+    uri: ?*const []u8,
 };
 
-/// Literals in Sifu are all terms other than vars.
-pub const Lit = union(enum) {
-    // none: u0,
-    sep: u8,
-    // word: u64,
-    val: []const u8,
-    infix: []const u8,
-    int: usize,
-    // unboundInt: []const u1,
-    float: fsize,
-    comment: []const u8,
+/// These are determined during parsing, not lexing. The values here correspond
+/// exactly to a type name in Sifu.
+pub const TokenType = enum {
+    Value,
+    String,
+    // Ints/UInts are be applied to a number which signifies their size
+    I, // signed
+    U, // unsigned
+    Float,
+    Comment,
 
     /// Compares by value, not by len, pos, or pointers.
-    pub fn compare(self: Lit, other: Lit) Order {
-        const order = math.order(@enumToInt(self), @enumToInt(other));
-        return if (order == .eq)
-            switch (self) {
-                .infix => |str| mem.order(u8, str, other.infix),
-                .val => |str| mem.order(u8, str, other.val),
-                .comment => |str| mem.order(u8, str, other.comment),
-                .int => |num| math.order(num, other.int),
-                .float => |num| math.order(num, other.float),
-                .sep => |sep| math.order(sep, other.sep),
-            }
-        else
-            order;
+    pub fn order(self: TokenType, other: TokenType) Order {
+        return math.order(@enumToInt(self), @enumToInt(other));
     }
 
-    pub fn eql(self: Lit, other: Lit) bool {
-        return .eq == self.compare(other);
+    pub fn eql(self: TokenType, other: TokenType) bool {
+        return .eq == self.order(other);
     }
 };
 
 const testing = std.testing;
-const Tok = Token(Span);
+const Tok = Token(Location);
 
-test "equal strings with different pointers, len, or pos should be equal" {
-    const str1 = "abc";
-    const str2 = try testing.allocator.dupe(u8, str1);
-    defer testing.allocator.free(str2);
-
-    const term1 = Tok{
-        .term = .{ .lit = Lit{ .val = str1 } },
-        .ctx = Span{ .len = 0, .pos = 0 },
+test "simple ast to pattern" {
+    const term = Tok{
+        .lit = .val,
+        .context = .{ .uri = null, .pos = 0 },
     };
-    const term2 = Tok{
-        .term = .{ .lit = Lit{ .val = str2 } },
-        .ctx = Span{ .len = 1, .pos = 1 },
+    _ = term;
+    const ast = Ast(Location){
+        .token = .{
+            .lit = .int,
+            .context = .{ .uri = null, .pos = 20 },
+        },
     };
-
-    try testing.expect(term1.eql(term2));
-}
-
-test "equal strings with different kinds should not be equal" {
-    const str1 = "abc";
-    const str2 = try testing.allocator.dupe(u8, str1);
-    defer testing.allocator.free(str2);
-
-    const term1 = Tok{
-        .term = .{ .lit = Lit{ .val = str1 } },
-        .ctx = Span{ .len = 0, .pos = 0 },
-    };
-    const term2 = Tok{
-        .term = .{ .lit = Lit{ .infix = str2 } },
-        .ctx = Span{ .len = 0, .pos = 0 },
-    };
-
-    try testing.expect(!term1.eql(term2));
+    _ = ast;
+    // _ = Pattern.ofTokenType(term, ast);
 }

@@ -62,13 +62,13 @@
 - ### Core Language
   
   - [ ] Parser/Lexer
-    - [ ] Lexer
-    - [ ] Parser
+    - [x] Lexer (Text → AST)
+    - [ ] Parser (AST → Patterns)
     - [ ] Error handling
 
   - [ ] Patterns
     - [x] Definition
-    - [ ] Construction
+    - [x] Construction
     - [ ] Matching
       - [ ] Vals
       - [ ] Apps
@@ -82,6 +82,7 @@
       - [ ] Tuples (parens)
 
   - [ ] Effects / FFI
+    - [ ] Driver API
     - [ ] Builtin Patterns
     - [ ] File I/O
 

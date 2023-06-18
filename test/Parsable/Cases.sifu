@@ -1,0 +1,10 @@
+# An example of how `Case` might be defined
+
+Bool => {True, False}
+
+If (_ : True) Then then Else _ => then 
+If (_ : False) Then _ Else else => else
+
+Case _ [] => []
+Case function (head :> tail) =>
+	function head  

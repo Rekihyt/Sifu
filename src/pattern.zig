@@ -24,7 +24,6 @@ pub fn Pattern(
     comptime Lit: type,
     comptime Var: type,
     comptime Val: type,
-    comptime Context: type,
 ) type {
     return struct {
         pub const Self = @This();
@@ -51,9 +50,9 @@ pub fn Pattern(
 
             // Apps and Matches are the branches of the AST
 
-            apps: Map,
-
             match: Match,
+
+            apps: Map,
         };
 
         /// The kind primarily determines how this pattern matches, and stores
@@ -63,45 +62,35 @@ pub fn Pattern(
         /// The value this pattern holds, if any.
         val: ?Val,
 
-        /// `Context` is intended for optional debug/tooling information like
-        /// `Span`.
-        context: Context,
-
-        pub fn ofMap(val: ?Val, context: Context) Self {
+        pub fn ofMap(val: ?Val) Self {
             return .{
                 .kind = .{ .apps = Map{} },
                 .val = val,
-                .context = context,
             };
         }
 
         pub fn ofLit(
             lit: Lit,
             val: ?Val,
-            context: Context,
         ) Self {
             return .{
                 .kind = .{ .lit = lit },
                 .val = val,
-                .context = context,
             };
         }
 
-        pub fn ofVar(key: Self, val: ?Val, context: Context) Self {
+        pub fn ofVar(key: Self, val: ?Val) Self {
             return .{
                 .@"var" = key,
                 .val = val,
-                .context = context,
             };
         }
 
         pub fn ofMatch(
             sub_key: Self,
             sub_pat: Self,
-            val: ?Lit,
-            context: Context,
+            val: ?Val,
         ) Self {
-            _ = context;
             return .{
                 .kind = .{
                     .match = .{ .key = sub_key, .pat = sub_pat },
@@ -110,21 +99,29 @@ pub fn Pattern(
             };
         }
 
-        /// Inserts the value for this array of keys. The keys must already be
-        /// converted to pattern kinds.
-        pub fn insert(
+        pub fn insert(self: *Self, key: Self, val: Val, allocator: Allocator) !void {
+            _ = allocator;
+            _ = val;
+            _ = key;
+            switch (self.kind) {
+                .lit => {},
+                .@"var" => {},
+                .match => {},
+                .apps => {},
+            }
+        }
+        fn insertMap(
             self: *Self,
-            keys: []const Self.Kind,
-            val: ?Lit,
+            key: Self,
+            val: Val,
             allocator: Allocator,
         ) !void {
             var current = self.*;
-            var i: usize = 0;
             // Follow the longest branch that exists
-            while (i < keys.len) : (i += 1)
+            while (current.contains(key)) |next| : (current = next)
                 switch (current.kind) {
                     .apps => |map| {
-                        if (map.get(keys[i])) |pat_node|
+                        if (map.get()) |pat_node|
                             current = pat_node
                         else
                             // Key mismatch
@@ -134,12 +131,12 @@ pub fn Pattern(
                     .variable => {},
                 };
             // Create new branches while necessary
-            while (i < keys.len) : (i += 1) {
+            while (current.contains(key)) {
                 const next = .{
                     .pattern = current,
-                    .kind = .{ .variable = .{ .key = keys[i] } },
+                    .kind = .{ .variable = .{ .key = key } },
                 };
-                current.apps.put(allocator, keys[i], next);
+                current.apps.put(allocator, key, next);
             }
             // Put the value in this last node
             current.val = val;
@@ -183,13 +180,13 @@ pub fn Pattern(
         }
 
         /// Compares by value, not by len, pos, or pointers.
-        pub fn compare(self: Pattern, other: Pattern) Order {
-            return self.kind.compare(other.kind);
+        pub fn order(self: Pattern, other: Pattern) Order {
+            return self.kind.order(other.kind);
         }
 
         /// Compares by value, not by len, pos, or pointers.
         pub fn equalTo(self: Pattern, other: Pattern) bool {
-            return .eq == self.compare(other);
+            return .eq == self.order(other);
         }
     };
 }
@@ -197,8 +194,8 @@ pub fn Pattern(
 const testing = std.testing;
 
 test "should behave like a set when given void" {
-    const Pat = Pattern(usize, void, void, ?void);
-    var pat = Pat.ofMap({}, {});
+    const Pat = Pattern(usize, void, void);
+    var pat = Pat.ofMap({});
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const al = arena.allocator();
@@ -217,7 +214,6 @@ test "should behave like a set when given void" {
     try testing.expectEqual(@as(?void, {}), pat.match(.{
         .val = {},
         .kind = .{ .apps = Pat.Map{} },
-        .context = null,
     }));
 }
 
