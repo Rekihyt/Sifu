@@ -52,50 +52,6 @@ pub fn Ast(comptime Context: type) type {
                 .apps => |apps| switch (apps) {},
             }
         }
-
-        pub fn print(self: Self, writer: anytype) !void {
-            switch (self) {
-                .apps => |asts| if (asts.len > 0 and
-                    asts[0] == .token and
-                    asts[0].token.term == .lit)
-                    switch (asts[0].token.term.lit) {
-                        .infix => |infix| {
-                            // An infix always forms an App with at least 2
-                            // nodes, the second of which must be an App (which
-                            // may be empty)
-                            assert(asts.len >= 2);
-                            assert(asts[1] == .apps);
-                            try writer.writeAll("(");
-                            try asts[1].print(writer);
-                            try writer.writeByte(' ');
-                            try writer.writeAll(infix);
-                            if (asts.len >= 2)
-                                for (asts[2..]) |arg| {
-                                    try writer.writeByte(' ');
-                                    try arg.print(writer);
-                                };
-                            try writer.writeAll(")");
-                        },
-                        else => if (asts.len > 0) {
-                            try asts[0].print(writer);
-                            for (asts[1..]) |ast| {
-                                try writer.writeByte(' ');
-                                try ast.print(writer);
-                            } else try writer.writeAll("()");
-                        },
-                    },
-                .token => |token| switch (token.term) {
-                    .lit => |lit| switch (lit) {
-                        .comment => |cmt| {
-                            try writer.writeByte('#');
-                            try writer.writeAll(cmt);
-                        },
-                        inline else => |t| try writer.print("{any}", .{t}),
-                    },
-                    .@"var" => |v| try writer.print("{s}", .{v}),
-                },
-            }
-        }
     };
 }
 
@@ -156,13 +112,13 @@ const Tok = Token(Location);
 
 test "simple ast to pattern" {
     const term = Tok{
-        .lit = .val,
+        .lit = "My-Token",
         .context = .{ .uri = null, .pos = 0 },
     };
     _ = term;
     const ast = Ast(Location){
         .token = .{
-            .lit = .int,
+            .lit = "Some-Other-Token",
             .context = .{ .uri = null, .pos = 20 },
         },
     };

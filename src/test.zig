@@ -16,12 +16,12 @@ test "equal strings with different pointers, len, or pos should be equal" {
     defer testing.allocator.free(str2);
 
     const term1 = Token(Location){
-        .lit = .val,
-        .context = Location{ .len = 0, .pos = 0 },
+        .lit = "Term1",
+        .context = Location{ .pos = 0, .uri = null },
     };
     const term2 = Token(Location){
-        .lit = .val,
-        .context = Location{ .len = 1, .pos = 1 },
+        .lit = "Term2",
+        .context = Location{ .pos = 1, .uri = null },
     };
 
     try testing.expect(term1.eql(term2));
@@ -33,12 +33,12 @@ test "equal strings with different kinds should not be equal" {
     defer testing.allocator.free(str2);
 
     const term1 = Token(Location){
-        .lit = .val,
-        .context = Location{ .len = 0, .pos = 0 },
+        .lit = "Term1",
+        .context = Location{ .pos = 0, .uri = null },
     };
     const term2 = Token(Location){
-        .lit = .val,
-        .context = Location{ .len = 0, .pos = 0 },
+        .lit = "Term2",
+        .context = Location{ .pos = 0, .uri = null },
     };
 
     try testing.expect(!term1.eql(term2));

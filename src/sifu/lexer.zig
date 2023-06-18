@@ -29,6 +29,7 @@ const Oom = Allocator.Error;
 const Order = std.math.Order;
 const mem = std.mem;
 const math = std.math;
+const assert = std.debug.assert;
 
 /// Source code that is being parsed
 source: []const u8,
@@ -72,6 +73,51 @@ pub fn apps(self: *Lexer) !Ast {
         } else try result.append(allocator, Ast.of(token));
     }
     return Ast{ .apps = try result.toOwnedSlice(allocator) };
+}
+
+pub fn isInfixToken(token: anytype) bool {
+    return token.lit.len > 0 and isInfix(token.lit[0]);
+}
+
+pub fn print(self: anytype, writer: anytype) !void {
+    switch (self) {
+        .apps => |asts| if (asts.len > 0 and asts[0] == .token) {
+            const token = asts[0].token;
+            if (isInfixToken(token)) {
+                // An infix always forms an App with at least 2
+                // nodes, the second of which must be an App (which
+                // may be empty)
+                assert(asts.len >= 2);
+                assert(asts[1] == .apps);
+                try writer.writeAll("(");
+                try print(asts[1], writer);
+                try writer.writeByte(' ');
+                try writer.writeAll(infix);
+                if (asts.len >= 2)
+                    for (asts[2..]) |arg| {
+                        try writer.writeByte(' ');
+                        try print(arg, writer);
+                    };
+                try writer.writeAll(")");
+            } else if (asts.len > 0) {
+                try print(asts[0], writer);
+                for (asts[1..]) |it| {
+                    try writer.writeByte(' ');
+                    try print(it, writer);
+                } else try writer.writeAll("()");
+            }
+        },
+        .token => |token| switch (token.term) {
+            .lit => |lit| switch (lit) {
+                .comment => |cmt| {
+                    try writer.writeByte('#');
+                    try writer.writeAll(cmt);
+                },
+                inline else => |t| try writer.print("{any}", .{t}),
+            },
+            .@"var" => |v| try writer.print("{s}", .{v}),
+        },
+    }
 }
 
 /// Parses the source and returns the next sequence of terms forming an App,
@@ -269,23 +315,23 @@ fn isInfix(char: u8) bool {
 const testing = std.testing;
 const meta = std.meta;
 const verbose_tests = @import("build_options").verbose_tests;
-const writer = if (verbose_tests)
+const stderr = if (verbose_tests)
     std.io.getStdErr().writer()
 else
     std.io.null_writer;
 
 fn expectEqualApps(expected: Ast, actual: Ast) !void {
-    try writer.writeByte('\n');
+    try stderr.writeByte('\n');
     try testing.expect(.apps == expected);
     try testing.expect(.apps == actual);
 
     // This is redundant, but it makes any failures easier to trace
     for (expected.apps, actual.apps) |expected_elem, actual_elem| {
-        try expected_elem.print(writer);
-        try writer.writeByte('\n');
+        try expected_elem.print(stderr);
+        try stderr.writeByte('\n');
 
-        try actual_elem.print(writer);
-        try writer.writeByte('\n');
+        try actual_elem.print(stderr);
+        try stderr.writeByte('\n');
 
         if (@enumToInt(expected_elem) == @enumToInt(actual_elem)) {
             switch (expected_elem) {
@@ -302,7 +348,7 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
                 .apps => try expectEqualApps(expected_elem, actual_elem),
             }
         } else {
-            try writer.writeAll("Asts of different types not equal");
+            try stderr.writeAll("Asts of different types not equal");
             try testing.expectEqual(expected_elem, actual_elem);
             // above line should always fail
             std.debug.panic(
@@ -321,7 +367,7 @@ fn expectEqualTokens(input: []const u8, expecteds: []const []const u8) !void {
 
     for (expecteds) |expected| {
         const next_token = (try parser.nextToken()).?;
-        try writer.print("{s}\n", .{next_token.lit});
+        try stderr.print("{s}\n", .{next_token.lit});
         try testing.expectEqualStrings(
             expected,
             next_token.lit,
