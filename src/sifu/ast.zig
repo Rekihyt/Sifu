@@ -17,6 +17,7 @@ const assert = std.debug.assert;
 const Oom = Allocator.Error;
 const Pattern = @import("../pattern.zig")
     .Pattern(Token(Location), []const u8, Ast(Location));
+const Lexer = @import("lexer.zig");
 
 /// The AST is the first form of structure given to the source code. It handles
 /// infix and separator operators but does not differentiate between builtins.
@@ -34,23 +35,6 @@ pub fn Ast(comptime Context: type) type {
 
         pub fn ofApps(apps: []const Self) Self {
             return .{ .apps = apps };
-        }
-
-        /// This function is responsible for actually giving meaning to the AST
-        /// by converting it into a Pattern. Sifu builtin operators change how
-        /// this happens.
-        /// Input - an Ast of apps parsed by the function in `Parser`. These
-        /// should have placed infix operators correctly by nesting them into
-        /// apps.
-        /// Output - a map pattern representing the file as a trie.
-        pub fn toPattern(self: Self, allocator: Allocator) Oom!Pattern {
-            _ = allocator;
-            var result = Pattern.ofMap();
-            _ = result;
-            switch (self) {
-                .token => |token| Pattern.ofTokenType(token, null),
-                .apps => |apps| switch (apps) {},
-            }
         }
     };
 }
@@ -74,6 +58,18 @@ pub fn Token(comptime Context: type) type {
 
         pub fn eql(self: Self, other: Self) bool {
             return .eq == self.order(other);
+        }
+
+        pub fn tokenType(self: Self) TokenType {
+            return if (self.lit.len == 0) Pattern.ofLit("", "") else if (Lexer.isUpper(self.lit[0]))
+                .Value;
+        }
+
+        /// Convert this to a Pattern literal or variable, setting the Pattern's
+        /// value by parsing the Token.
+        pub fn toPattern(self: Self, allocator: Allocator) Oom!Pattern {
+            _ = self;
+            _ = allocator;
         }
     };
 }

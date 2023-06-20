@@ -16,18 +16,18 @@ test "equal strings with different pointers, len, or pos should be equal" {
     defer testing.allocator.free(str2);
 
     const term1 = Token(Location){
-        .lit = "Term1",
+        .lit = "Some-Val",
         .context = Location{ .pos = 0, .uri = null },
     };
     const term2 = Token(Location){
-        .lit = "Term2",
+        .lit = "Some-Val",
         .context = Location{ .pos = 1, .uri = null },
     };
 
     try testing.expect(term1.eql(term2));
 }
 
-test "equal strings with different kinds should not be equal" {
+test "equal strings with different values should not be equal" {
     const str1 = "abc";
     const str2 = try testing.allocator.dupe(u8, str1);
     defer testing.allocator.free(str2);

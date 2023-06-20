@@ -1,0 +1,7 @@
+# How something similar to do notation might be work
+
+# Basically just `traverse_` from Haskell, with the idea that the list has already
+# been evaluated (eager evaluation) so we just preserve type info.
+Do [] -> []
+Do (_ : List _ (Eff eff-set)) ->
+	() : Eff eff-set

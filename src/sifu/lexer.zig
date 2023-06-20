@@ -30,6 +30,7 @@ const Order = std.math.Order;
 const mem = std.mem;
 const math = std.math;
 const assert = std.debug.assert;
+const debug = std.debug;
 
 /// Source code that is being parsed
 source: []const u8,
@@ -63,7 +64,7 @@ pub fn apps(self: *Lexer) !Ast {
     while (try self.nextToken()) |token| {
         // The current list becomes the first argument to the infix, then we
         // add any following asts to that
-        if (token.lit.len > 0 and isInfix(token.lit[0])) {
+        if (isInfixToken(token)) {
             var infix_apps = ArrayListUnmanaged(Ast){};
             try infix_apps.append(allocator, Ast.of(token));
             try infix_apps.append(allocator, Ast{
@@ -75,7 +76,7 @@ pub fn apps(self: *Lexer) !Ast {
     return Ast{ .apps = try result.toOwnedSlice(allocator) };
 }
 
-pub fn isInfixToken(token: anytype) bool {
+fn isInfixToken(token: anytype) bool {
     return token.lit.len > 0 and isInfix(token.lit[0]);
 }
 
@@ -92,7 +93,7 @@ pub fn print(self: anytype, writer: anytype) !void {
                 try writer.writeAll("(");
                 try print(asts[1], writer);
                 try writer.writeByte(' ');
-                try writer.writeAll(infix);
+                try writer.writeAll(token.lit);
                 if (asts.len >= 2)
                     for (asts[2..]) |arg| {
                         try writer.writeByte(' ');
@@ -104,19 +105,10 @@ pub fn print(self: anytype, writer: anytype) !void {
                 for (asts[1..]) |it| {
                     try writer.writeByte(' ');
                     try print(it, writer);
-                } else try writer.writeAll("()");
-            }
+                }
+            } else try writer.writeAll("()");
         },
-        .token => |token| switch (token.term) {
-            .lit => |lit| switch (lit) {
-                .comment => |cmt| {
-                    try writer.writeByte('#');
-                    try writer.writeAll(cmt);
-                },
-                inline else => |t| try writer.print("{any}", .{t}),
-            },
-            .@"var" => |v| try writer.print("{s}", .{v}),
-        },
+        .token => |token| try writer.print("{s}", .{token.lit}),
     }
 }
 
@@ -124,43 +116,43 @@ pub fn print(self: anytype, writer: anytype) !void {
 /// adding them to the arraylist.
 fn nextToken(self: *Lexer) Oom!?Token {
     self.skipWhitespace();
-    const pos = self.pos;
     const char = self.peek() orelse
         return null;
 
+    const pos = self.pos;
     self.consume();
-    switch (char) {
-        // Parse separators greedily. These can be vals or infixes, it
-        // doesn't matter.
-        // zig fmt: off
-        '\n', ',', '.', ';', '(', ')', '{', '}', '[', ']', '"', '`', '?', '!'
-        // zig fmt: on
-        => {},
+    // Parse separators greedily. These can be vals or infixes, it
+    // doesn't matter.
+    if (isSep(char)) {
+        // noop, we already consumed
+    } else if (isInfix(char))
+        self.infix()
+    else if (isUpper(char) or char == '@')
+        self.ident()
+    else if (isLower(char) or char == '_' or char == '$')
+        self.ident()
+    else if (isDigit(char))
+        self.int()
+    else switch (char) {
         '+', '-' => if (self.peek()) |next|
             if (isDigit(next))
                 self.int()
             else
                 self.infix(),
         '#' => self.comment(),
-        else => if (isUpper(char) or char == '$')
-            self.val()
-        else if (isDigit(char))
-            self.int()
-        else if (isInfix(char))
-            self.infix()
-        else
-            // This is a debug error only, as we shouldn't encounter an error
-            // during lexing
-            panic(
-                \\Lexer Bug: Unknown character '{c}' at line {}, col {}.
-                \\Note: Unicode no supported yet.\n
-            ,
-                .{ char, self.line, self.col },
-            ),
+        else =>
+        // This is a debug error only, as we shouldn't encounter an error
+        // during lexing
+        panic(
+            \\Lexer Bug: Unknown character '{c}' at line {}, col {}.
+            \\Note: Unicode no supported yet.
+        ,
+            .{ char, self.line, self.col },
+        ),
     }
     const len = self.pos - pos;
     return Token{
-        .lit = try self.arena.allocator().dupe(u8, self.source[pos..len]),
+        .lit = try self.arena.allocator().dupe(u8, self.source[pos .. pos + len]),
         .context = .{ .pos = pos, .uri = null },
     };
 }
@@ -178,15 +170,12 @@ fn peek(self: Lexer) ?u8 {
 fn consume(self: *Lexer) void {
     if (self.peek()) |char| {
         self.pos += 1;
-        switch (char) {
-            '\n' => {
-                self.col = 1;
-                self.line += 1;
-            },
-            else => self.col += 1,
-        }
+        if (char == '\n') {
+            self.col = 1;
+            self.line += 1;
+        } else self.col += 1;
     } else panic(
-        "Lexer Bug: Attempted to advance to next AST but EOF reached.\n",
+        "Lexer Bug: Attempted to advance to next AST but EOF reached.",
         .{},
     );
 }
@@ -201,17 +190,8 @@ fn skipWhitespace(self: *Lexer) void {
         };
 }
 
-/// Reads the next characters as a val
-fn val(self: *Lexer) void {
-    while (self.peek()) |next_char|
-        if (isIdent(next_char))
-            self.consume()
-        else
-            break;
-}
-
-/// Reads the next characters as an var
-fn @"var"(self: *Lexer) void {
+/// Reads the next characters as a val or var
+fn ident(self: *Lexer) void {
     while (self.peek()) |next_char|
         if (isIdent(next_char))
             self.consume()
@@ -228,25 +208,22 @@ fn infix(self: *Lexer) void {
             break;
 }
 
-fn consumeDigits(self: *Lexer) void {
+/// Reads the next digits and/or any underscores
+fn int(self: *Lexer) void {
     while (self.peek()) |next_char|
-        if (isDigit(next_char))
+        if (isDigit(next_char) or next_char == '_')
             self.consume()
         else
             break;
 }
 
-fn int(self: *Lexer) void {
-    self.consumeDigits();
-}
-
 /// Reads the next characters as number. `parseFloat` only throws
 /// `InvalidCharacter`, so this function cannot fail.
 fn float(self: *Lexer) void {
-    self.consumeDigits();
+    self.int();
     if (self.peek() == '.') {
         self.consume();
-        self.consumeDigits();
+        self.int();
     }
 }
 
@@ -268,11 +245,11 @@ fn comment(self: *Lexer) void {
             break;
 }
 
-/// Returns true if the given character is a digit
+/// Returns true if the given character is a digit. Does not include
+/// underscores.
 fn isDigit(char: u8) bool {
     return switch (char) {
-        // Include underscores for spacing
-        '0'...'9', '_' => true,
+        '0'...'9' => true,
         else => false,
     };
 }
@@ -291,25 +268,38 @@ fn isLower(char: u8) bool {
     };
 }
 
-fn isIdent(char: u8) bool {
+fn isSep(char: u8) bool {
     return switch (char) {
         // zig fmt: off
-        ' ', '\n', '\t', '\r', '\\',',', ';', ':', '.', '^', '*', '=', '<', '>',
-        '@', '$', '%', '&', '|', '/', '`', '[', ']', '(', ')', '{', '}', '"',
+        ',', ';', '\n',
+        '(', ')', '[', ']', '{', '}',
+        '"', '\'', '`', 
         // zig fmt: on
-        => false,
-        else => true,
+        => true,
+        else => false,
     };
 }
 
 fn isInfix(char: u8) bool {
     return switch (char) {
         // zig fmt: off
-        '.', ':', '-', '+', '=', '<', '>', '%', '^', '*', '&', '|', '/', '@',
+        '.', ':', '-', '+', '=', '<', '>', '%',
+        '^', '*', '&', '|', '/', '\\', '@', '!',
+        '?', '~',
         // zig fmt: on
         => true,
         else => false,
     };
+}
+
+fn isSpace(char: u8) bool {
+    return char == ' ' or
+        char == '\t' or
+        char == '\n';
+}
+
+fn isIdent(char: u8) bool {
+    return !(isSpace(char) or isSep(char));
 }
 
 const testing = std.testing;
@@ -324,13 +314,14 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
     try stderr.writeByte('\n');
     try testing.expect(.apps == expected);
     try testing.expect(.apps == actual);
+    try testing.expectEqual(expected.apps.len, actual.apps.len);
 
     // This is redundant, but it makes any failures easier to trace
     for (expected.apps, actual.apps) |expected_elem, actual_elem| {
-        try expected_elem.print(stderr);
+        try print(expected_elem, stderr);
         try stderr.writeByte('\n');
 
-        try actual_elem.print(stderr);
+        try print(actual_elem, stderr);
         try stderr.writeByte('\n');
 
         if (@enumToInt(expected_elem) == @enumToInt(actual_elem)) {
@@ -338,11 +329,11 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
                 .token => |token| {
                     try testing.expectEqual(
                         @as(Order, .eq),
-                        token.order(actual_elem.lit),
+                        token.order(actual_elem.token),
                     );
                     try testing.expectEqualDeep(
                         token.lit,
-                        actual_elem.lit,
+                        actual_elem.token.lit,
                     );
                 },
                 .apps => try expectEqualApps(expected_elem, actual_elem),
@@ -351,7 +342,7 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
             try stderr.writeAll("Asts of different types not equal");
             try testing.expectEqual(expected_elem, actual_elem);
             // above line should always fail
-            std.debug.panic(
+            debug.panic(
                 "Asserted asts were equal despite different types",
                 .{},
             );
@@ -411,7 +402,6 @@ test "All Asts" {
             .context = .{ .pos = 6, .uri = null },
         } },
     } };
-
     // TODO: test full input string
     var parser = Lexer.init(testing.allocator, input[0..7]);
     defer parser.deinit();
@@ -430,62 +420,63 @@ test "Term: Vals" {
         \\Ssag-123+d
     ;
     const expecteds = &.{
-        "A",          "B",                 "C",
-        "Word-43",    "Word-asd-_9182--+", "Random123",
-        "Ssag-123+d",
+        "A",         "B",  "C",                 "\n",
+        "Word-43",   "\n", "Word-asd-_9182--+", "\n",
+        "Random123", "\n", "Ssag-123+d",
     };
     try expectEqualTokens(input, expecteds);
 }
 
 test "Term: Val and Infix splitting" {
-    const input = "-Sd+- +>-VB-NM+";
+    const input = "\t\n\n\t\r\r\t\t  -Sd+-\t\n\t  +>-VB-NM+\t\n";
     const expecteds = &.{
-        "-", "Sd+-", "+>-", "VB-NM+",
+        "\n", "\n",  "-",      "Sd+-",
+        "\n", "+>-", "VB-NM+", "\n",
     };
     try expectEqualTokens(input, expecteds);
 }
 
 test "Term: Vars" {
     const input =
-        \\a
-        \\word-43
-        \\word-asd-+_9182-
+        \\a word-43 word-asd-+_9182-
         \\random123
         \\_sd
     ;
     const expecteds = &.{
-        "a",         "word-43", "word-asd-+_9182-",
-        "random123", "_sd",
+        "a",         "word-43", "word-asd-+_9182-", "\n",
+        "random123", "\n",      "_sd",
     };
     try expectEqualTokens(input, expecteds);
 }
 
 test "Term: Not Vars" {
     const input =
-        \\\n\t\r Asdf
+        \\Asdf
         \\-Word-43-
         \\Word-asd-+_2-
         \\Random_123_
     ;
     const expecteds = &.{
-        "Asdf",          "-",           "Word-43-",
-        "Word-asd-+_2-", "Random_123_",
+        "Asdf", "\n",            "-",  "Word-43-",
+        "\n",   "Word-asd-+_2-", "\n", "Random_123_",
     };
     try expectEqualTokens(input, expecteds);
 }
 
 test "Term: comma seperators" {
     const input =
-        \\\t\r As,d\r,\tf
+        \\As,dr,f
         \\-Wor,d-4,3-
         \\Word-,asd-,+_2-
-        \\Rando,m_123_\n
+        \\Rando,m_123_\
+        \\
     ;
     const expecteds = &.{
-        "As",    ",", "d",      ",",  "f", "-",
-        "Wor",   ",", "d-4",    ",",  "3", "-",
-        "Word-", ",", "asd-",   ",",  "+", "_2-",
-        "Rando", ",", "m_123_", "\n",
+        "As", ",",   "dr",    ",",     "f",    "\n",
+        "-",  "Wor", ",",     "d-4",   ",",    "3",
+        "-",  "\n",  "Word-", ",",     "asd-", ",",
+        "+",  "_2-", "\n",    "Rando", ",",    "m_123_\\",
+        "\n",
     };
     try expectEqualTokens(input, expecteds);
 }
