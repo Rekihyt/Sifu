@@ -10,16 +10,18 @@ test "Submodules" {
     _ = @import("pattern.zig");
 }
 
-test "equal strings with different pointers, len, or pos should be equal" {
+test "equal strings with different pointers or pos should be equal" {
     const str1 = "abc";
     const str2 = try testing.allocator.dupe(u8, str1);
     defer testing.allocator.free(str2);
 
     const term1 = Token(Location){
+        .type = .Val,
         .lit = "Some-Val",
         .context = Location{ .pos = 0, .uri = null },
     };
     const term2 = Token(Location){
+        .type = .Val,
         .lit = "Some-Val",
         .context = Location{ .pos = 1, .uri = null },
     };
@@ -33,10 +35,12 @@ test "equal strings with different values should not be equal" {
     defer testing.allocator.free(str2);
 
     const term1 = Token(Location){
+        .type = .Val,
         .lit = "Term1",
         .context = Location{ .pos = 0, .uri = null },
     };
     const term2 = Token(Location){
+        .type = .Val,
         .lit = "Term2",
         .context = Location{ .pos = 0, .uri = null },
     };

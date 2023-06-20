@@ -1,4 +1,4 @@
-/// The parser for Sifu tries to make as few decisions as possible. Mostly,
+/// The lexer for Sifu tries to make as few decisions as possible. Mostly,
 /// it greedily lexes seperators like commas into their own ast nodes,
 /// separates vars and vals based on the first character's case, and lexes
 /// numbers. There are no errors, any utf-8 text is parsable.
@@ -43,7 +43,7 @@ col: usize = 1,
 /// The allocator for each term
 arena: ArenaAllocator,
 
-/// Creates a new parser using the given source code
+/// Creates a new lexer using the given source code
 pub fn init(allocator: Allocator, source: []const u8) Lexer {
     var arena = ArenaAllocator.init(allocator);
     return Lexer{
@@ -56,7 +56,7 @@ pub fn deinit(self: *Lexer) void {
     self.arena.deinit();
 }
 
-/// Memory valid until deinit is called on this parser
+/// Memory valid until deinit is called on this lexer
 pub fn apps(self: *Lexer) !Ast {
     var result = ArrayListUnmanaged(Ast){};
     const allocator = self.arena.allocator();
@@ -64,7 +64,7 @@ pub fn apps(self: *Lexer) !Ast {
     while (try self.nextToken()) |token| {
         // The current list becomes the first argument to the infix, then we
         // add any following asts to that
-        if (isInfixToken(token)) {
+        if (token.type == .Infix) {
             var infix_apps = ArrayListUnmanaged(Ast){};
             try infix_apps.append(allocator, Ast.of(token));
             try infix_apps.append(allocator, Ast{
@@ -76,15 +76,13 @@ pub fn apps(self: *Lexer) !Ast {
     return Ast{ .apps = try result.toOwnedSlice(allocator) };
 }
 
-fn isInfixToken(token: anytype) bool {
-    return token.lit.len > 0 and isInfix(token.lit[0]);
-}
-
+/// This function is the responsibility of the Lexer, because it is the dual
+/// to parsing.
 pub fn print(self: anytype, writer: anytype) !void {
     switch (self) {
         .apps => |asts| if (asts.len > 0 and asts[0] == .token) {
             const token = asts[0].token;
-            if (isInfixToken(token)) {
+            if (token.type == .Infix) {
                 // An infix always forms an App with at least 2
                 // nodes, the second of which must be an App (which
                 // may be empty)
@@ -114,31 +112,33 @@ pub fn print(self: anytype, writer: anytype) !void {
 
 /// Parses the source and returns the next sequence of terms forming an App,
 /// adding them to the arraylist.
-fn nextToken(self: *Lexer) Oom!?Token {
+pub fn nextToken(self: *Lexer) Oom!?Token {
     self.skipWhitespace();
     const char = self.peek() orelse
         return null;
 
     const pos = self.pos;
-    self.consume();
+    self.consume(); // tokens always have at least 1 char
     // Parse separators greedily. These can be vals or infixes, it
     // doesn't matter.
-    if (isSep(char)) {
-        // noop, we already consumed
-    } else if (isInfix(char))
+    const token_type: Token.Type = if (isSep(char))
+        .Val
+    else if (isInfix(char))
         self.infix()
     else if (isUpper(char) or char == '@')
-        self.ident()
+        self.value()
     else if (isLower(char) or char == '_' or char == '$')
-        self.ident()
+        self.variable()
     else if (isDigit(char))
-        self.int()
+        self.integer()
     else switch (char) {
         '+', '-' => if (self.peek()) |next|
             if (isDigit(next))
-                self.int()
+                self.integer()
             else
-                self.infix(),
+                self.infix()
+        else
+            .Val,
         '#' => self.comment(),
         else =>
         // This is a debug error only, as we shouldn't encounter an error
@@ -149,10 +149,14 @@ fn nextToken(self: *Lexer) Oom!?Token {
         ,
             .{ char, self.line, self.col },
         ),
-    }
+    };
     const len = self.pos - pos;
     return Token{
-        .lit = try self.arena.allocator().dupe(u8, self.source[pos .. pos + len]),
+        .type = token_type,
+        .lit = try self.arena.allocator().dupe(
+            u8,
+            self.source[pos .. pos + len],
+        ),
         .context = .{ .pos = pos, .uri = null },
     };
 }
@@ -190,8 +194,7 @@ fn skipWhitespace(self: *Lexer) void {
         };
 }
 
-/// Reads the next characters as a val or var
-fn ident(self: *Lexer) void {
+fn consumeIdent(self: *Lexer) void {
     while (self.peek()) |next_char|
         if (isIdent(next_char))
             self.consume()
@@ -199,43 +202,60 @@ fn ident(self: *Lexer) void {
             break;
 }
 
+fn value(self: *Lexer) Token.Type {
+    self.consumeIdent();
+    return .Val;
+}
+
+fn variable(self: *Lexer) Token.Type {
+    self.consumeIdent();
+    return .Var;
+}
 /// Reads the next infix characters
-fn infix(self: *Lexer) void {
+fn infix(self: *Lexer) Token.Type {
     while (self.peek()) |next_char|
         if (isInfix(next_char))
             self.consume()
         else
             break;
+
+    return .Val;
 }
 
 /// Reads the next digits and/or any underscores
-fn int(self: *Lexer) void {
+fn integer(self: *Lexer) Token.Type {
     while (self.peek()) |next_char|
         if (isDigit(next_char) or next_char == '_')
             self.consume()
         else
             break;
+
+    return .I;
 }
 
 /// Reads the next characters as number. `parseFloat` only throws
 /// `InvalidCharacter`, so this function cannot fail.
-fn float(self: *Lexer) void {
+fn float(self: *Lexer) Token.Type {
     self.int();
     if (self.peek() == '.') {
         self.consume();
         self.int();
     }
+
+    return .F;
 }
 
 /// Reads a value wrapped in double-quotes from the current character. If no
 /// matching quote is found, reads until EOF.
-fn string(self: *Lexer) void {
+fn string(self: *Lexer) Token.Type {
     while (self.peek() != '"')
         self.consume();
+
+    return .Str;
 }
 
 /// Reads until the end of the line or EOF
-fn comment(self: *Lexer) void {
+fn comment(self: *Lexer) Token.Type {
     while (self.peek()) |next_char|
         if (next_char != '\n')
             self.consume()
@@ -243,6 +263,8 @@ fn comment(self: *Lexer) void {
             // Newlines that terminate comments are also terms, so no
             // `consume` here
             break;
+
+    return .Comment;
 }
 
 /// Returns true if the given character is a digit. Does not include
@@ -353,11 +375,11 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
 }
 
 fn expectEqualTokens(input: []const u8, expecteds: []const []const u8) !void {
-    var parser = Lexer.init(testing.allocator, input);
-    defer parser.deinit();
+    var lexer = Lexer.init(testing.allocator, input);
+    defer lexer.deinit();
 
     for (expecteds) |expected| {
-        const next_token = (try parser.nextToken()).?;
+        const next_token = (try lexer.nextToken()).?;
         try stderr.print("{s}\n", .{next_token.lit});
         try testing.expectEqualStrings(
             expected,
@@ -386,27 +408,31 @@ test "All Asts" {
     ;
     const expected = .{ .apps = &.{
         .{ .token = .{
+            .type = .Val,
             .lit = "Val1",
             .context = .{ .pos = 0, .uri = null },
         } },
         .{ .token = .{
+            .type = .Val,
             .lit = ",",
             .context = .{ .pos = 4, .uri = null },
         } },
         .{ .token = .{
+            .type = .I,
             .lit = "5",
             .context = .{ .pos = 5, .uri = null },
         } },
         .{ .token = .{
+            .type = .Val,
             .lit = ";",
             .context = .{ .pos = 6, .uri = null },
         } },
     } };
     // TODO: test full input string
-    var parser = Lexer.init(testing.allocator, input[0..7]);
-    defer parser.deinit();
+    var lexer = Lexer.init(testing.allocator, input[0..7]);
+    defer lexer.deinit();
 
-    const actual = try parser.apps();
+    const actual = try lexer.apps();
 
     try expectEqualApps(expected, actual);
 }
@@ -482,25 +508,28 @@ test "Term: comma seperators" {
 }
 
 test "App: simple vals" {
-    var parser = Lexer.init(testing.allocator, "Aa Bb Cc");
-    defer parser.deinit();
+    var lexer = Lexer.init(testing.allocator, "Aa Bb Cc");
+    defer lexer.deinit();
     const expected = Ast{
         .apps = &.{
             Ast{ .token = .{
+                .type = .Val,
                 .lit = "Aa",
                 .context = .{ .pos = 0, .uri = null },
             } },
             Ast{ .token = .{
+                .type = .Val,
                 .lit = "Bb",
                 .context = .{ .pos = 3, .uri = null },
             } },
             Ast{ .token = .{
+                .type = .Val,
                 .lit = "Cc",
                 .context = .{ .pos = 6, .uri = null },
             } },
         },
     };
-    const actual = try parser.apps();
+    const actual = try lexer.apps();
 
     for (expected.apps, actual.apps) |expected_ast, actual_ast| {
         try testing.expectEqualStrings(
@@ -515,11 +544,12 @@ test "App: simple vals" {
 }
 
 test "App: simple op" {
-    var parser = Lexer.init(testing.allocator, "1 + 2");
-    defer parser.deinit();
+    var lexer = Lexer.init(testing.allocator, "1 + 2");
+    defer lexer.deinit();
     const expected = Ast{ .apps = &.{
         Ast{
             .token = .{
+                .type = .Infix,
                 .lit = "+",
                 .context = .{ .pos = 2, .uri = null },
             },
@@ -527,6 +557,7 @@ test "App: simple op" {
         Ast{ .apps = &.{
             Ast{
                 .token = .{
+                    .type = .I,
                     .lit = "1",
                     .context = .{ .pos = 0, .uri = null },
                 },
@@ -534,55 +565,62 @@ test "App: simple op" {
         } },
         Ast{
             .token = .{
+                .type = .I,
                 .lit = "2",
                 .context = .{ .pos = 4, .uri = null },
             },
         },
     } };
-    const actual = try parser.apps();
+    const actual = try lexer.apps();
 
     try expectEqualApps(expected, actual);
 }
 
 test "App: simple ops" {
-    var parser = Lexer.init(testing.allocator, "1 + 2 + 3");
-    defer parser.deinit();
+    var lexer = Lexer.init(testing.allocator, "1 + 2 + 3");
+    defer lexer.deinit();
     const expected = Ast{ .apps = &.{
         Ast{ .token = .{
+            .type = .Infix,
             .lit = "+",
             .context = .{ .pos = 6, .uri = null },
         } },
         Ast{ .apps = &.{
             Ast{ .token = .{
+                .type = .Infix,
                 .lit = "+",
                 .context = .{ .pos = 2, .uri = null },
             } },
             Ast{ .apps = &.{
                 Ast{ .token = .{
+                    .type = .I,
                     .lit = "1",
                     .context = .{ .pos = 0, .uri = null },
                 } },
             } },
             Ast{ .token = .{
+                .type = .I,
                 .lit = "2",
                 .context = .{ .pos = 4, .uri = null },
             } },
         } },
         Ast{ .token = .{
+            .type = .I,
             .lit = "3",
             .context = .{ .pos = 8, .uri = null },
         } },
     } };
-    const actual = try parser.apps();
+    const actual = try lexer.apps();
     try expectEqualApps(expected, actual);
 }
 
 test "App: simple op, no first arg" {
-    var parser = Lexer.init(testing.allocator, "+ 2");
-    defer parser.deinit();
+    var lexer = Lexer.init(testing.allocator, "+ 2");
+    defer lexer.deinit();
     const expected = Ast{ .apps = &.{
         Ast{
             .token = .{
+                .type = .Infix,
                 .lit = "+",
                 .context = .{ .pos = 2, .uri = null },
             },
@@ -590,32 +628,35 @@ test "App: simple op, no first arg" {
         Ast{ .apps = &.{} },
         Ast{
             .token = .{
+                .type = .I,
                 .lit = "2",
                 .context = .{ .pos = 4, .uri = null },
             },
         },
     } };
-    const actual = try parser.apps();
+    const actual = try lexer.apps();
     try expectEqualApps(expected, actual);
 }
 
 test "App: simple op, no second arg" {
-    var parser = Lexer.init(testing.allocator, "1 +");
-    defer parser.deinit();
+    var lexer = Lexer.init(testing.allocator, "1 +");
+    defer lexer.deinit();
     const expected = Ast{ .apps = &.{
         Ast{
             .token = .{
+                .type = .Infix,
                 .lit = "+",
                 .context = .{ .pos = 2, .uri = null },
             },
         },
         Ast{ .apps = &.{
             Ast{ .token = .{
+                .type = .I,
                 .lit = "1",
                 .context = .{ .pos = 0, .uri = null },
             } },
         } },
     } };
-    const actual = try parser.apps();
+    const actual = try lexer.apps();
     try expectEqualApps(expected, actual);
 }

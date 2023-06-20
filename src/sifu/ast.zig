@@ -42,8 +42,34 @@ pub fn Ast(comptime Context: type) type {
 /// Any word with with context, including vars.
 pub fn Token(comptime Context: type) type {
     return struct {
+        /// These are determined during parsing, but used during lexing. The values here
+        /// correspond exactly to a type name in Sifu.
+        pub const Type = enum {
+            Val,
+            Str,
+            Var,
+            Infix,
+            // Ints/UInts are be applied to a number which signifies their size
+            I, // signed
+            U, // unsigned
+            F, // float
+            Comment,
+
+            /// Compares by value, not by len, pos, or pointers.
+            pub fn order(self: Type, other: Type) Order {
+                return math.order(@enumToInt(self), @enumToInt(other));
+            }
+
+            pub fn eql(self: Type, other: Type) bool {
+                return .eq == self.order(other);
+            }
+        };
+
         /// The string value of this token.
         lit: []const u8,
+
+        /// The token type, to be used in patterns
+        type: Type,
 
         /// `Context` is intended for optional debug/tooling information like
         /// `Location`.
@@ -53,16 +79,13 @@ pub fn Token(comptime Context: type) type {
 
         /// Ignores Context.
         pub fn order(self: Self, other: Self) Order {
+            // Don't need to use `Token.Type` because it depends entirely on the
+            // literal anyways.
             return mem.order(u8, self.lit, other.lit);
         }
 
         pub fn eql(self: Self, other: Self) bool {
             return .eq == self.order(other);
-        }
-
-        pub fn tokenType(self: Self) TokenType {
-            return if (self.lit.len == 0) Pattern.ofLit("", "") else if (Lexer.isUpper(self.lit[0]))
-                .Value;
         }
 
         /// Convert this to a Pattern literal or variable, setting the Pattern's
@@ -82,38 +105,19 @@ pub const Location = struct {
     uri: ?*const []u8,
 };
 
-/// These are determined during parsing, not lexing. The values here correspond
-/// exactly to a type name in Sifu.
-pub const TokenType = enum {
-    Value,
-    String,
-    // Ints/UInts are be applied to a number which signifies their size
-    I, // signed
-    U, // unsigned
-    Float,
-    Comment,
-
-    /// Compares by value, not by len, pos, or pointers.
-    pub fn order(self: TokenType, other: TokenType) Order {
-        return math.order(@enumToInt(self), @enumToInt(other));
-    }
-
-    pub fn eql(self: TokenType, other: TokenType) bool {
-        return .eq == self.order(other);
-    }
-};
-
 const testing = std.testing;
 const Tok = Token(Location);
 
 test "simple ast to pattern" {
     const term = Tok{
+        .type = .Val,
         .lit = "My-Token",
         .context = .{ .uri = null, .pos = 0 },
     };
     _ = term;
     const ast = Ast(Location){
         .token = .{
+            .type = .Val,
             .lit = "Some-Other-Token",
             .context = .{ .uri = null, .pos = 20 },
         },

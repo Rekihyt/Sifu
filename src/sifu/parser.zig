@@ -30,7 +30,7 @@ const Order = std.math.Order;
 const mem = std.mem;
 const math = std.math;
 const Pattern = @import("../pattern.zig")
-    .Pattern(Token(Location), []const u8, Ast(Location));
+    .Pattern(Token, []const u8, Ast);
 const Lexer = @import("lexer.zig");
 
 /// The allocator for each pattern
@@ -38,7 +38,8 @@ arena: ArenaAllocator,
 
 lexer: Lexer,
 
-/// Creates a new parser using the given source code
+/// Creates a new parser using the given source code.
+/// Allocates pointers to memory owned by the lexer, but does not modify it.
 pub fn init(allocator: Allocator, lexer: Lexer) Parser {
     var arena = ArenaAllocator.init(allocator);
     return Parser{
@@ -51,14 +52,29 @@ pub fn deinit(self: *Parser) void {
     self.arena.deinit();
 }
 
+/// Parse a triemap pattern.
+pub fn parseMap(self: *Parser) Oom!?Pattern {
+    _ = self;
+}
+
+pub fn parseVar(self: *Parser) Oom!?Pattern {
+    _ = self;
+}
+
+pub fn parseMatch(self: *Parser) Oom!?Pattern {
+    _ = self;
+}
+
+pub fn parseApps(self: *Parser) Oom!?Pattern {
+    _ = self;
+}
+
 /// This function is responsible for actually giving meaning to the AST
 /// by converting it into a Pattern. Sifu builtin operators change how
 /// this happens.
-/// Input - an Ast of apps parsed by the function in `Parser`. These
-/// should have placed infix operators correctly by nesting them into
-/// apps.
+/// Input - any Ast
 /// Output - a map pattern representing the file as a trie.
-fn pattern(self: *Parser) Oom!?Pattern {
+pub fn parsePattern(self: *Parser) Oom!?Pattern {
     // return try self.arena.allocator().dupe(u8, self.source[pos..self.pos]);
 
     // return if (std.fmt.parseUnsigned(usize, self.source[pos..self.pos], 10)) |i|
@@ -70,7 +86,13 @@ fn pattern(self: *Parser) Oom!?Pattern {
 
     // return try std.fmt.parseFloat(fsize, self.source[pos..self.pos], 10) catch
     //     unreachable; // we only consumed digits, and maybe one decimal point
-    _ = self;
+    if (try self.lexer.nextToken()) |token| {
+        const lit = token.lit;
+        _ = lit;
+        switch (token.type) {
+            else => {},
+        }
+    }
 }
 
 /// Returns the next token but does not increase the Parser's position, or
@@ -104,43 +126,13 @@ const stderr = if (verbose_tests)
 else
     std.io.null_writer;
 
-fn expectEqualApps(expected: Ast, actual: Ast) !void {
-    try stderr.writeByte('\n');
-    try testing.expect(.apps == expected);
-    try testing.expect(.apps == actual);
+test "simple val" {
+    var lexer = Lexer.init(testing.allocator, "Asdf");
+    defer lexer.deinit();
 
-    // This is redundant, but it makes any failures easier to trace
-    for (expected.apps, actual.apps) |expected_elem, actual_elem| {
-        try expected_elem.print(stderr);
-        try stderr.writeByte('\n');
+    var parser = Parser.init(testing.allocator, lexer);
+    defer parser.deinit();
 
-        try actual_elem.print(stderr);
-        try stderr.writeByte('\n');
-
-        if (@enumToInt(expected_elem) == @enumToInt(actual_elem)) {
-            switch (expected_elem) {
-                .token => |token| {
-                    try testing.expectEqual(
-                        @as(Order, .eq),
-                        token.order(actual_elem.token),
-                    );
-                    try testing.expectEqualDeep(
-                        token.term,
-                        actual_elem.token.term,
-                    );
-                },
-                .apps => try expectEqualApps(expected_elem, actual_elem),
-            }
-        } else {
-            try stderr.writeAll("Asts of different types not equal");
-            try testing.expectEqual(expected_elem, actual_elem);
-            // above line should always fail
-            std.debug.panic(
-                "Asserted asts were equal despite different types",
-                .{},
-            );
-        }
-    }
-    // Variants of this seem to cause the compiler to error with GenericPoison
-    // try testing.expectEqual(@as(Order, .eq), expected.order(actual));
+    const pattern = (try parser.parsePattern()).?;
+    try testing.expectEqualStrings(pattern.kind.lit.lit, "Asdf");
 }
