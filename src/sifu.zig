@@ -1,5 +1,29 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Pattern = @import("../pattern.zig")
+    .Pattern([]const u8, []const u8, Ast);
 pub const Errors = @import("sifu/errors.zig").Errors;
+const Lexer = @import("sifu/lexer.zig");
+const syntax = @import("sifu/syntax.zig");
+const Token = syntax.Token(syntax.Location);
+const Ast = @import("sifu/ast.zig").Ast(Token);
+const parser = @import("sifu/parser.zig");
+const ArenaAllocator = std.heap.ArenaAllocator;
 
+pub fn parse(allocator: Allocator, source: []const u8) !Pattern {
+    var lexer = Lexer.init(allocator, source);
+    defer lexer.deinit();
+
+    var arena = ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    return parser.parse(
+        arena,
+        try lexer.apps(),
+    );
+}
+
+const testing = std.testing;
 test "Submodules" {
     _ = @import("sifu/errors.zig");
     _ = @import("sifu/parser.zig");

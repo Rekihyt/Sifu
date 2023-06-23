@@ -1,14 +1,8 @@
-/// The parser for Sifu tries to make as few decisions as possible. Mostly,
-/// it greedily lexes seperators like commas into their own ast nodes,
-/// separates vars and vals based on the first character's case, and lexes
-/// numbers. There are no errors, any utf-8 text is parsable.
+/// The parser for Sifu tries to make as few decisions as possible. Mostly, it
+/// greedily lexes seperators like commas into their own ast nodes, separates
+/// vars and vals based on the first character's case, and lazily lexes non-
+/// strings. There are no errors, any utf-8 text is parsable.
 ///
-// Simple syntax enables lexing and parsing at the same time. Parsing begins
-// with a new `App` ast node. Each term is lexed, parsed into a `Token`, then added
-// to the top-level `Ast`.
-// Pattern construction happens after this, as does error reporting on invalid
-// asts.
-//
 const Parser = @This();
 
 const std = @import("std");
@@ -16,12 +10,13 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const panic = std.debug.panic;
 const util = @import("../util.zig");
-const fsize = fsize;
-const ast = @import("ast.zig");
-const Location = ast.Location;
-const Lit = ast.Lit;
-const Ast = ast.Ast(Location);
-const Token = ast.Token(Location);
+const fsize = util.fsize();
+const Ast = @import("ast.zig").Ast(Token);
+const syntax = @import("syntax.zig");
+const Token = syntax.Token(Location);
+const Location = syntax.Location;
+const Term = syntax.Term;
+const Type = syntax.Type;
 const Set = util.Set;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const ArrayList = std.ArrayList;
@@ -29,96 +24,83 @@ const Oom = Allocator.Error;
 const Order = std.math.Order;
 const mem = std.mem;
 const math = std.math;
-const Pattern = @import("../pattern.zig")
-    .Pattern(Token, []const u8, Ast);
+const assert = std.debug.assert;
+const debug = std.debug;
 const Lexer = @import("lexer.zig");
 
-/// The allocator for each pattern
-arena: ArenaAllocator,
-
-lexer: Lexer,
-
-/// Creates a new parser using the given source code.
-/// Allocates pointers to memory owned by the lexer, but does not modify it.
-pub fn init(allocator: Allocator, lexer: Lexer) Parser {
-    var arena = ArenaAllocator.init(allocator);
-    return Parser{
-        .arena = arena,
-        .lexer = lexer,
+fn parseLit(token: Token) Ast {
+    const lit = token.lit;
+    return if (mem.eql(u8, lit, "->")) {
+        // The next pattern is the key in an App, followed by the val as args
+        // parseApps(allocator, )
+    } else if (mem.eql(u8, lit, "{")) {
+        //
+    } else if (mem.eql(u8, lit, "}")) {
+        //
+    } else Ast{
+        .kind = switch (token.type) {
+            .Var => .{ .@"var" = lit },
+            else => .{ .lit = lit },
+        },
     };
 }
 
-pub fn deinit(self: *Parser) void {
-    self.arena.deinit();
+/// Memory valid until deinit is called on this lexer
+pub fn parse(allocator: Allocator, lexer: *Lexer) !Ast {
+    var result = ArrayListUnmanaged(Ast){};
+
+    while (try lexer.nextToken(allocator)) |token| {
+        // The current list becomes the first argument to the infix, then we
+        // add any following asts to that
+        if (token.type == .Infix) {
+            var infix_apps = ArrayListUnmanaged(Ast){};
+            try infix_apps.append(allocator, Ast.of(token));
+            try infix_apps.append(allocator, Ast{
+                .apps = try result.toOwnedSlice(allocator),
+            });
+            result = infix_apps;
+        } else try result.append(allocator, Ast.of(token));
+    }
+    return Ast{ .apps = try result.toOwnedSlice(allocator) };
 }
 
-/// Parse a triemap pattern.
-pub fn parseMap(self: *Parser) Oom!?Pattern {
-    _ = self;
-}
-
-pub fn parseVar(self: *Parser) Oom!?Pattern {
-    _ = self;
-}
-
-pub fn parseMatch(self: *Parser) Oom!?Pattern {
-    _ = self;
-}
-
-pub fn parseApps(self: *Parser) Oom!?Pattern {
-    _ = self;
-}
-
-/// This function is responsible for actually giving meaning to the AST
-/// by converting it into a Pattern. Sifu builtin operators change how
-/// this happens.
-/// Input - any Ast
-/// Output - a map pattern representing the file as a trie.
-pub fn parsePattern(self: *Parser) Oom!?Pattern {
-    // return try self.arena.allocator().dupe(u8, self.source[pos..self.pos]);
-
-    // return if (std.fmt.parseUnsigned(usize, self.source[pos..self.pos], 10)) |i|
-    //     i
-    // else |err| switch (err) {
-    //     error.InvalidCharacter => unreachable, // we only consumed digits
-    //     else => |e| e, // recapture to narrow the error type
-    // };
-
-    // return try std.fmt.parseFloat(fsize, self.source[pos..self.pos], 10) catch
-    //     unreachable; // we only consumed digits, and maybe one decimal point
-    if (try self.lexer.nextToken()) |token| {
-        const lit = token.lit;
-        _ = lit;
-        switch (token.type) {
-            else => {},
-        }
+/// This function is the responsibility of the Parser, because it is the dual
+/// to parsing.
+pub fn print(self: anytype, writer: anytype) !void {
+    switch (self) {
+        .apps => |asts| if (asts.len > 0 and asts[0] == .token) {
+            const token = asts[0].token;
+            if (token.type == .Infix) {
+                // An infix always forms an App with at least 2
+                // nodes, the second of which must be an App (which
+                // may be empty)
+                assert(asts.len >= 2);
+                assert(asts[1] == .apps);
+                try writer.writeAll("(");
+                try print(asts[1], writer);
+                try writer.writeByte(' ');
+                try writer.writeAll(token.lit);
+                if (asts.len >= 2)
+                    for (asts[2..]) |arg| {
+                        try writer.writeByte(' ');
+                        try print(arg, writer);
+                    };
+                try writer.writeAll(")");
+            } else if (asts.len > 0) {
+                try print(asts[0], writer);
+                for (asts[1..]) |it| {
+                    try writer.writeByte(' ');
+                    try print(it, writer);
+                }
+            } else try writer.writeAll("()");
+        },
+        .token => |token| try writer.print("{s}", .{token.lit}),
+        .@"var" => |v| try writer.print("{s}", .{v}),
     }
 }
 
-/// Returns the next token but does not increase the Parser's position, or
-/// returns null if there are no more characters left to .
-// fn peek(self: Parser) ?u8 {
-//     return if (self.pos < self.source.len)
-//         self.source[self.pos]
-//     else
-//         null;
-// }
-
-/// Advances one token, or panics (should only be called after `peek`)
-// fn consume(self: *Parser) void {
-//     if (self.peek()) |char| {
-//         self.pos += 1;
-//         switch (char) {
-//             '\n' => {
-//                 self.col = 1;
-//                 self.line += 1;
-//             },
-//             else => self.col += 1,
-//         }
-//     } else @panic("Attempted to advance to next Ast but EOF reached");
-// }
-
 const testing = std.testing;
+const expectEqualStrings = testing.expectEqualStrings;
 const meta = std.meta;
 const verbose_tests = @import("build_options").verbose_tests;
 const stderr = if (verbose_tests)
@@ -127,12 +109,262 @@ else
     std.io.null_writer;
 
 test "simple val" {
-    var lexer = Lexer.init(testing.allocator, "Asdf");
-    defer lexer.deinit();
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
 
-    var parser = Parser.init(testing.allocator, lexer);
-    defer parser.deinit();
+    var lexer = Lexer.init("Asdf");
+    const ast = try parse(arena.allocator(), &lexer);
+    try testing.expectEqualStrings(ast.token.lit, "Asdf");
+}
 
-    const pattern = (try parser.parsePattern()).?;
-    try testing.expectEqualStrings(pattern.kind.lit.lit, "Asdf");
+fn expectEqualApps(expected: Ast, actual: Ast) !void {
+    try stderr.writeByte('\n');
+    try testing.expect(.apps == expected);
+    try testing.expect(.apps == actual);
+    try testing.expectEqual(expected.apps.len, actual.apps.len);
+
+    // This is redundant, but it makes any failures easier to trace
+    for (expected.apps, actual.apps) |expected_elem, actual_elem| {
+        try print(expected_elem, stderr);
+        try stderr.writeByte('\n');
+
+        try print(actual_elem, stderr);
+        try stderr.writeByte('\n');
+
+        if (@enumToInt(expected_elem) == @enumToInt(actual_elem)) {
+            switch (expected_elem) {
+                .token => |token| {
+                    try testing.expectEqual(
+                        @as(Order, .eq),
+                        token.order(actual_elem.token),
+                    );
+                    try testing.expectEqualDeep(
+                        token.lit,
+                        actual_elem.token.lit,
+                    );
+                },
+                .@"var" => |v| try expectEqualStrings(v, actual_elem.@"var"),
+                .apps => try expectEqualApps(expected_elem, actual_elem),
+            }
+        } else {
+            try stderr.writeAll("Asts of different types not equal");
+            try testing.expectEqual(expected_elem, actual_elem);
+            // above line should always fail
+            debug.panic(
+                "Asserted asts were equal despite different types",
+                .{},
+            );
+        }
+    }
+    // Variants of this seem to cause the compiler to error with GenericPoison
+    // try testing.expectEqual(@as(Order, .eq), expected.order(actual));
+}
+test "All Asts" {
+    const input =
+        \\Val1,5;
+        \\var1.
+        \\Infix -->
+        \\5 < 10.V
+        \\1 + 2.0
+        \\$strat
+        \\
+        \\10 == 10
+        \\10 != 9
+        \\"foo".len
+        \\[1, 2]
+        \\{"key":1}
+        \\// a comment
+        \\||
+        \\()
+    ;
+    const expected = .{ .apps = &.{
+        .{ .token = .{
+            .type = .Val,
+            .lit = "Val1",
+            .context = .{ .pos = 0, .uri = null },
+        } },
+        .{ .token = .{
+            .type = .Val,
+            .lit = ",",
+            .context = .{ .pos = 4, .uri = null },
+        } },
+        .{ .token = .{
+            .type = .I,
+            .lit = "5",
+            .context = .{ .pos = 5, .uri = null },
+        } },
+        .{ .token = .{
+            .type = .Val,
+            .lit = ";",
+            .context = .{ .pos = 6, .uri = null },
+        } },
+    } };
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    // TODO: test full input string
+    var lexer = Lexer.init(input[0..7]);
+
+    const actual = try parse(arena.allocator(), &lexer);
+
+    try expectEqualApps(expected, actual);
+}
+
+test "App: simple vals" {
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var lexer = Lexer.init("Aa Bb Cc");
+    const expected = Ast{
+        .apps = &.{
+            Ast{ .token = .{
+                .type = .Val,
+                .lit = "Aa",
+                .context = .{ .pos = 0, .uri = null },
+            } },
+            Ast{ .token = .{
+                .type = .Val,
+                .lit = "Bb",
+                .context = .{ .pos = 3, .uri = null },
+            } },
+            Ast{ .token = .{
+                .type = .Val,
+                .lit = "Cc",
+                .context = .{ .pos = 6, .uri = null },
+            } },
+        },
+    };
+    const actual = try parse(arena.allocator(), &lexer);
+
+    for (expected.apps, actual.apps) |expected_ast, actual_ast| {
+        try testing.expectEqualStrings(
+            expected_ast.token.lit,
+            actual_ast.token.lit,
+        );
+        try testing.expectEqual(
+            expected_ast.token.context.pos,
+            actual_ast.token.context.pos,
+        );
+    }
+}
+
+test "App: simple op" {
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var lexer = Lexer.init("1 + 2");
+    const expected = Ast{ .apps = &.{
+        Ast{
+            .token = .{
+                .type = .Infix,
+                .lit = "+",
+                .context = .{ .pos = 2, .uri = null },
+            },
+        },
+        Ast{ .apps = &.{
+            Ast{
+                .token = .{
+                    .type = .I,
+                    .lit = "1",
+                    .context = .{ .pos = 0, .uri = null },
+                },
+            },
+        } },
+        Ast{
+            .token = .{
+                .type = .I,
+                .lit = "2",
+                .context = .{ .pos = 4, .uri = null },
+            },
+        },
+    } };
+    const actual = try parse(arena.allocator(), &lexer);
+
+    try expectEqualApps(expected, actual);
+}
+
+test "App: simple ops" {
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var lexer = Lexer.init("1 + 2 + 3");
+    const expected = Ast{ .apps = &.{
+        Ast{ .token = .{
+            .type = .Infix,
+            .lit = "+",
+            .context = .{ .pos = 6, .uri = null },
+        } },
+        Ast{ .apps = &.{
+            Ast{ .token = .{
+                .type = .Infix,
+                .lit = "+",
+                .context = .{ .pos = 2, .uri = null },
+            } },
+            Ast{ .apps = &.{
+                Ast{ .token = .{
+                    .type = .I,
+                    .lit = "1",
+                    .context = .{ .pos = 0, .uri = null },
+                } },
+            } },
+            Ast{ .token = .{
+                .type = .I,
+                .lit = "2",
+                .context = .{ .pos = 4, .uri = null },
+            } },
+        } },
+        Ast{ .token = .{
+            .type = .I,
+            .lit = "3",
+            .context = .{ .pos = 8, .uri = null },
+        } },
+    } };
+    const actual = try parse(arena.allocator(), &lexer);
+    try expectEqualApps(expected, actual);
+}
+
+test "App: simple op, no first arg" {
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var lexer = Lexer.init("+ 2");
+    const expected = Ast{ .apps = &.{
+        Ast{
+            .token = .{
+                .type = .Infix,
+                .lit = "+",
+                .context = .{ .pos = 2, .uri = null },
+            },
+        },
+        Ast{ .apps = &.{} },
+        Ast{
+            .token = .{
+                .type = .I,
+                .lit = "2",
+                .context = .{ .pos = 4, .uri = null },
+            },
+        },
+    } };
+    const actual = try parse(arena.allocator(), &lexer);
+    try expectEqualApps(expected, actual);
+}
+
+test "App: simple op, no second arg" {
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init("1 +");
+    const expected = Ast{ .apps = &.{
+        Ast{
+            .token = .{
+                .type = .Infix,
+                .lit = "+",
+                .context = .{ .pos = 2, .uri = null },
+            },
+        },
+        Ast{ .apps = &.{
+            Ast{ .token = .{
+                .type = .I,
+                .lit = "1",
+                .context = .{ .pos = 0, .uri = null },
+            } },
+        } },
+    } };
+    const actual = try parse(arena.allocator(), &lexer);
+    try expectEqualApps(expected, actual);
 }

@@ -67,7 +67,7 @@ A variable pattern matches any corresponding term in the key. For example, the t
 
 ## Evaluation and Termination
 
-All Sifu programs terminate. Recursive patterns must therefore always make some sort of progress. Sifu detects this by checking that for all recursive calls in the body, they have at least one term that is _contained_ by an app in the corresponding term in the key. This forces any computation to sort of _telescope_ into the key, which invariably reduces it.
+All Sifu programs terminate. Recursive patterns must therefore either make some sort of progress, or stop trying to match. Sifu looks for progress by checking that for all recursive calls in the body, they have at least one term that is _contained_ by an app in the corresponding term in the key (structural recursion). This forces any computation to remove a layer of nesting from the key, which invariably reduces it.
 
 For example, consider the `Map` function which is defined pretty much identically to a typical functional language:
 ```
@@ -97,3 +97,20 @@ To prevent a match to either `F` or `G` from recursing forever, patterns only ma
 ## Semantics and Syntax Isomorphism
 
 All syntax in Sifu can be parsed into a Pattern, then mapped back into the original syntax (although it will be desugared). This implies that _all_ syntax has semantics, i.e. parentheses have meaning.
+
+## Type Checking as Pattern matching on Patterns
+
+To type check a Sifu program, ensure each expression will match at least once.
+
+For example, consider the following definitions modeling boolean algebra:
+```
+Bool => { True, False }
+
+And (True : Bool) (True : Bool) => True
+And (_ : Bool) (_ : Bool) => False 
+```
+Then an expression like this should also have type `Bool`:
+```
+And False True
+```
+To type check it, we need to show each argument will match its parameter at least once. Both `False : Bool` and `True : Bool` match, so this program is checked.

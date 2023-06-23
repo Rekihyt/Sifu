@@ -1,8 +1,6 @@
 const std = @import("std");
 const meta = std.meta;
 const Allocator = std.mem.Allocator;
-const AutoArrayHashMapUnmanaged = std.AutoArrayHashMapUnmanaged;
-const ArrayHashMapUnmanaged = std.ArrayHashMapUnmanaged;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const math = std.math;
 const Order = math.Order;
@@ -12,7 +10,7 @@ const Order = math.Order;
 /// more children.
 ///
 /// The term and var type must be hashable. Nodes track context, the recursive
-/// structures (apps, match) do not.
+/// structures (map, match) do not.
 ///
 /// Params
 /// `Lit` - the type of literal keys
@@ -31,16 +29,13 @@ pub fn Pattern(
         // Hashmaps can be used as keys because they are (probably) created
         // deterministically, as long as they have only had elements
         // inserted and not removed.
-        pub const Map = AutoArrayHashMapUnmanaged(*Self, Self);
+        pub const Map = if (Lit == []const u8)
+            std.StringArrayHashMapUnmanaged(Self)
+        else
+            std.AutoArrayHashMapUnmanaged(*Self, Self);
 
         pub const Kind = union(enum) {
-            pub const Match = struct {
-                key: *Self,
-                pat: *Self,
-            };
-
             // Literals and variables are leaves
-
             lit: Lit,
 
             /// The Var kind matches and stores a locally-unique key. During
@@ -48,11 +43,8 @@ pub fn Pattern(
             /// rewritten to this pattern's value.
             @"var": Var,
 
-            // Apps and Matches are the branches of the AST
-
-            match: Match,
-
-            apps: Map,
+            /// Maps form the branches of the AST
+            map: Map,
         };
 
         /// The kind primarily determines how this pattern matches, and stores
@@ -64,7 +56,7 @@ pub fn Pattern(
 
         pub fn ofMap(val: ?Val) Self {
             return .{
-                .kind = .{ .apps = Map{} },
+                .kind = .{ .map = Map{} },
                 .val = val,
             };
         }
@@ -86,30 +78,22 @@ pub fn Pattern(
             };
         }
 
-        pub fn ofMatch(
-            sub_key: Self,
-            sub_pat: Self,
-            val: ?Val,
-        ) Self {
-            return .{
-                .kind = .{
-                    .match = .{ .key = sub_key, .pat = sub_pat },
-                },
-                .val = val,
-            };
-        }
-
-        pub fn insert(self: *Self, key: Self, val: Val, allocator: Allocator) !void {
+        pub fn insert(
+            self: *Self,
+            key: Self,
+            val: Val,
+            allocator: Allocator,
+        ) !void {
             _ = allocator;
             _ = val;
             _ = key;
             switch (self.kind) {
                 .lit => {},
                 .@"var" => {},
-                .match => {},
-                .apps => {},
+                .map => {},
             }
         }
+
         fn insertMap(
             self: *Self,
             key: Self,
@@ -120,14 +104,13 @@ pub fn Pattern(
             // Follow the longest branch that exists
             while (current.contains(key)) |next| : (current = next)
                 switch (current.kind) {
-                    .apps => |map| {
+                    .map => |map| {
                         if (map.get()) |pat_node|
                             current = pat_node
                         else
                             // Key mismatch
                             break;
                     },
-                    .match => {},
                     .variable => {},
                 };
             // Create new branches while necessary
@@ -136,7 +119,7 @@ pub fn Pattern(
                     .pattern = current,
                     .kind = .{ .variable = .{ .key = key } },
                 };
-                current.apps.put(allocator, key, next);
+                current.map.put(allocator, key, next);
             }
             // Put the value in this last node
             current.val = val;
@@ -157,18 +140,18 @@ pub fn Pattern(
             var current = self.*;
             var i: usize = 0;
             switch (self.kind) {
-                .apps => |apps| {
+                .map => |map| {
+                    _ = map;
                     // Follow the longest branch that exists
                     while (i < key.len) : (i += 1)
                         switch (current.kind) {
-                            .apps => |map| {
-                                if (map.get(apps[i])) |pat_node|
-                                    current = pat_node
-                                else
-                                    // Key mismatch
-                                    return null;
-                            },
-                            .match => {},
+                            // .map => |map| {
+                            //     if (map.get(map[i])) |pat_node|
+                            //         current = pat_node
+                            //     else
+                            //         // Key mismatch
+                            //         return null;
+                            // },
                             .variable => {},
                         }
                     else
@@ -213,7 +196,7 @@ test "should behave like a set when given void" {
     // Empty pattern
     try testing.expectEqual(@as(?void, {}), pat.match(.{
         .val = {},
-        .kind = .{ .apps = Pat.Map{} },
+        .kind = .{ .map = Pat.Map{} },
     }));
 }
 
@@ -222,5 +205,5 @@ test "insert single lit" {}
 test "insert multiple lits" {
     // Multiple keys
     // try pat.insert(&.{ 1, 2, 3 }, {}, al);
-    // try testing.expect(pat.kind.apps.contains(1));
+    // try testing.expect(pat.kind.map.contains(1));
 }

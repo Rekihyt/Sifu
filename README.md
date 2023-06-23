@@ -34,28 +34,29 @@
     - complilation is simply creating perfect hashmaps instead of dynamic ones
 
 ## Examples
-  ```python
-  # Implement some simple types
-  Ord -> { Gt, Eq, Lt }
-  Bool -> { True, False }
+```python
+# Implement some simple types
+Ord -> { Gt, Eq, Lt }
+Bool -> { True, False }
 
-  # A function `IsEq` that takes an ord, and returns True if it is Eq. `_` is
-  # just another var, meant to be unused. 
-  IsEq Eq -> True
-  IsEq _ -> False
+# A function `IsEq` that takes an ord, and returns True if it is Eq. `_` is
+# just another var, meant to be unused. 
+IsEq Eq -> True
+IsEq _ -> False
 
-  # This function compares bools using Case, a function that takes a list of
-  # tags and another arg and applies them against the arg until one matches.
-  # The matches on the lhs of the tag are sub-matches, which are matched
-  # recursively, then bind their computations to the variables `b1` and `b2`.
-  # If either one doesn't match at least once, the parent match doesn't as
-  # well.
-  Compare (b1 : Bool) (b2 : Bool) -> Case [
-      (True, False) -> Gt,
-      (False, True) -> Lt,
-      _ -> Eq,
-    ] (b1, b2)
-  ```
+# This function compares bools using Case, a function that takes a list of
+# tags and another arg and applies them against the arg until one matches.
+# The matches on the lhs of the tag are sub-matches, which are matched
+# recursively, then bind their computations to the variables `b1` and `b2`.
+# If either one doesn't match at least once, the parent match doesn't as
+# well.
+Compare (b1 : Bool) (b2 : Bool) -> Case [
+    (True, False) -> Gt,
+    (False, True) -> Lt,
+    _ -> Eq,
+  ] (b1, b2)
+```
+
 
 ## Roadmap
 
@@ -96,9 +97,11 @@
       - [ ] Propagation
     - [ ] User error reporting
       
-  - [ ] Perfect Hashmaps / Conversion to switch statements
+  - [ ] Type-checking
+  
+  - [ ] Codegen
+    - [ ] Perfect Hashmaps / Conversion to switch statements
 
-  - [ ] LLVM
 
 ---
 
