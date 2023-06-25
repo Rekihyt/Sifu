@@ -1,0 +1,17 @@
+# How to match apps of arbitrary length. It may be necessary for two elipses
+# operators, for greedy and lazy matching. Simply requiring multiple patterns
+# may be a better solution.
+
+# This pattern matches any App and applies it to itself. The result is one App,
+# not two (no parens were used).
+... -> ... ...
+
+# This pattern matches any App starting with `Foo`
+Foo ... -> 123
+
+# Any App ending with `Bar`
+... Bar -> 456
+
+# Any App beginning and ending with the same ast
+foo ... foo -> 789
+
