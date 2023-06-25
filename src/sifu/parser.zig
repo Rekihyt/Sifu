@@ -45,27 +45,49 @@ fn parseLit(token: Token) Ast {
     };
 }
 
-/// Memory valid until deinit is called on this lexer
+// pub fn parse(alloca)
+
+/// Memory valid until deinit is called on this lexer.
 pub fn parse(allocator: Allocator, lexer: *Lexer) !Ast {
     var result = ArrayListUnmanaged(Ast){};
 
-    while (try lexer.nextToken(allocator)) |token| {
-        // The current list becomes the first argument to the infix, then we
-        // add any following asts to that
-        if (token.type == .Infix) {
-            var infix_apps = ArrayListUnmanaged(Ast){};
-            try infix_apps.append(allocator, Ast.of(token));
-            try infix_apps.append(allocator, Ast{
-                .apps = try result.toOwnedSlice(allocator),
-            });
-            result = infix_apps;
-        } else try result.append(allocator, Ast.of(token));
+    while (try lexer.next(allocator)) |token| {
+        const lit = token.lit;
+        switch (token.type) {
+            .NewLine => if (try lexer.peek(allocator)) |next_token| {
+                if (next_token.type == .NewLine) {}
+            },
+            // Vals always have at least one char
+            .Val => switch (lit[0]) {
+                // Separators are parsed greedily, so its impossible to encounter
+                // any with more than one char (like "{}")
+                '(' => {
+                    try result.append(
+                        allocator,
+                        try parse(allocator, lexer),
+                    );
+                },
+                ')' => {},
+                else => {},
+            },
+            // The current list becomes the first argument to the infix, then we
+            // add any following asts to that
+            .Infix => {
+                var infix_apps = ArrayListUnmanaged(Ast){};
+                try infix_apps.append(allocator, Ast.of(token));
+                try infix_apps.append(allocator, Ast{
+                    .apps = try result.toOwnedSlice(allocator),
+                });
+                result = infix_apps;
+            },
+            else => try result.append(allocator, Ast.of(token)),
+        }
     }
     return Ast{ .apps = try result.toOwnedSlice(allocator) };
 }
 
-/// This function is the responsibility of the Parser, because it is the dual
-/// to parsing.
+// This function is the responsibility of the Parser, because it is the dual
+// to parsing.
 pub fn print(self: anytype, writer: anytype) !void {
     switch (self) {
         .apps => |asts| if (asts.len > 0 and asts[0] == .token) {
@@ -114,7 +136,7 @@ test "simple val" {
 
     var lexer = Lexer.init("Asdf");
     const ast = try parse(arena.allocator(), &lexer);
-    try testing.expectEqualStrings(ast.token.lit, "Asdf");
+    try testing.expectEqualStrings(ast.apps[0].token.lit, "Asdf");
 }
 
 fn expectEqualApps(expected: Ast, actual: Ast) !void {
@@ -364,6 +386,18 @@ test "App: simple op, no second arg" {
                 .context = .{ .pos = 0, .uri = null },
             } },
         } },
+    } };
+    const actual = try parse(arena.allocator(), &lexer);
+    try expectEqualApps(expected, actual);
+}
+
+test "App: empty parens" {
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init("()");
+    const expected = Ast{ .apps = &.{
+        Ast{ .apps = &.{} },
     } };
     const actual = try parse(arena.allocator(), &lexer);
     try expectEqualApps(expected, actual);

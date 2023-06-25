@@ -43,6 +43,8 @@ pos: usize = 0,
 line: usize = 0,
 /// Current column in the source
 col: usize = 1,
+/// A single element buffer to hold tokens for `peek`
+token: ?Token = null,
 
 /// Creates a new lexer using the given source code
 pub fn init(source: []const u8) Lexer {
@@ -51,11 +53,21 @@ pub fn init(source: []const u8) Lexer {
     };
 }
 
-/// Lexes the source and returns the next sequence of terms forming an App,
-/// adding them to the arraylist.
-pub fn nextToken(self: *Lexer, allocator: Allocator) Oom!?Token {
-    self.skipWhitespace();
-    const char = self.peek() orelse
+pub fn peek(self: *Lexer, allocator: Allocator) Oom!?Token {
+    if (self.token == null)
+        self.token = try self.next(allocator);
+
+    return self.token;
+}
+
+pub fn next(self: *Lexer, allocator: Allocator) Oom!?Token {
+    // Return the current token, if it exists
+    if (self.token) |token| {
+        defer self.token = null;
+        return token;
+    }
+    self.skipSpace();
+    const char = self.peekChar() orelse
         return null;
 
     const pos = self.pos;
@@ -63,8 +75,9 @@ pub fn nextToken(self: *Lexer, allocator: Allocator) Oom!?Token {
     // Parse separators greedily. These can be vals or infixes, it
     // doesn't matter.
     const token_type: Type = switch (char) {
-        '+', '-' => if (self.peek()) |next|
-            if (isDigit(next))
+        '\n' => .NewLine,
+        '+', '-' => if (self.peekChar()) |next_char|
+            if (isDigit(next_char))
                 self.integer()
             else
                 self.infix()
@@ -103,16 +116,16 @@ pub fn nextToken(self: *Lexer, allocator: Allocator) Oom!?Token {
 
 /// Returns the next character but does not increase the Lexer's position, or
 /// returns null if there are no more characters left.
-fn peek(self: Lexer) ?u8 {
+fn peekChar(self: Lexer) ?u8 {
     return if (self.pos < self.source.len)
         self.source[self.pos]
     else
         null;
 }
 
-/// Advances one character, or panics (should only be called after `peek`)
+/// Advances one character, or panics (should only be called after `peekChar`)
 fn consume(self: *Lexer) void {
-    if (self.peek()) |char| {
+    if (self.peekChar()) |char| {
         self.pos += 1;
         if (char == '\n') {
             self.col = 1;
@@ -124,10 +137,11 @@ fn consume(self: *Lexer) void {
     );
 }
 
-/// Skips whitespace until a non-whitespace character is found. Not guaranteed
-/// to skip anything. Newlines are separators, and thus treated as tokens.
-fn skipWhitespace(self: *Lexer) void {
-    while (self.peek()) |char|
+/// Skips whitespace except for newlines until a non-whitespace character is
+/// found. Not guaranteed to skip anything. Newlines are separators, and thus
+/// treated as tokens.
+fn skipSpace(self: *Lexer) void {
+    while (self.peekChar()) |char|
         switch (char) {
             ' ', '\t', '\r' => self.consume(),
             else => break,
@@ -135,7 +149,7 @@ fn skipWhitespace(self: *Lexer) void {
 }
 
 fn consumeIdent(self: *Lexer) void {
-    while (self.peek()) |next_char|
+    while (self.peekChar()) |next_char|
         if (isIdent(next_char))
             self.consume()
         else
@@ -154,7 +168,7 @@ fn variable(self: *Lexer) Type {
 
 /// Reads the next infix characters
 fn infix(self: *Lexer) Type {
-    while (self.peek()) |next_char|
+    while (self.peekChar()) |next_char|
         if (isInfix(next_char))
             self.consume()
         else
@@ -165,7 +179,7 @@ fn infix(self: *Lexer) Type {
 
 /// Reads the next digits and/or any underscores
 fn integer(self: *Lexer) Type {
-    while (self.peek()) |next_char|
+    while (self.peekChar()) |next_char|
         if (isDigit(next_char) or next_char == '_')
             self.consume()
         else
@@ -178,7 +192,7 @@ fn integer(self: *Lexer) Type {
 /// `InvalidCharacter`, so this function cannot fail.
 fn float(self: *Lexer) Type {
     self.int();
-    if (self.peek() == '.') {
+    if (self.peekChar() == '.') {
         self.consume();
         self.int();
     }
@@ -189,7 +203,7 @@ fn float(self: *Lexer) Type {
 /// Reads a value wrapped in double-quotes from the current character. If no
 /// matching quote is found, reads until EOF.
 fn string(self: *Lexer) Type {
-    while (self.peek() != '"')
+    while (self.peekChar() != '"')
         self.consume();
 
     return .Str;
@@ -197,7 +211,7 @@ fn string(self: *Lexer) Type {
 
 /// Reads until the end of the line or EOF
 fn comment(self: *Lexer) Type {
-    while (self.peek()) |next_char|
+    while (self.peekChar()) |next_char|
         if (next_char != '\n')
             self.consume()
         else
@@ -234,8 +248,8 @@ fn isLower(char: u8) bool {
 fn isSep(char: u8) bool {
     return switch (char) {
         // zig fmt: off
-        ',', ';', '\n',
-        '(', ')', '[', ']', '{', '}',
+        ',', ';', '(', ')',
+        '[', ']', '{', '}',
         '"', '\'', '`', 
         // zig fmt: on
         => true,
@@ -279,7 +293,7 @@ fn expectEqualTokens(input: []const u8, expecteds: []const []const u8) !void {
     var lexer = Lexer.init(input);
 
     for (expecteds) |expected| {
-        const next_token = (try lexer.nextToken(arena.allocator())).?;
+        const next_token = (try lexer.next(arena.allocator())).?;
         try stderr.print("{s}\n", .{next_token.lit});
         try testing.expectEqualStrings(
             expected,

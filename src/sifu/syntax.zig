@@ -29,6 +29,7 @@ pub const Type = enum {
     U, // unsigned
     F, // float
     Comment,
+    NewLine,
 
     /// Compares by value, not by len, pos, or pointers.
     pub fn order(self: Type, other: Type) Order {

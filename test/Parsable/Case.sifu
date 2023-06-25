@@ -5,7 +5,7 @@ Is Empty [] 	  -> True
 Is Empty {}       -> True
 Is Empty (_ :> _) -> False
 
-Is Empty ()       -> True
+Is Empty ()      -> True
 Is Empty (_ , _) -> False
 Is Empty (_ ; _) -> False
 
@@ -13,3 +13,4 @@ Case []             arg -> []
 Case (head :> tail) arg -> (Branch -> head arg) If (Is Empty Branch)
 	Then (Case tail arg)
 	Else arg
+
