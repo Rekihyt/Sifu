@@ -47,6 +47,18 @@ fn parseLit(token: Token) Ast {
 
 // pub fn parse(alloca)
 
+fn consumeNewLines(allocator: Allocator, lexer: *Lexer) !bool {
+    var consumed: bool = false;
+    // Parse all newlines
+    while (try lexer.peek(allocator)) |next_token|
+        if (next_token.type == .NewLine) {
+            _ = try lexer.next(allocator);
+            consumed = true;
+        } else break;
+
+    return consumed;
+}
+
 /// Memory valid until deinit is called on this lexer.
 pub fn parse(allocator: Allocator, lexer: *Lexer) !Ast {
     var result = ArrayListUnmanaged(Ast){};
@@ -54,8 +66,11 @@ pub fn parse(allocator: Allocator, lexer: *Lexer) !Ast {
     while (try lexer.next(allocator)) |token| {
         const lit = token.lit;
         switch (token.type) {
-            .NewLine => if (try lexer.peek(allocator)) |next_token| {
-                if (next_token.type == .NewLine) {}
+            .NewLine => {
+                if (try consumeNewLines(allocator, lexer))
+                    // Double (or more) line break, end the current apps and start
+                    // over
+                    break; // return result
             },
             // Vals always have at least one char
             .Val => switch (lit[0]) {
@@ -67,8 +82,8 @@ pub fn parse(allocator: Allocator, lexer: *Lexer) !Ast {
                         try parse(allocator, lexer),
                     );
                 },
-                ')' => {},
-                else => {},
+                ')' => break, // return result
+                else => try result.append(allocator, Ast.of(token)),
             },
             // The current list becomes the first argument to the infix, then we
             // add any following asts to that
@@ -401,4 +416,34 @@ test "App: empty parens" {
     } };
     const actual = try parse(arena.allocator(), &lexer);
     try expectEqualApps(expected, actual);
+}
+
+test "App: simple newlines" {
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init(
+        \\ Foo
+        \\
+        \\ Bar
+    );
+    const expected_first = Ast{ .apps = &.{
+        Ast{ .token = .{
+            .type = .Val,
+            .lit = "Foo",
+            .context = .{ .pos = 0, .uri = null },
+        } },
+    } };
+    const actual_first = try parse(arena.allocator(), &lexer);
+    try expectEqualApps(expected_first, actual_first);
+
+    const expected_second = Ast{ .apps = &.{
+        Ast{ .token = .{
+            .type = .Val,
+            .lit = "Bar",
+            .context = .{ .pos = 0, .uri = null },
+        } },
+    } };
+    const actual_second = try parse(arena.allocator(), &lexer);
+    try expectEqualApps(expected_second, actual_second);
 }
