@@ -1,6 +1,6 @@
 const std = @import("std");
 const sifu = @import("sifu.zig");
-const paml = @import("paml.zig");
+const paml = @import("pattern.zig");
 
 const Allocator = std.mem.Allocator;
 

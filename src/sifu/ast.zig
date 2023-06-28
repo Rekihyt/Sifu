@@ -3,6 +3,8 @@ const Allocator = std.mem.Allocator;
 const mem = std.mem;
 const math = std.math;
 const assert = std.debug.assert;
+const util = @import("../util.zig");
+const Order = math.Order;
 
 /// The AST is the first form of structure given to the source code. It handles
 /// infix, nesting, and separator operators but does not differentiate between
@@ -22,6 +24,19 @@ pub fn Ast(comptime Token: type) type {
 
         pub fn ofApps(apps: []const Self) Self {
             return .{ .apps = apps };
+        }
+
+        /// Compares by value, not by len, pos, or pointers.
+        pub fn order(self: Self, other: Self) Order {
+            const ord = math.order(@enumToInt(self), @enumToInt(other));
+            return if (ord == .eq)
+                switch (self) {
+                    .apps => |apps| util.orderWith(apps, other.apps, Self.order),
+                    .@"var" => |v| mem.order(u8, v, other.@"var"),
+                    .token => |token| token.order(other.token),
+                }
+            else
+                ord;
         }
     };
 }

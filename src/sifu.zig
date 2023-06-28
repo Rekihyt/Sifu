@@ -25,9 +25,11 @@ pub fn parse(allocator: Allocator, source: []const u8) !Pattern {
 
 const testing = std.testing;
 test "Submodules" {
-    _ = @import("sifu/errors.zig");
-    _ = @import("sifu/parser.zig");
-    _ = @import("sifu/lexer.zig");
     _ = @import("sifu/ast.zig");
+    _ = @import("sifu/errors.zig");
     _ = @import("sifu/interpreter.zig");
+    _ = @import("sifu/lexer.zig");
+    _ = @import("sifu/parser.zig");
+    _ = @import("sifu/pattern.zig");
+    _ = @import("sifu/syntax.zig");
 }
