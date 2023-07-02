@@ -33,7 +33,7 @@ pub const Type = enum {
 
     /// Compares by value, not by len, pos, or pointers.
     pub fn order(self: Type, other: Type) Order {
-        return math.order(@enumToInt(self), @enumToInt(other));
+        return math.order(@intFromEnum(self), @intFromEnum(other));
     }
 
     pub fn eql(self: Type, other: Type) bool {

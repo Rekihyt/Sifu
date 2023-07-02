@@ -34,7 +34,7 @@ pub fn Ast(comptime Token: type) type {
 
         /// Compares by value, not by len, pos, or pointers.
         pub fn order(self: Self, other: Self) Order {
-            const ord = math.order(@enumToInt(self), @enumToInt(other));
+            const ord = math.order(@intFromEnum(self), @intFromEnum(other));
             return if (ord == .eq)
                 switch (self) {
                     .apps => |apps| util.orderWith(apps, other.apps, Self.order),

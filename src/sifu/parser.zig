@@ -109,7 +109,7 @@ fn parseUntil(
                     const matched =
                         try parseUntil(allocator, lexer, &nested, ')');
 
-                    try stderr.print("matched: {?}\n", .{matched});
+                    try stderr.print("Matched: {?}\n", .{matched});
                     // if (!matched) // copy and free nested to result
                     // else
                     try result.append(
@@ -138,7 +138,9 @@ fn parseUntil(
 // to parsing.
 pub fn print(self: anytype, writer: anytype) !void {
     switch (self) {
-        .apps => |asts| if (asts.len > 0 and asts[0] == .token and asts[0].token.type == .Infix) {
+        .apps => |asts| if (asts.len > 0 and asts[0] == .token and
+            asts[0].token.type == .Infix)
+        {
             const token = asts[0].token;
             // An infix always forms an App with at least 2
             // nodes, the second of which must be an App (which
@@ -188,7 +190,7 @@ test "simple val" {
 
     var lexer = Lexer.init("Asdf");
     const ast = try parse(arena.allocator(), &lexer);
-    try testing.expectEqualStrings(ast.?.token.lit, "Asdf");
+    try testing.expectEqualStrings(ast.?.apps[0].token.lit, "Asdf");
 }
 
 fn expectEqualApps(expected: Ast, actual: Ast) !void {
@@ -207,7 +209,7 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
 
     // This is redundant, but it makes any failures easier to trace
     for (expected.apps, actual.apps) |expected_elem, actual_elem| {
-        if (@enumToInt(expected_elem) == @enumToInt(actual_elem)) {
+        if (@intFromEnum(expected_elem) == @intFromEnum(actual_elem)) {
             switch (expected_elem) {
                 .token => |token| {
                     try testing.expectEqual(
@@ -260,25 +262,27 @@ test "All Asts" {
         \\()
     ;
     const expecteds = &[_]Ast{
-        .{ .token = .{
-            .type = .Val,
-            .lit = "Val1",
-            .context = .{ .pos = 0, .uri = null },
-        } },
-        .{ .token = .{
-            .type = .Val,
-            .lit = ",",
-            .context = .{ .pos = 4, .uri = null },
-        } },
-        .{ .token = .{
-            .type = .I,
-            .lit = "5",
-            .context = .{ .pos = 5, .uri = null },
-        } },
-        .{ .token = .{
-            .type = .Val,
-            .lit = ";",
-            .context = .{ .pos = 6, .uri = null },
+        Ast{ .apps = &.{
+            .{ .token = .{
+                .type = .Val,
+                .lit = "Val1",
+                .context = .{ .pos = 0, .uri = null },
+            } },
+            .{ .token = .{
+                .type = .Val,
+                .lit = ",",
+                .context = .{ .pos = 4, .uri = null },
+            } },
+            .{ .token = .{
+                .type = .I,
+                .lit = "5",
+                .context = .{ .pos = 5, .uri = null },
+            } },
+            .{ .token = .{
+                .type = .Val,
+                .lit = ";",
+                .context = .{ .pos = 6, .uri = null },
+            } },
         } },
     };
     var arena = ArenaAllocator.init(testing.allocator);
@@ -298,20 +302,22 @@ test "App: simple vals" {
     defer arena.deinit();
     var lexer = Lexer.init("Aa Bb Cc");
     const expecteds = &[_]Ast{
-        Ast{ .token = .{
-            .type = .Val,
-            .lit = "Aa",
-            .context = .{ .pos = 0, .uri = null },
-        } },
-        Ast{ .token = .{
-            .type = .Val,
-            .lit = "Bb",
-            .context = .{ .pos = 3, .uri = null },
-        } },
-        Ast{ .token = .{
-            .type = .Val,
-            .lit = "Cc",
-            .context = .{ .pos = 6, .uri = null },
+        Ast{ .apps = &.{
+            Ast{ .token = .{
+                .type = .Val,
+                .lit = "Aa",
+                .context = .{ .pos = 0, .uri = null },
+            } },
+            Ast{ .token = .{
+                .type = .Val,
+                .lit = "Bb",
+                .context = .{ .pos = 3, .uri = null },
+            } },
+            Ast{ .token = .{
+                .type = .Val,
+                .lit = "Cc",
+                .context = .{ .pos = 6, .uri = null },
+            } },
         } },
     };
     for (expecteds) |expected| {
@@ -325,29 +331,31 @@ test "App: simple op" {
     defer arena.deinit();
     var lexer = Lexer.init("1 + 2");
     const expecteds = &[_]Ast{
-        Ast{
-            .token = .{
-                .type = .Infix,
-                .lit = "+",
-                .context = .{ .pos = 2, .uri = null },
-            },
-        },
         Ast{ .apps = &.{
             Ast{
                 .token = .{
+                    .type = .Infix,
+                    .lit = "+",
+                    .context = .{ .pos = 2, .uri = null },
+                },
+            },
+            Ast{ .apps = &.{
+                Ast{
+                    .token = .{
+                        .type = .I,
+                        .lit = "1",
+                        .context = .{ .pos = 0, .uri = null },
+                    },
+                },
+            } },
+            Ast{
+                .token = .{
                     .type = .I,
-                    .lit = "1",
-                    .context = .{ .pos = 0, .uri = null },
+                    .lit = "2",
+                    .context = .{ .pos = 4, .uri = null },
                 },
             },
         } },
-        Ast{
-            .token = .{
-                .type = .I,
-                .lit = "2",
-                .context = .{ .pos = 4, .uri = null },
-            },
-        },
     };
     for (expecteds) |expected| {
         const actual = try parse(arena.allocator(), &lexer);
@@ -360,34 +368,36 @@ test "App: simple ops" {
     defer arena.deinit();
     var lexer = Lexer.init("1 + 2 + 3");
     const expecteds = &[_]Ast{
-        Ast{ .token = .{
-            .type = .Infix,
-            .lit = "+",
-            .context = .{ .pos = 6, .uri = null },
-        } },
         Ast{ .apps = &.{
             Ast{ .token = .{
                 .type = .Infix,
                 .lit = "+",
-                .context = .{ .pos = 2, .uri = null },
+                .context = .{ .pos = 6, .uri = null },
             } },
             Ast{ .apps = &.{
                 Ast{ .token = .{
+                    .type = .Infix,
+                    .lit = "+",
+                    .context = .{ .pos = 2, .uri = null },
+                } },
+                Ast{ .apps = &.{
+                    Ast{ .token = .{
+                        .type = .I,
+                        .lit = "1",
+                        .context = .{ .pos = 0, .uri = null },
+                    } },
+                } },
+                Ast{ .token = .{
                     .type = .I,
-                    .lit = "1",
-                    .context = .{ .pos = 0, .uri = null },
+                    .lit = "2",
+                    .context = .{ .pos = 4, .uri = null },
                 } },
             } },
             Ast{ .token = .{
                 .type = .I,
-                .lit = "2",
-                .context = .{ .pos = 4, .uri = null },
+                .lit = "3",
+                .context = .{ .pos = 8, .uri = null },
             } },
-        } },
-        Ast{ .token = .{
-            .type = .I,
-            .lit = "3",
-            .context = .{ .pos = 8, .uri = null },
         } },
     };
     for (expecteds) |expected| {
@@ -401,21 +411,23 @@ test "App: simple op, no first arg" {
     defer arena.deinit();
     var lexer = Lexer.init("+ 2");
     const expecteds = &[_]Ast{
-        Ast{
-            .token = .{
-                .type = .Infix,
-                .lit = "+",
-                .context = .{ .pos = 2, .uri = null },
+        Ast{ .apps = &.{
+            Ast{
+                .token = .{
+                    .type = .Infix,
+                    .lit = "+",
+                    .context = .{ .pos = 2, .uri = null },
+                },
             },
-        },
-        Ast{ .apps = &.{} },
-        Ast{
-            .token = .{
-                .type = .I,
-                .lit = "2",
-                .context = .{ .pos = 4, .uri = null },
+            Ast{ .apps = &.{} },
+            Ast{
+                .token = .{
+                    .type = .I,
+                    .lit = "2",
+                    .context = .{ .pos = 4, .uri = null },
+                },
             },
-        },
+        } },
     };
     for (expecteds) |expected| {
         const actual = try parse(arena.allocator(), &lexer);
@@ -429,18 +441,20 @@ test "App: simple op, no second arg" {
 
     var lexer = Lexer.init("1 +");
     const expecteds = &[_]Ast{
-        Ast{
-            .token = .{
-                .type = .Infix,
-                .lit = "+",
-                .context = .{ .pos = 2, .uri = null },
-            },
-        },
         Ast{ .apps = &.{
-            Ast{ .token = .{
-                .type = .I,
-                .lit = "1",
-                .context = .{ .pos = 0, .uri = null },
+            Ast{
+                .token = .{
+                    .type = .Infix,
+                    .lit = "+",
+                    .context = .{ .pos = 2, .uri = null },
+                },
+            },
+            Ast{ .apps = &.{
+                Ast{ .token = .{
+                    .type = .I,
+                    .lit = "1",
+                    .context = .{ .pos = 0, .uri = null },
+                } },
             } },
         } },
     };
@@ -494,7 +508,9 @@ test "App: nested parens 1" {
         \\ ( () ( ()) )( )
     );
     const expecteds = &[_]Ast{
-        Ast{ .apps = &.{} },
+        Ast{ .apps = &.{
+            Ast{ .apps = &.{} },
+        } },
         Ast{ .apps = &.{
             Ast{ .apps = &.{} },
             Ast{ .apps = &.{} },
@@ -504,10 +520,12 @@ test "App: nested parens 1" {
         } },
         Ast{ .apps = &.{
             Ast{ .apps = &.{
-                Ast{ .apps = &.{} },
+                Ast{ .apps = &.{
+                    Ast{ .apps = &.{} },
+                    Ast{ .apps = &.{} },
+                } },
                 Ast{ .apps = &.{} },
             } },
-            Ast{ .apps = &.{} },
         } },
         Ast{ .apps = &.{
             Ast{ .apps = &.{
@@ -535,15 +553,19 @@ test "App: simple newlines" {
         \\ Bar
     );
     const expecteds = &[_]Ast{
-        Ast{ .token = .{
-            .type = .Val,
-            .lit = "Foo",
-            .context = .{ .pos = 0, .uri = null },
+        Ast{ .apps = &.{
+            Ast{ .token = .{
+                .type = .Val,
+                .lit = "Foo",
+                .context = .{ .pos = 0, .uri = null },
+            } },
         } },
-        Ast{ .token = .{
-            .type = .Val,
-            .lit = "Bar",
-            .context = .{ .pos = 0, .uri = null },
+        Ast{ .apps = &.{
+            Ast{ .token = .{
+                .type = .Val,
+                .lit = "Bar",
+                .context = .{ .pos = 0, .uri = null },
+            } },
         } },
     };
     for (expecteds) |expected| {

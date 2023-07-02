@@ -156,13 +156,12 @@ const testing = std.testing;
 
 test "should behave like a set when given void" {
     const Pat = Pattern(usize, void, void);
-    var pat = try Pat.ofLit(testing.allocator, 123, {});
-    _ = pat;
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const al = arena.allocator();
-    _ = al;
 
+    var pat = try Pat.ofLit(al, 123, {});
+    _ = pat;
     // TODO: insert some apps here once insert is implemented
     // var nodes1: [1]Pat = undefined;
     // var nodes3: [3]Pat = undefined;
@@ -188,8 +187,11 @@ test "insert multiple lits" {
 }
 
 test "compile: nested" {
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const al = arena.allocator();
     const Pat = Pattern(usize, void, void);
-    var pat = try Pat.ofLit(testing.allocator, 123, {});
+    var pat = try Pat.ofLit(al, 123, {});
     // Test nested
     const Pat2 = Pat{ .sub_pat = &pat };
     _ = Pat2;

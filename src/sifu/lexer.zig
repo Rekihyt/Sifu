@@ -282,6 +282,7 @@ fn isIdent(char: u8) bool {
 const testing = std.testing;
 const meta = std.meta;
 const verbose_tests = @import("build_options").verbose_tests;
+// const stderr = if (true)
 const stderr = if (verbose_tests)
     std.io.getStdErr().writer()
 else

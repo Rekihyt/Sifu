@@ -41,7 +41,7 @@ pub fn orderWith(
     rhs: anytype,
     op: fn (anytype, anytype) Order,
 ) Order {
-    const n = math.min(lhs.len, rhs.len);
+    const n = @min(lhs.len, rhs.len);
     var i: usize = 0;
     while (i < n) : (i += 1) {
         switch (op(lhs[i], rhs[i])) {
