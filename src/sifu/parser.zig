@@ -28,6 +28,8 @@ const assert = std.debug.assert;
 const debug = std.debug;
 const Lexer = @import("lexer.zig");
 
+// TODO: add indentation tracking, and separate based on newlines+indent
+
 fn parseLit(token: Token) Ast {
     const lit = token.lit;
     return if (mem.eql(u8, lit, "->")) {
@@ -57,29 +59,23 @@ fn consumeNewLines(allocator: Allocator, lexer: *Lexer) !bool {
     return consumed;
 }
 
-/// Parse all Apps, if any, returning them as an App of Apps.
-pub fn parse(allocator: Allocator, lexer: *Lexer) !Ast {
-    var result = ArrayListUnmanaged(Ast){};
-    while (try parseApp(allocator, lexer)) |app|
-        try result.append(allocator, app);
-
-    return Ast{ .apps = try result.toOwnedSlice(allocator) };
-}
-
-/// Parse a single nonempty App, if possible.
-pub fn parseApp(allocator: Allocator, lexer: *Lexer) !?Ast {
+/// Parse a nonempty App if possible, returning null otherwise.
+pub fn parse(allocator: Allocator, lexer: *Lexer) !?Ast {
     var result = ArrayListUnmanaged(Ast){};
     _ = try parseUntil(allocator, lexer, &result, null) orelse
         return null;
+
+    assert(result.items.len != 0); // returned null if so
 
     return Ast{ .apps = try result.toOwnedSlice(allocator) };
 }
 
 /// Memory valid until deinit is called on this lexer.
+/// Parse until sep is encountered, or a double newline.
 /// Returns:
 /// - true if sep was found
 /// - false if sep wasn't found, but something was parsed
-/// - null if no more tokens
+/// - null if only whitespace was parsed
 fn parseUntil(
     allocator: Allocator,
     lexer: *Lexer,
@@ -89,13 +85,17 @@ fn parseUntil(
     _ = try lexer.peek(allocator) orelse
         return null;
 
+    const len = result.*.items.len;
     return while (try lexer.next(allocator)) |token| {
         const lit = token.lit;
         switch (token.type) {
             .NewLine => if (try consumeNewLines(allocator, lexer))
-                // Double (or more) line break, end the current apps and start
-                // over
-                break sep == null,
+                // Double (or more) line break, stop parsing, and check if
+                // anything was parsed by comparing lengths
+                break if (result.*.items.len == len)
+                    null
+                else
+                    sep == null,
 
             // Vals always have at least one char
             .Val => if (lit[0] == sep)
@@ -166,6 +166,7 @@ pub fn print(self: anytype, writer: anytype) !void {
         } else try writer.writeAll("()"),
         .token => |token| try writer.print("{s}", .{token.lit}),
         .@"var" => |v| try writer.print("{s}", .{v}),
+        .pattern => |pat| try writer.print("{?}", .{pat}),
     }
 }
 
@@ -186,8 +187,8 @@ test "simple val" {
     defer arena.deinit();
 
     var lexer = Lexer.init("Asdf");
-    const ast = try parseApp(arena.allocator(), &lexer);
-    try testing.expectEqualStrings(ast.?.apps[0].token.lit, "Asdf");
+    const ast = try parse(arena.allocator(), &lexer);
+    try testing.expectEqualStrings(ast.?.token.lit, "Asdf");
 }
 
 fn expectEqualApps(expected: Ast, actual: Ast) !void {
@@ -220,6 +221,10 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
                 },
                 .@"var" => |v| try expectEqualStrings(v, actual_elem.@"var"),
                 .apps => try expectEqualApps(expected_elem, actual_elem),
+                .pattern => |pat| try testing.expectEqual(
+                    pat,
+                    actual_elem.pattern,
+                ),
             }
         } else {
             try stderr.writeAll("Asts of different types not equal");
@@ -254,7 +259,7 @@ test "All Asts" {
         \\||
         \\()
     ;
-    const expected = .{ .apps = &.{
+    const expecteds = &[_]Ast{
         .{ .token = .{
             .type = .Val,
             .lit = "Val1",
@@ -275,52 +280,43 @@ test "All Asts" {
             .lit = ";",
             .context = .{ .pos = 6, .uri = null },
         } },
-    } };
+    };
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     // TODO: test full input string
     var lexer = Lexer.init(input[0..7]);
 
-    const actual = try parseApp(arena.allocator(), &lexer);
-
-    try expectEqualApps(expected, expected); // test the test function
-    try expectEqualApps(expected, actual.?);
+    // try expectEqualApps(expected, expected); // test the test function
+    for (expecteds) |expected| {
+        const actual = try parse(arena.allocator(), &lexer);
+        try expectEqualApps(expected, actual.?);
+    }
 }
 
 test "App: simple vals" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var lexer = Lexer.init("Aa Bb Cc");
-    const expected = Ast{
-        .apps = &.{
-            Ast{ .token = .{
-                .type = .Val,
-                .lit = "Aa",
-                .context = .{ .pos = 0, .uri = null },
-            } },
-            Ast{ .token = .{
-                .type = .Val,
-                .lit = "Bb",
-                .context = .{ .pos = 3, .uri = null },
-            } },
-            Ast{ .token = .{
-                .type = .Val,
-                .lit = "Cc",
-                .context = .{ .pos = 6, .uri = null },
-            } },
-        },
+    const expecteds = &[_]Ast{
+        Ast{ .token = .{
+            .type = .Val,
+            .lit = "Aa",
+            .context = .{ .pos = 0, .uri = null },
+        } },
+        Ast{ .token = .{
+            .type = .Val,
+            .lit = "Bb",
+            .context = .{ .pos = 3, .uri = null },
+        } },
+        Ast{ .token = .{
+            .type = .Val,
+            .lit = "Cc",
+            .context = .{ .pos = 6, .uri = null },
+        } },
     };
-    const actual = try parseApp(arena.allocator(), &lexer);
-
-    for (expected.apps, actual.?.apps) |expected_ast, actual_ast| {
-        try testing.expectEqualStrings(
-            expected_ast.token.lit,
-            actual_ast.token.lit,
-        );
-        try testing.expectEqual(
-            expected_ast.token.context.pos,
-            actual_ast.token.context.pos,
-        );
+    for (expecteds) |expected| {
+        const actual = try parse(arena.allocator(), &lexer);
+        try expectEqualApps(expected, actual.?);
     }
 }
 
@@ -328,7 +324,7 @@ test "App: simple op" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var lexer = Lexer.init("1 + 2");
-    const expected = Ast{ .apps = &.{
+    const expecteds = &[_]Ast{
         Ast{
             .token = .{
                 .type = .Infix,
@@ -352,17 +348,18 @@ test "App: simple op" {
                 .context = .{ .pos = 4, .uri = null },
             },
         },
-    } };
-    const actual = try parseApp(arena.allocator(), &lexer);
-
-    try expectEqualApps(expected, actual.?);
+    };
+    for (expecteds) |expected| {
+        const actual = try parse(arena.allocator(), &lexer);
+        try expectEqualApps(expected, actual.?);
+    }
 }
 
 test "App: simple ops" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var lexer = Lexer.init("1 + 2 + 3");
-    const expected = Ast{ .apps = &.{
+    const expecteds = &[_]Ast{
         Ast{ .token = .{
             .type = .Infix,
             .lit = "+",
@@ -392,16 +389,18 @@ test "App: simple ops" {
             .lit = "3",
             .context = .{ .pos = 8, .uri = null },
         } },
-    } };
-    const actual = try parseApp(arena.allocator(), &lexer);
-    try expectEqualApps(expected, actual.?);
+    };
+    for (expecteds) |expected| {
+        const actual = try parse(arena.allocator(), &lexer);
+        try expectEqualApps(expected, actual.?);
+    }
 }
 
 test "App: simple op, no first arg" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var lexer = Lexer.init("+ 2");
-    const expected = Ast{ .apps = &.{
+    const expecteds = &[_]Ast{
         Ast{
             .token = .{
                 .type = .Infix,
@@ -417,9 +416,11 @@ test "App: simple op, no first arg" {
                 .context = .{ .pos = 4, .uri = null },
             },
         },
-    } };
-    const actual = try parseApp(arena.allocator(), &lexer);
-    try expectEqualApps(expected, actual.?);
+    };
+    for (expecteds) |expected| {
+        const actual = try parse(arena.allocator(), &lexer);
+        try expectEqualApps(expected, actual.?);
+    }
 }
 
 test "App: simple op, no second arg" {
@@ -427,7 +428,7 @@ test "App: simple op, no second arg" {
     defer arena.deinit();
 
     var lexer = Lexer.init("1 +");
-    const expected = Ast{ .apps = &.{
+    const expecteds = &[_]Ast{
         Ast{
             .token = .{
                 .type = .Infix,
@@ -442,9 +443,11 @@ test "App: simple op, no second arg" {
                 .context = .{ .pos = 0, .uri = null },
             } },
         } },
-    } };
-    const actual = try parseApp(arena.allocator(), &lexer);
-    try expectEqualApps(expected, actual.?);
+    };
+    for (expecteds) |expected| {
+        const actual = try parse(arena.allocator(), &lexer);
+        try expectEqualApps(expected, actual.?);
+    }
 }
 
 test "App: simple parens" {
@@ -453,26 +456,23 @@ test "App: simple parens" {
 
     var lexer = Lexer.init("()() (())");
     const expected = Ast{ .apps = &.{
+        Ast{ .apps = &.{} },
+        Ast{ .apps = &.{} },
         Ast{ .apps = &.{
             Ast{ .apps = &.{} },
-            Ast{ .apps = &.{} },
-            Ast{ .apps = &.{
-                Ast{ .apps = &.{} },
-            } },
         } },
     } };
     const actual = try parse(arena.allocator(), &lexer);
-    try expectEqualApps(expected, actual);
+    try expectEqualApps(expected, actual.?);
 }
 
 test "App: empty" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    var lexer = Lexer.init("");
-    const expected = Ast{ .apps = &.{} };
+    var lexer = Lexer.init("   \n\n \n  \n\n\n");
     const actual = try parse(arena.allocator(), &lexer);
-    try expectEqualApps(expected, actual);
+    try testing.expectEqual(@as(?Ast, null), actual);
 }
 
 test "App: nested parens 1" {
@@ -493,40 +493,36 @@ test "App: nested parens 1" {
         \\
         \\ ( () ( ()) )( )
     );
-    const expected = Ast{
-        .apps = &.{
+    const expecteds = &[_]Ast{
+        Ast{ .apps = &.{} },
+        Ast{ .apps = &.{
+            Ast{ .apps = &.{} },
+            Ast{ .apps = &.{} },
             Ast{ .apps = &.{
                 Ast{ .apps = &.{} },
             } },
+        } },
+        Ast{ .apps = &.{
             Ast{ .apps = &.{
                 Ast{ .apps = &.{} },
+                Ast{ .apps = &.{} },
+            } },
+            Ast{ .apps = &.{} },
+        } },
+        Ast{ .apps = &.{
+            Ast{ .apps = &.{
                 Ast{ .apps = &.{} },
                 Ast{ .apps = &.{
                     Ast{ .apps = &.{} },
                 } },
             } },
-            Ast{ .apps = &.{
-                Ast{ .apps = &.{
-                    Ast{ .apps = &.{
-                        Ast{ .apps = &.{} },
-                        Ast{ .apps = &.{} },
-                    } },
-                    Ast{ .apps = &.{} },
-                } },
-            } },
-            Ast{ .apps = &.{
-                Ast{ .apps = &.{
-                    Ast{ .apps = &.{} },
-                    Ast{ .apps = &.{
-                        Ast{ .apps = &.{} },
-                    } },
-                } },
-                Ast{ .apps = &.{} },
-            } },
-        },
+            Ast{ .apps = &.{} },
+        } },
     };
-    const actual = try parse(arena.allocator(), &lexer);
-    try expectEqualApps(expected, actual);
+    for (expecteds) |expected| {
+        const actual = try parse(arena.allocator(), &lexer);
+        try expectEqualApps(expected, actual.?);
+    }
 }
 
 test "App: simple newlines" {
@@ -538,23 +534,20 @@ test "App: simple newlines" {
         \\
         \\ Bar
     );
-    const expected_first = Ast{ .apps = &.{
+    const expecteds = &[_]Ast{
         Ast{ .token = .{
             .type = .Val,
             .lit = "Foo",
             .context = .{ .pos = 0, .uri = null },
         } },
-    } };
-    const actual_first = try parseApp(arena.allocator(), &lexer);
-    try expectEqualApps(expected_first, actual_first.?);
-
-    const expected_second = Ast{ .apps = &.{
         Ast{ .token = .{
             .type = .Val,
             .lit = "Bar",
             .context = .{ .pos = 0, .uri = null },
         } },
-    } };
-    const actual_second = try parseApp(arena.allocator(), &lexer);
-    try expectEqualApps(expected_second, actual_second.?);
+    };
+    for (expecteds) |expected| {
+        const actual = try parse(arena.allocator(), &lexer);
+        try expectEqualApps(expected, actual.?);
+    }
 }

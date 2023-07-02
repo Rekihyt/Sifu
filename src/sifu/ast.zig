@@ -5,18 +5,24 @@ const math = std.math;
 const assert = std.debug.assert;
 const util = @import("../util.zig");
 const Order = math.Order;
+const pattern = @import("../pattern.zig");
 
 /// The AST is the first form of structure given to the source code. It handles
 /// infix, nesting, and separator operators but does not differentiate between
 /// builtins. The `Token` is a custom type to allow storing of metainfo such as
-/// `Location`.
+/// `Location`, and must implement `toString()` for pattern conversion.
 pub fn Ast(comptime Token: type) type {
     return union(enum) {
-        apps: []const Self,
-        @"var": []const u8,
         token: Token,
+        @"var": []const u8,
+        apps: []const Self,
+        pattern: Pattern,
 
         pub const Self = @This();
+
+        /// The Pattern type specific to the Sifu interpreter.
+        pub const Pattern = pattern
+            .Pattern([]const u8, []const u8, *Self);
 
         pub fn of(token: Token) Self {
             return .{ .token = token };
@@ -34,6 +40,7 @@ pub fn Ast(comptime Token: type) type {
                     .apps => |apps| util.orderWith(apps, other.apps, Self.order),
                     .@"var" => |v| mem.order(u8, v, other.@"var"),
                     .token => |token| token.order(other.token),
+                    .pattern => |pat| pat.order(other.pattern),
                 }
             else
                 ord;

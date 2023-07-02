@@ -78,6 +78,11 @@ pub fn Token(comptime Context: type) type {
             return .eq == self.order(other);
         }
 
+        /// Memory valid until this token's `lit` is freed.
+        pub fn toString(self: Self) []const u8 {
+            return self.lit;
+        }
+
         /// Convert this to a term by parsing its literal value.
         pub fn parse(self: Self, allocator: Allocator) Oom!Term {
             _ = allocator;

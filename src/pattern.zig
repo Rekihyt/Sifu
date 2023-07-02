@@ -16,7 +16,6 @@ const Order = math.Order;
 /// `Lit` - the type of literal keys
 /// `Var` - the type of variable keys
 /// `Val` - the type of values that a successful key match will evaluate to
-/// `Context` - arbitrary data, not used for matching
 ///
 pub fn Pattern(
     comptime Lit: type,
@@ -26,48 +25,50 @@ pub fn Pattern(
     return struct {
         pub const Self = @This();
 
-        // Hashmaps can be used as keys because they are (probably) created
-        // deterministically, as long as they have only had elements
-        // inserted and not removed.
-        pub const Map = if (Lit == []const u8)
-            std.StringArrayHashMapUnmanaged(Self)
-        else
-            std.AutoArrayHashMapUnmanaged(*Self, Self);
+        // Subpatterns can be used as keys because they are (probably) created
+        // deterministically, as long as they have only had elements inserted
+        // and not removed.
+        // TODO: define a hash function for keys, including patterns.
+        const Map = std.AutoArrayHashMapUnmanaged(Lit, Self);
 
-        pub const Kind = union(enum) {
-            // Literals and variables are leaves
-            lit: Lit,
+        /// A Var matches and stores a locally-unique key. During rewriting,
+        /// whenever the key is encountered again, it is rewritten to this
+        /// pattern's value. A Var pattern matches anything, including nested
+        /// patterns. It only makes sense to match anything after trying to
+        /// match something specific, so Vars always successfully match (if
+        /// there is a Var) after a Lit or Subpat match fails.
+        @"var": ?Var = null,
 
-            /// The Var kind matches and stores a locally-unique key. During
-            /// rewriting, whenever the key is encountered again, it is
-            /// rewritten to this pattern's value.
-            @"var": Var,
+        /// Nested patterns can also be keys. Each layer of pointers encodes
+        /// a nested pattern, and are necessary because patterns are difficult
+        /// to use as keys directly. This is null when there are no nested
+        /// patterns.
+        sub_pat: ?*Self = null,
 
-            /// Maps form the branches of the AST
-            map: Map,
-        };
+        /// Maps literal terms to the next pattern, if there is one. These form
+        /// the branches of the trie.
+        map: Map = Map{},
 
-        /// The kind primarily determines how this pattern matches, and stores
-        /// sub-patterns, if any.
-        kind: Kind,
+        /// A null value represents an undefined pattern, for example in `Foo
+        /// Bar -> 123`, the value at `Foo` would be null.
+        val: ?Val = null,
 
-        /// The value this pattern holds, if any.
-        val: ?Val,
-
-        pub fn ofMap(val: ?Val) Self {
+        pub fn empty() Self {
             return .{
-                .kind = .{ .map = Map{} },
-                .val = val,
+                // .map = Map{},
+                .val = null,
             };
         }
 
         pub fn ofLit(
+            allocator: Allocator,
             lit: Lit,
             val: ?Val,
-        ) Self {
+        ) !Self {
+            var map = Map{};
+            try map.put(allocator, lit, .{ .val = val });
             return .{
-                .kind = .{ .lit = lit },
-                .val = val,
+                .map = map,
             };
         }
 
@@ -84,29 +85,13 @@ pub fn Pattern(
             val: Val,
             allocator: Allocator,
         ) !void {
-            _ = allocator;
-            _ = val;
-            _ = key;
-            switch (self.kind) {
-                .lit => {},
-                .@"var" => {},
-                .map => {},
-            }
-        }
-
-        fn insertMap(
-            self: *Self,
-            key: Self,
-            val: Val,
-            allocator: Allocator,
-        ) !void {
-            var current = self.*;
+            var current = self;
             // Follow the longest branch that exists
-            while (current.contains(key)) |next| : (current = next)
-                switch (current.kind) {
-                    .map => |map| {
-                        if (map.get()) |pat_node|
-                            current = pat_node
+            while (current) |next| : (current = next)
+                switch (current) {
+                    .map => |m| {
+                        if (m.get()) |pat|
+                            current = pat
                         else
                             // Key mismatch
                             break;
@@ -123,19 +108,12 @@ pub fn Pattern(
             }
             // Put the value in this last node
             current.val = val;
+
+            // .@"var" => |v| .{ .@"var" = v },
+            // .token => |token| .{ .lit = token.toString() },
         }
 
         pub fn match(self: *Self, key: Self) ?Val {
-            _ = key;
-            _ = self;
-        }
-
-        /// Match the key against the given pattern `other`, and if that doesn't
-        /// match, fallback to matching this pattern.
-        pub fn matchUnion(self: *Self, key: Self, other: Self) ?Val {
-            if (other.match(key)) |result|
-                return result;
-
             // var var_map = AutoArrayHashMapUnmanaged(Self, Lit){};
             var current = self.*;
             var i: usize = 0;
@@ -178,7 +156,8 @@ const testing = std.testing;
 
 test "should behave like a set when given void" {
     const Pat = Pattern(usize, void, void);
-    var pat = Pat.ofMap({});
+    var pat = try Pat.ofLit(testing.allocator, 123, {});
+    _ = pat;
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const al = arena.allocator();
@@ -194,10 +173,10 @@ test "should behave like a set when given void" {
     // try testing.expectEqual(@as(?void, null), pat.match(nodes3));
 
     // Empty pattern
-    try testing.expectEqual(@as(?void, {}), pat.match(.{
-        .val = {},
-        .kind = .{ .map = Pat.Map{} },
-    }));
+    // try testing.expectEqual(@as(?void, {}), pat.match(.{
+    //     .val = {},
+    //     .kind = .{ .map = Pat.Map{} },
+    // }));
 }
 
 test "insert single lit" {}
@@ -206,4 +185,12 @@ test "insert multiple lits" {
     // Multiple keys
     // try pat.insert(&.{ 1, 2, 3 }, {}, al);
     // try testing.expect(pat.kind.map.contains(1));
+}
+
+test "compile: nested" {
+    const Pat = Pattern(usize, void, void);
+    var pat = try Pat.ofLit(testing.allocator, 123, {});
+    // Test nested
+    const Pat2 = Pat{ .sub_pat = &pat };
+    _ = Pat2;
 }

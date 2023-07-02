@@ -62,10 +62,11 @@ Compare (b1 : Bool) (b2 : Bool) -> Case [
 
 - ### Core Language
   
-  - [ ] Parser/Lexer
-    - [x] Lexer (Text → AST)
-    - [ ] Parser (AST → Patterns)
-    - [ ] Error handling
+  - [x] Parser/Lexer
+    - [x] Lexer (Text → Token)
+    - [x] Parser (Tokens → AST)
+    - [ ] Pattern Construction (AST → Patterns)
+      - [ ] Error handling
 
   - [ ] Patterns
     - [x] Definition
