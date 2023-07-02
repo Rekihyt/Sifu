@@ -1,0 +1,19 @@
+# An example of how patterns are tried in order, whenever there is a "default"
+# var pattern after a lit.
+
+# Match Foo to 123, Bar to 456, and anything else to 789.
+Foo -> 123
+Bar -> 456
+_   -> 789
+
+# This pattern is redundant because the above three match first.
+Foo -> 123
+
+# For any App of len `x`, at most `x` patterns will be tried. While there
+# are four unique possible patterns, at least half are always eliminated each
+# time a term is matched or not.
+Foo Bar -> "asdf"
+Foo _   -> "as"
+_   Bar -> "df"
+_   _   -> ""
+

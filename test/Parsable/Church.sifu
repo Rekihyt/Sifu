@@ -1,0 +1,9 @@
+# A Church numeral encoding that stores a natural number in an app of nones. `()`
+# is a zero-byte type, so the app will only store its length which is the value
+# of the Church numeral.
+
+Nat 0            -> ()
+Nat (n : U Size) -> () Nat (n - 1)
+
+FromNat ()     -> 0
+FromNat () ... -> 1 + FromNat ...
