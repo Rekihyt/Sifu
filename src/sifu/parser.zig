@@ -70,8 +70,12 @@ pub fn parse(allocator: Allocator, lexer: *Lexer) !?Ast {
     return Ast{ .apps = try result.toOwnedSlice(allocator) };
 }
 
-/// Memory valid until deinit is called on this lexer.
+// TODO: convert this file to parse directly into patterns, not Asts
+
 /// Parse until sep is encountered, or a double newline.
+///
+/// Memory can be freed by using an arena allocator, or walking the tree and
+/// freeing each app.
 /// Returns:
 /// - true if sep was found
 /// - false if sep wasn't found, but something was parsed
@@ -572,4 +576,14 @@ test "App: simple newlines" {
         const actual = try parse(arena.allocator(), &lexer);
         try expectEqualApps(expected, actual.?);
     }
+}
+
+test "Apps: pattern" {
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init("{1,2,3}");
+    const ast = try parse(arena.allocator(), &lexer);
+    _ = ast;
+    // try testing.expectEqualStrings(ast.?.apps[0].pattern, "Asdf");
 }

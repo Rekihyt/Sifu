@@ -4,6 +4,7 @@
 Bool -> { True, False }
 
 # This definition doesn't require `Bool` to be defined.
-If True  Then then Else _    -> then 
-If False Then _    Else else -> else
+if True  then @then else _     -> @then 
+if False then _     else @else -> @else
+
 

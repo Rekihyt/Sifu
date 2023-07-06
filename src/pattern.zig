@@ -4,6 +4,8 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const math = std.math;
 const Order = math.Order;
+const util = @import("util.zig");
+const mem = std.mem;
 
 ///
 /// A trie-like type based on the given term type. Each pattern contains zero or
@@ -29,7 +31,20 @@ pub fn Pattern(
         // deterministically, as long as they have only had elements inserted
         // and not removed.
         // TODO: define a hash function for keys, including patterns.
-        const Map = std.AutoArrayHashMapUnmanaged(Lit, Self);
+        const Map = if (Lit == []const u8)
+            std.StringArrayHashMapUnmanaged(Self)
+        else
+            std.AutoArrayHashMapUnmanaged(Lit, Self);
+
+        const VarPat = struct {
+            @"var": Var,
+            next: ?*Self = null,
+        };
+
+        const SubPat = struct {
+            pat: *Self,
+            next: ?*Self = null,
+        };
 
         /// A Var matches and stores a locally-unique key. During rewriting,
         /// whenever the key is encountered again, it is rewritten to this
@@ -37,13 +52,13 @@ pub fn Pattern(
         /// patterns. It only makes sense to match anything after trying to
         /// match something specific, so Vars always successfully match (if
         /// there is a Var) after a Lit or Subpat match fails.
-        @"var": ?Var = null,
+        var_pat: ?VarPat = null,
 
         /// Nested patterns can also be keys. Each layer of pointers encodes
         /// a nested pattern, and are necessary because patterns are difficult
         /// to use as keys directly. This is null when there are no nested
         /// patterns.
-        sub_pat: ?*Self = null,
+        sub_pat: ?SubPat = null,
 
         /// Maps literal terms to the next pattern, if there is one. These form
         /// the branches of the trie.
@@ -54,10 +69,7 @@ pub fn Pattern(
         val: ?Val = null,
 
         pub fn empty() Self {
-            return .{
-                // .map = Map{},
-                .val = null,
-            };
+            return Self{};
         }
 
         pub fn ofLit(
@@ -66,7 +78,7 @@ pub fn Pattern(
             val: ?Val,
         ) !Self {
             var map = Map{};
-            try map.put(allocator, lit, .{ .val = val });
+            try map.put(allocator, lit, Self{ .val = val });
             return .{
                 .map = map,
             };
@@ -79,75 +91,10 @@ pub fn Pattern(
             };
         }
 
-        pub fn insert(
-            self: *Self,
-            key: Self,
-            val: Val,
-            allocator: Allocator,
-        ) !void {
-            var current = self;
-            // Follow the longest branch that exists
-            while (current) |next| : (current = next)
-                switch (current) {
-                    .map => |m| {
-                        if (m.get()) |pat|
-                            current = pat
-                        else
-                            // Key mismatch
-                            break;
-                    },
-                    .variable => {},
-                };
-            // Create new branches while necessary
-            while (current.contains(key)) {
-                const next = .{
-                    .pattern = current,
-                    .kind = .{ .variable = .{ .key = key } },
-                };
-                current.map.put(allocator, key, next);
-            }
-            // Put the value in this last node
-            current.val = val;
-
-            // .@"var" => |v| .{ .@"var" = v },
-            // .token => |token| .{ .lit = token.toString() },
-        }
-
-        pub fn match(self: *Self, key: Self) ?Val {
-            // var var_map = AutoArrayHashMapUnmanaged(Self, Lit){};
-            var current = self.*;
-            var i: usize = 0;
-            switch (self.kind) {
-                .map => |map| {
-                    _ = map;
-                    // Follow the longest branch that exists
-                    while (i < key.len) : (i += 1)
-                        switch (current.kind) {
-                            // .map => |map| {
-                            //     if (map.get(map[i])) |pat_node|
-                            //         current = pat_node
-                            //     else
-                            //         // Key mismatch
-                            //         return null;
-                            // },
-                            .variable => {},
-                        }
-                    else
-                        // All keys were matched, return the value.
-                        return current.val;
-                },
-                else => undefined,
-            }
-        }
-
-        /// Compares by value, not by len, pos, or pointers.
-        pub fn order(self: Pattern, other: Pattern) Order {
-            return self.kind.order(other.kind);
-        }
-
-        /// Compares by value, not by len, pos, or pointers.
-        pub fn equalTo(self: Pattern, other: Pattern) bool {
-            return .eq == self.order(other);
+        pub fn eql(self: Self, other: Self) bool {
+            return util.deepEql(self.map.keys(), other.map.keys()) and
+                util.deepEql(self.map.values(), other.map.values()) and
+                util.deepEql(self, other);
         }
     };
 }
@@ -193,6 +140,6 @@ test "compile: nested" {
     const Pat = Pattern(usize, void, void);
     var pat = try Pat.ofLit(al, 123, {});
     // Test nested
-    const Pat2 = Pat{ .sub_pat = &pat };
+    const Pat2 = Pat{ .sub_pat = .{ .pat = &pat } };
     _ = Pat2;
 }

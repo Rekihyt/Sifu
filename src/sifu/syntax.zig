@@ -41,6 +41,7 @@ pub const Type = enum {
     }
 };
 
+// This isn't really used yet, but may be in the future
 pub const Term = union(Type) {
     Val: []const u8,
     Var: []const u8,
@@ -74,6 +75,7 @@ pub fn Token(comptime Context: type) type {
             return mem.order(u8, self.lit, other.lit);
         }
 
+        /// Ignores Context.
         pub fn eql(self: Self, other: Self) bool {
             return .eq == self.order(other);
         }

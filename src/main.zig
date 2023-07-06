@@ -1,6 +1,10 @@
 const std = @import("std");
 const sifu = @import("sifu.zig");
-const paml = @import("pattern.zig");
+const pattern = @import("pattern.zig");
+const Ast = @import("sifu/ast.zig").Ast(Location);
+const syntax = @import("sifu/syntax.zig");
+const Location = syntax.Location;
+const Pattern = Ast.Pattern;
 
 const Allocator = std.mem.Allocator;
 

@@ -7,26 +7,26 @@
 
   - A computation returns 0, 1, or many values
 
-  - No turing completeness, everything terminates by matching tags less than (or equal, with other checks) to themselves
+  - No turing completeness, everything terminates by matching entries less than (or equal, with other checks) to themselves
 
   - Everything is a pattern map (like tries, but lookups have to deal with sub-lookups)
 
   - Core language is just a dynamic pattern-matching/rewrite engine
-    - only builtins are triemap entries (tags `->`) and triemap queries (matches `:`)
+    - only builtins are triemap entries (entries `->`) and triemap queries (matches `:`)
     - match / set membership / typeof is the same thing (`:`)
     - files are just triemaps with entries separated by newlines
-    - no keywords other than the two builtin ops
+    - only keywords are `->`, `:`, `()`, and `{}`
     - any characters are valid to the parser (punctuation chars are values, like in Forth)
     - values are literals, i.e. upper-case idents, ints, and match only themselves
     - vars match anything (lower-case idents)
 
   - Values and Variables
-    - variables are just tags `x -> 2` and match anything
+    - variables are just entries `x -> 2` and match anything
     - values are as well `Val1 -> 2` and are treated as literals (strings are just an escaped value)
 
   - Types
     - types are just triemaps of values
-    - "fields" are just type level tags
+    - "fields" are just type level entries
     - hashmaps of types can trivially implement row types
     - type checking is just a pattern match
 
@@ -45,8 +45,8 @@ IsEq Eq -> True
 IsEq _ -> False
 
 # This function compares bools using Case, a function that takes a list of
-# tags and another arg and applies them against the arg until one matches.
-# The matches on the lhs of the tag are sub-matches, which are matched
+# entries and another arg and applies them against the arg until one matches.
+# The matches on the lhs of the entries are sub-matches, which are matched
 # recursively, then bind their computations to the variables `b1` and `b2`.
 # If either one doesn't match at least once, the parent match doesn't as
 # well.
@@ -65,12 +65,14 @@ Compare (b1 : Bool) (b2 : Bool) -> Case [
   - [x] Parser/Lexer
     - [x] Lexer (Text → Token)
     - [x] Parser (Tokens → AST)
-    - [ ] Pattern Construction (AST → Patterns)
-      - [ ] Error handling
+      - Syntax
+        - [x] Apps (parens)
+        - [ ] Patterns (braces)
 
   - [ ] Patterns
     - [x] Definition
-    - [x] Construction
+    - [x] Construction (AST → Patterns)
+      - [ ] Error handling
     - [ ] Matching
       - [ ] Vals
       - [ ] Apps
@@ -78,10 +80,11 @@ Compare (b1 : Bool) (b2 : Bool) -> Case [
 
 - ### Sifu Interpreter
 
-  - Syntax
-      - [ ] Lists (brackets)
-      - [ ] Patterns (braces)
-      - [ ] Tuples (parens)
+  - [ ] REPL
+    - [ ] Add entries into a global pattern
+    - [ ] Update entries
+    - [ ] Load files
+    - [ ] REPL specific keywords (delete entry, etc.)
 
   - [ ] Effects / FFI
     - [ ] Driver API

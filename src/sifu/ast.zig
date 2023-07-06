@@ -22,7 +22,7 @@ pub fn Ast(comptime Token: type) type {
 
         /// The Pattern type specific to the Sifu interpreter.
         pub const Pattern = pattern
-            .Pattern([]const u8, []const u8, *Self);
+            .Pattern([]const u8, []const u8, []const Self);
 
         pub fn of(token: Token) Self {
             return .{ .token = token };
@@ -44,6 +44,89 @@ pub fn Ast(comptime Token: type) type {
                 }
             else
                 ord;
+        }
+
+        pub fn insert(
+            apps: []const Self,
+            allocator: Allocator,
+            pat: Pattern,
+            val: ?[]const Self,
+        ) !bool {
+            _ = allocator;
+            var current: Pattern = pat;
+            var i: usize = 0;
+            // Follow the longest branch that exists
+            while (true) : (i += 1) {
+                switch (apps[i]) {
+                    .token => |token| {
+                        if (current.map.get(token.lit)) |next|
+                            current = next
+                        else
+                            break;
+                    },
+                    .@"var" => |v| if (current.var_pat) |var_pat| {
+                        _ = v;
+                        if (var_pat.next) |var_next|
+                            current = var_next.*;
+                    },
+                    // .apps => |sub_apps| _ =
+                    //     try insert(sub_apps, allocator, current, null),
+                    else => @panic("unimplemented"),
+                }
+            }
+            // Create new branches while necessary
+            for (apps[i..]) |ast| {
+                switch (ast) {
+                    .token => |token| switch (token.type) {
+                        .Val, .Str, .Infix => {
+                            // const current = Pattern.empty();
+                            // try current.map.put(allocator, token.lit, null);
+                            // current = next;
+                        },
+                        else => @panic("unimplemented"),
+                    },
+                    else => @panic("unimplemented"),
+                }
+            }
+
+            const updated = current.val != null;
+
+            // Put the value in this last node
+            current.val = val;
+            return updated;
+        }
+
+        /// As a pattern is matched, a hashmap for vars is populated with
+        /// each var's bound variable. These can the be used by the caller for
+        /// rewriting.
+        pub fn match(self: *Self, allocator: Allocator, key: Self) ?Ast {
+            _ = allocator;
+            var var_map = std.AutoArrayHashMapUnmanaged(Self, Token){};
+            _ = var_map;
+            var current = self.*;
+            var i: usize = 0;
+            switch (self.kind) {
+                .map => |map| {
+                    _ = map;
+                    // Follow the longest branch that exists
+                    while (i < key.len) : (i += 1)
+                        switch (current.kind) {
+                            // .map => |map| {
+                            //     if (map.get(map[i])) |pat_node|
+                            //         current = pat_node
+                            //     else
+                            //         // Key mismatch
+                            //         return null;
+                            // },
+                            .variable => {},
+                        }
+                    else
+                        // All keys were matched, return the value.
+                        return current.val;
+                },
+                else => undefined,
+            }
+            return null;
         }
     };
 }
