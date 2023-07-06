@@ -1,0 +1,3 @@
+
+Factorial 0 -> 1
+Factorial n -> n * Factorial (n - 1)
