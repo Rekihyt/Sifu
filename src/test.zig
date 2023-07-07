@@ -10,6 +10,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const Lexer = @import("sifu/lexer.zig");
 const parse = @import("sifu/parser.zig").parse;
 const Pattern = Ast.Pattern;
+const print = std.debug.print;
 
 test "Submodules" {
     _ = @import("sifu.zig");
@@ -60,7 +61,7 @@ test "Pattern: simple vals" {
     const key = (try parse(allocator, &lexer)).?.apps;
     const val = (try parse(allocator, &lexer)).?.apps;
     var actual = Pattern{};
-    const updated = try Ast.insert(key, allocator, actual, val);
+    const updated = try Ast.insert(key, allocator, &actual, val);
     _ = updated;
     var expected = Pattern{};
     var expected_a = Pattern{};
@@ -68,42 +69,48 @@ test "Pattern: simple vals" {
     var expected_c = Pattern{
         .val = val,
     };
-    try expected.map.put(allocator, "Aa", expected_a);
-    try expected_a.map.put(allocator, "Bb", expected_b);
     try expected_b.map.put(allocator, "Cc", expected_c);
-    // std.debug.print("{?}\n", .{expected});
-    // std.debug.print("{?}\n", .{actual});
+    try expected_a.map.put(allocator, "Bb", expected_b);
+    try expected.map.put(allocator, "Aa", expected_a);
+    // print("{?}\n", .{expected});
+    // print("{?}\n", .{actual});
     try testing.expect(expected.eql(expected));
 
     try testing.expect(!expected_a.eql(expected_b));
     try testing.expect(!expected.eql(expected_c));
     try testing.expect(!expected.eql(expected_a));
 
-    std.debug.print(" \n", .{});
+    print(" \n", .{});
     debugPattern("", expected, 0);
-    debugPattern("Aa", expected_a, 0);
     debugPattern("", actual, 0);
+    // debugPattern("Aa", expected_a, 0);
+    // debugPattern("", actual, 0);
+
+    // const expecteds = &[_]Pattern{ expected, expected_a, expected_b, expected_c };
+    // inline for (expecteds) |ex|
+    //     print("{*}\n", .{&ex});
 
     try testing.expect(expected.eql(actual));
 }
 
 fn debugPattern(key: []const u8, pattern: Pattern, indent: usize) void {
     for (0..indent) |_|
-        std.debug.print(" ", .{});
+        print(" ", .{});
 
     if (pattern.val) |val| {
-        std.debug.print("{s} |", .{key});
+        print("{s} |", .{key});
         for (val) |ast|
-            std.debug.print("{s}, ", .{ast.token.lit});
+            print("{s}, ", .{ast.token.lit});
 
-        std.debug.print("| -> {s}\n", .{"{"});
-    } else std.debug.print("{s} -> {s}\n", .{ key, "{" });
+        print("| -> {s}\n", .{"{"});
+    } else print("{s} -> {s}\n", .{ key, "{" });
 
-    for (pattern.map.keys(), pattern.map.values()) |next_key, next| {
-        debugPattern(next_key, next, indent + 4);
+    var iter = pattern.map.iterator();
+    while (iter.next()) |entry| {
+        debugPattern(entry.key_ptr.*, entry.value_ptr.*, indent + 4);
     }
     for (0..indent) |_|
-        std.debug.print(" ", .{});
+        print(" ", .{});
 
-    std.debug.print("{s}\n", .{"}"});
+    print("{s}\n", .{"}"});
 }

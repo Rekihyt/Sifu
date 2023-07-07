@@ -49,25 +49,24 @@ pub fn Ast(comptime Token: type) type {
         pub fn insert(
             apps: []const Self,
             allocator: Allocator,
-            pat: Pattern,
+            pat: *Pattern,
             val: ?[]const Self,
         ) !bool {
-            _ = allocator;
-            var current: Pattern = pat;
+            var current: *Pattern = pat;
             var i: usize = 0;
             // Follow the longest branch that exists
             while (true) : (i += 1) {
                 switch (apps[i]) {
                     .token => |token| {
-                        if (current.map.get(token.lit)) |next|
-                            current = next
+                        if (current.map.getPtr(token.lit)) |next|
+                            current = next // TODO: sus
                         else
                             break;
                     },
                     .@"var" => |v| if (current.var_pat) |var_pat| {
                         _ = v;
                         if (var_pat.next) |var_next|
-                            current = var_next.*;
+                            current = var_next;
                     },
                     // .apps => |sub_apps| _ =
                     //     try insert(sub_apps, allocator, current, null),
@@ -79,9 +78,13 @@ pub fn Ast(comptime Token: type) type {
                 switch (ast) {
                     .token => |token| switch (token.type) {
                         .Val, .Str, .Infix => {
-                            // const current = Pattern.empty();
-                            // try current.map.put(allocator, token.lit, null);
-                            // current = next;
+                            const put_result = try current.*.map.getOrPut(
+                                allocator,
+                                token.lit,
+                            );
+                            const value_ptr = put_result.value_ptr;
+                            value_ptr.* = Pattern.empty();
+                            current = value_ptr;
                         },
                         else => @panic("unimplemented"),
                     },
