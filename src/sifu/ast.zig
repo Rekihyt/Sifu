@@ -52,13 +52,13 @@ pub fn Ast(comptime Token: type) type {
         fn matchPrefix(
             apps: []const Self,
             allocator: Allocator,
-            pat: **Pattern,
+            pat: **const Pattern,
         ) Allocator.Error!usize {
             var current = pat.*;
             defer pat.* = current;
             var i: usize = 0;
             // Follow the longest branch that exists
-            while (true) : (i += 1) switch (apps[i]) {
+            while (i < apps.len) : (i += 1) switch (apps[i]) {
                 .token => |token| {
                     if (current.map.getPtr(token.lit)) |next|
                         current = next
@@ -71,7 +71,8 @@ pub fn Ast(comptime Token: type) type {
                         current = var_next;
                 },
                 .apps => |sub_apps| _ =
-                    try insert(sub_apps, allocator, current, null),
+                    // TODO: lookup sub_apps in current's pat_map
+                    try matchPrefix(sub_apps, allocator, &current),
                 .pattern => |sub_pat| {
                     _ = sub_pat;
                     @panic("unimplemented");
@@ -83,13 +84,13 @@ pub fn Ast(comptime Token: type) type {
         pub fn match(
             apps: []const Self,
             allocator: Allocator,
-            pat: *Pattern,
-        ) ?Self {
+            pat: Pattern,
+        ) Allocator.Error!?[]const Self {
             var var_map = std.AutoArrayHashMapUnmanaged(Self, Token){};
             _ = var_map;
-            var current = pat;
+            var current = &pat;
             const i = try matchPrefix(apps, allocator, &current);
-            if (i == apps.len)
+            return if (i == apps.len)
                 current.val
             else
                 null;

@@ -92,6 +92,15 @@ test "Pattern: simple vals" {
     try debugPattern("", actual, 0);
 
     try testing.expect(expected.eql(actual));
+
+    try testing.expectEqual(
+        @as(?[]const Ast, val),
+        try Ast.match(key, allocator, actual),
+    );
+    try testing.expectEqual(
+        @as(?[]const Ast, null),
+        try Ast.match(key, allocator, expected_c),
+    );
 }
 
 /// Pretty print a pattern to stderr
