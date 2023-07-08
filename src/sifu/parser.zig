@@ -182,8 +182,8 @@ const meta = std.meta;
 
 // for debugging with zig test --test-filter, comment this import
 const verbose_tests = @import("build_options").verbose_tests;
-// const stderr = if (true)
-const stderr = if (verbose_tests)
+const stderr = if (false)
+    // const stderr = if (verbose_tests)
     std.io.getStdErr().writer()
 else
     std.io.null_writer;

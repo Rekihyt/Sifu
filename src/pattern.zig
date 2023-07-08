@@ -41,10 +41,7 @@ pub fn Pattern(
             next: ?*Self = null,
         };
 
-        const SubPat = struct {
-            pat: *Self,
-            next: ?*Self = null,
-        };
+        const PatMap = std.AutoArrayHashMapUnmanaged(*Self, Self);
 
         /// A Var matches and stores a locally-unique key. During rewriting,
         /// whenever the key is encountered again, it is rewritten to this
@@ -54,11 +51,9 @@ pub fn Pattern(
         /// there is a Var) after a Lit or Subpat match fails.
         var_pat: ?VarPat = null,
 
-        /// Nested patterns can also be keys. Each layer of pointers encodes
-        /// a nested pattern, and are necessary because patterns are difficult
-        /// to use as keys directly. This is null when there are no nested
-        /// patterns.
-        sub_pat: ?SubPat = null,
+        /// Nested patterns can also be keys. This is empty when there are no
+        /// nested patterns in this pattern.
+        pat_map: PatMap = PatMap{},
 
         /// Maps literal terms to the next pattern, if there is one. These form
         /// the branches of the trie.
@@ -95,6 +90,11 @@ pub fn Pattern(
             return util.deepEql(self.map.keys(), other.map.keys()) and
                 util.deepEql(self.map.values(), other.map.values()) and
                 util.deepEql(self, other);
+        }
+
+        pub fn deepEql(self: Self, other: Self) bool {
+            _ = other;
+            _ = self;
         }
     };
 }
@@ -139,7 +139,9 @@ test "compile: nested" {
     const al = arena.allocator();
     const Pat = Pattern(usize, void, void);
     var pat = try Pat.ofLit(al, 123, {});
+    _ = pat;
     // Test nested
-    const Pat2 = Pat{ .sub_pat = .{ .pat = &pat } };
-    _ = Pat2;
+    // const Pat2 = Pat{};
+    // Pat2.pat_map.put( &pat, 456 };
+    // _ = Pat2;
 }

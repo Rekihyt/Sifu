@@ -12,6 +12,14 @@ const parse = @import("sifu/parser.zig").parse;
 const Pattern = Ast.Pattern;
 const print = std.debug.print;
 
+// for debugging with zig test --test-filter, comment this import
+const verbose_tests = @import("build_options").verbose_tests;
+// const stderr = if (true)
+const stderr = if (verbose_tests)
+    std.io.getStdErr().writer()
+else
+    std.io.null_writer;
+
 test "Submodules" {
     _ = @import("sifu.zig");
     _ = @import("util.zig");
@@ -69,48 +77,42 @@ test "Pattern: simple vals" {
     var expected_c = Pattern{
         .val = val,
     };
+    // Reverse order because patterns are values, not references
     try expected_b.map.put(allocator, "Cc", expected_c);
     try expected_a.map.put(allocator, "Bb", expected_b);
     try expected.map.put(allocator, "Aa", expected_a);
-    // print("{?}\n", .{expected});
-    // print("{?}\n", .{actual});
     try testing.expect(expected.eql(expected));
 
     try testing.expect(!expected_a.eql(expected_b));
     try testing.expect(!expected.eql(expected_c));
     try testing.expect(!expected.eql(expected_a));
 
-    print(" \n", .{});
-    debugPattern("", expected, 0);
-    debugPattern("", actual, 0);
-    // debugPattern("Aa", expected_a, 0);
-    // debugPattern("", actual, 0);
-
-    // const expecteds = &[_]Pattern{ expected, expected_a, expected_b, expected_c };
-    // inline for (expecteds) |ex|
-    //     print("{*}\n", .{&ex});
+    try stderr.print(" \n", .{});
+    try debugPattern("", expected, 0);
+    try debugPattern("", actual, 0);
 
     try testing.expect(expected.eql(actual));
 }
 
-fn debugPattern(key: []const u8, pattern: Pattern, indent: usize) void {
+/// Pretty print a pattern to stderr
+fn debugPattern(key: []const u8, pattern: Pattern, indent: usize) !void {
     for (0..indent) |_|
-        print(" ", .{});
+        try stderr.print(" ", .{});
 
     if (pattern.val) |val| {
-        print("{s} |", .{key});
+        try stderr.print("{s} |", .{key});
         for (val) |ast|
-            print("{s}, ", .{ast.token.lit});
+            try stderr.print("{s}, ", .{ast.token.lit});
 
-        print("| -> {s}\n", .{"{"});
-    } else print("{s} -> {s}\n", .{ key, "{" });
+        try stderr.print("| -> {s}\n", .{"{"});
+    } else try stderr.print("{s} -> {s}\n", .{ key, "{" });
 
     var iter = pattern.map.iterator();
     while (iter.next()) |entry| {
-        debugPattern(entry.key_ptr.*, entry.value_ptr.*, indent + 4);
+        try debugPattern(entry.key_ptr.*, entry.value_ptr.*, indent + 4);
     }
     for (0..indent) |_|
-        print(" ", .{});
+        try stderr.print(" ", .{});
 
-    print("{s}\n", .{"}"});
+    try stderr.print("{s}\n", .{"}"});
 }

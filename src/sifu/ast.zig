@@ -46,34 +46,67 @@ pub fn Ast(comptime Token: type) type {
                 ord;
         }
 
+        /// Modifies the `pat` pointer to point to the next pattern after the
+        /// longest matching prefix. Returns a usize describing this position in
+        /// apps, or the len of apps if the entire array was matched.
+        fn matchPrefix(
+            apps: []const Self,
+            allocator: Allocator,
+            pat: **Pattern,
+        ) Allocator.Error!usize {
+            var current = pat.*;
+            defer pat.* = current;
+            var i: usize = 0;
+            // Follow the longest branch that exists
+            while (true) : (i += 1) switch (apps[i]) {
+                .token => |token| {
+                    if (current.map.getPtr(token.lit)) |next|
+                        current = next
+                    else
+                        break;
+                },
+                .@"var" => |v| if (current.var_pat) |var_pat| {
+                    _ = v;
+                    if (var_pat.next) |var_next|
+                        current = var_next;
+                },
+                .apps => |sub_apps| _ =
+                    try insert(sub_apps, allocator, current, null),
+                .pattern => |sub_pat| {
+                    _ = sub_pat;
+                    @panic("unimplemented");
+                },
+            };
+            return i;
+        }
+
+        pub fn match(
+            apps: []const Self,
+            allocator: Allocator,
+            pat: *Pattern,
+        ) ?Self {
+            var var_map = std.AutoArrayHashMapUnmanaged(Self, Token){};
+            _ = var_map;
+            var current = pat;
+            const i = try matchPrefix(apps, allocator, &current);
+            if (i == apps.len)
+                current.val
+            else
+                null;
+        }
+
+        /// As a pattern is matched, a hashmap for vars is populated with
+        /// each var's bound variable. These can the be used by the caller for
+        /// rewriting.
         pub fn insert(
             apps: []const Self,
             allocator: Allocator,
             pat: *Pattern,
             val: ?[]const Self,
-        ) !bool {
-            var current: *Pattern = pat;
-            var i: usize = 0;
-            // Follow the longest branch that exists
-            while (true) : (i += 1) {
-                switch (apps[i]) {
-                    .token => |token| {
-                        if (current.map.getPtr(token.lit)) |next|
-                            current = next // TODO: sus
-                        else
-                            break;
-                    },
-                    .@"var" => |v| if (current.var_pat) |var_pat| {
-                        _ = v;
-                        if (var_pat.next) |var_next|
-                            current = var_next;
-                    },
-                    // .apps => |sub_apps| _ =
-                    //     try insert(sub_apps, allocator, current, null),
-                    else => @panic("unimplemented"),
-                }
-            }
-            // Create new branches while necessary
+        ) Allocator.Error!bool {
+            var current = pat;
+            const i = try matchPrefix(apps, allocator, &current);
+            // Create the rest of the branches
             for (apps[i..]) |ast| {
                 switch (ast) {
                     .token => |token| switch (token.type) {
@@ -82,54 +115,18 @@ pub fn Ast(comptime Token: type) type {
                                 allocator,
                                 token.lit,
                             );
-                            const value_ptr = put_result.value_ptr;
-                            value_ptr.* = Pattern.empty();
-                            current = value_ptr;
+                            current = put_result.value_ptr;
+                            current.* = Pattern.empty();
                         },
                         else => @panic("unimplemented"),
                     },
                     else => @panic("unimplemented"),
                 }
             }
-
             const updated = current.val != null;
-
             // Put the value in this last node
             current.val = val;
             return updated;
-        }
-
-        /// As a pattern is matched, a hashmap for vars is populated with
-        /// each var's bound variable. These can the be used by the caller for
-        /// rewriting.
-        pub fn match(self: *Self, allocator: Allocator, key: Self) ?Ast {
-            _ = allocator;
-            var var_map = std.AutoArrayHashMapUnmanaged(Self, Token){};
-            _ = var_map;
-            var current = self.*;
-            var i: usize = 0;
-            switch (self.kind) {
-                .map => |map| {
-                    _ = map;
-                    // Follow the longest branch that exists
-                    while (i < key.len) : (i += 1)
-                        switch (current.kind) {
-                            // .map => |map| {
-                            //     if (map.get(map[i])) |pat_node|
-                            //         current = pat_node
-                            //     else
-                            //         // Key mismatch
-                            //         return null;
-                            // },
-                            .variable => {},
-                        }
-                    else
-                        // All keys were matched, return the value.
-                        return current.val;
-                },
-                else => undefined,
-            }
-            return null;
         }
     };
 }

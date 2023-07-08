@@ -78,7 +78,7 @@ pub fn deepEql(a: anytype, b: @TypeOf(a)) bool {
                 // ));
                 const eqlFn = if (@typeInfo(field_info.type) == .Struct and
                     @hasDecl(field_info.type, "eql"))
-                    @field(field_info.tpye, "eql")
+                    @field(field_info.type, "eql")
                 else
                     deepEql;
 
