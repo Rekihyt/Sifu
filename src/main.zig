@@ -5,6 +5,7 @@ const Ast = @import("sifu/ast.zig").Ast(Location);
 const syntax = @import("sifu/syntax.zig");
 const Location = syntax.Location;
 const Pattern = Ast.Pattern;
+const interpreter = @import("sifu/interpreter.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -15,4 +16,6 @@ pub fn main() !void {
     defer _ = gpa_alloc.deinit();
     const gpa = gpa_alloc.allocator();
     _ = gpa;
+
+    // while ()
 }

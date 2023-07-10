@@ -133,8 +133,8 @@ test "Pattern: eql" {
     try p1.map.put(allocator, "Aa", p2);
     // try testing.expect(p1.eql(p2));
 
-    try t.debugPattern("", p1, 0);
-    try t.debugPattern("", p2, 0);
+    try t.debugPattern(p1, 0);
+    try t.debugPattern(p2, 0);
 }
 
 test "should behave like a set when given void" {

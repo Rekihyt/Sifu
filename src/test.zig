@@ -113,19 +113,15 @@ test "Pattern: simple vals" {
         try Ast.match(key2, allocator, actual),
     );
     try stderr.print(" \n", .{});
-    try debugPattern("", expected, 0);
-    try debugPattern("", actual, 0);
+    try debugPattern(expected, 0);
+    try debugPattern(actual, 0);
 }
 
 /// Pretty print a pattern to stderr
 // TODO: add all pattern fields
-pub fn debugPattern(key: []const u8, pattern: anytype, indent: usize) !void {
-    for (0..indent) |_|
-        try stderr.print(" ", .{});
-
-    try stderr.print("{s} ", .{key});
+pub fn debugPattern(pattern: anytype, indent: usize) !void {
+    try stderr.writeByte('|');
     if (pattern.val) |val| {
-        try stderr.writeByte('|');
         const Val = @TypeOf(val);
 
         blk: {
@@ -148,11 +144,16 @@ pub fn debugPattern(key: []const u8, pattern: anytype, indent: usize) !void {
         }
     }
     try stderr.writeByte('|');
-    try stderr.print(" -> {s}\n", .{"{"});
+    try stderr.print(" {s}\n", .{"{"});
 
     var iter = pattern.map.iterator();
     while (iter.next()) |entry| {
-        try debugPattern(entry.key_ptr.*, entry.value_ptr.*, indent + 4);
+        const next_indent = indent + 4;
+        for (0..next_indent) |_|
+            try stderr.print(" ", .{});
+
+        try stderr.print("{s} -> ", .{entry.key_ptr.*});
+        try debugPattern(entry.value_ptr.*, next_indent);
     }
     for (0..indent) |_|
         try stderr.print(" ", .{});

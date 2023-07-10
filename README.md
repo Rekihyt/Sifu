@@ -76,7 +76,7 @@ Compare (b1 : Bool) (b2 : Bool) -> Case [
     - [x] Construction (AST → Patterns)
       - [ ] Error handling
     - [ ] Matching
-      - [ ] Vals
+      - [x] Vals
       - [ ] Apps
       - [ ] Vars
 
