@@ -67,7 +67,7 @@ test "Pattern: simple vals" {
     var lexer = Lexer.init("Aa Bb Cc \n\n 123");
 
     const key = (try parse(allocator, &lexer)).?.apps;
-    const val = (try parse(allocator, &lexer)).?.apps;
+    const val = &(try parse(allocator, &lexer)).?;
     var actual = Pattern{};
     const updated = try Ast.insert(key, allocator, &actual, val);
     _ = updated;
@@ -83,38 +83,72 @@ test "Pattern: simple vals" {
     try expected.map.put(allocator, "Aa", expected_a);
     try testing.expect(expected.eql(expected));
 
+    try testing.expect(!expected_b.eql(expected_a));
     try testing.expect(!expected_a.eql(expected_b));
     try testing.expect(!expected.eql(expected_c));
     try testing.expect(!expected.eql(expected_a));
 
-    try stderr.print(" \n", .{});
-    try debugPattern("", expected, 0);
-    try debugPattern("", actual, 0);
-
     try testing.expect(expected.eql(actual));
 
     try testing.expectEqual(
-        @as(?[]const Ast, val),
+        @as(?*const Ast, val),
         try Ast.match(key, allocator, actual),
     );
     try testing.expectEqual(
-        @as(?[]const Ast, null),
+        @as(?*const Ast, null),
         try Ast.match(key, allocator, expected_c),
     );
+
+    // Test branching
+    var lexer2 = Lexer.init("Aa Bb2 \n\n 456");
+    const key2 = (try parse(allocator, &lexer2)).?.apps;
+    const val2 = &(try parse(allocator, &lexer2)).?;
+    try expected.map.getPtr("Aa").?
+        .map.put(allocator, "Bb2", Pattern{ .val = val2 });
+    _ = try Ast.insert(key2, allocator, &actual, val2);
+
+    try testing.expect(expected.eql(actual));
+    try testing.expectEqual(
+        @as(?*const Ast, val2),
+        try Ast.match(key2, allocator, actual),
+    );
+    try stderr.print(" \n", .{});
+    try debugPattern("", expected, 0);
+    try debugPattern("", actual, 0);
 }
 
 /// Pretty print a pattern to stderr
-fn debugPattern(key: []const u8, pattern: Pattern, indent: usize) !void {
+// TODO: add all pattern fields
+pub fn debugPattern(key: []const u8, pattern: anytype, indent: usize) !void {
     for (0..indent) |_|
         try stderr.print(" ", .{});
 
+    try stderr.print("{s} ", .{key});
     if (pattern.val) |val| {
-        try stderr.print("{s} |", .{key});
-        for (val) |ast|
-            try stderr.print("{s}, ", .{ast.token.lit});
+        try stderr.writeByte('|');
+        const Val = @TypeOf(val);
 
-        try stderr.print("| -> {s}\n", .{"{"});
-    } else try stderr.print("{s} -> {s}\n", .{ key, "{" });
+        blk: {
+            switch (@typeInfo(Val)) {
+                .Struct => if (@hasDecl(Val, "write")) {
+                    try @field(Val, "write")(val, stderr);
+                    break :blk;
+                },
+                .Pointer => |ptr| if (@hasDecl(ptr.child, "write")) {
+                    // @compileError(std.fmt.comptimePrint(
+                    //     "{?}\n",
+                    //     .{ptr},
+                    // ));
+                    try @field(ptr.child, "write")(val.*, stderr);
+                    break :blk;
+                },
+                else => {},
+            }
+            try stderr.print("{any}, ", .{val});
+        }
+    }
+    try stderr.writeByte('|');
+    try stderr.print(" -> {s}\n", .{"{"});
 
     var iter = pattern.map.iterator();
     while (iter.next()) |entry| {

@@ -5,6 +5,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const math = std.math;
 const Order = math.Order;
 const util = @import("util.zig");
+const t = @import("test.zig");
 const mem = std.mem;
 
 ///
@@ -27,10 +28,6 @@ pub fn Pattern(
     return struct {
         pub const Self = @This();
 
-        // Subpatterns can be used as keys because they are (probably) created
-        // deterministically, as long as they have only had elements inserted
-        // and not removed.
-        // TODO: define a hash function for keys, including patterns.
         const Map = if (Lit == []const u8)
             std.StringArrayHashMapUnmanaged(Self)
         else
@@ -51,9 +48,16 @@ pub fn Pattern(
         /// there is a Var) after a Lit or Subpat match fails.
         var_pat: ?VarPat = null,
 
-        /// Nested patterns can also be keys. This is empty when there are no
-        /// nested patterns in this pattern.
+        /// Nested patterns can also be keys because they are (probably) created
+        /// deterministically, as long as they have only had elements inserted
+        /// and not removed. This is empty when there are no / nested patterns in
+        /// this pattern.
+        // TODO: define a hash function for keys, including patterns.
         pat_map: PatMap = PatMap{},
+
+        /// This is for nested apps that this pattern should match. Each layer
+        /// of pointer redirection encodes a level of app nesting (parens).
+        sub_pat: ?*Self = null,
 
         /// Maps literal terms to the next pattern, if there is one. These form
         /// the branches of the trie.
@@ -87,8 +91,17 @@ pub fn Pattern(
         }
 
         pub fn eql(self: Self, other: Self) bool {
-            return util.deepEql(self.map.keys(), other.map.keys()) and
-                util.deepEql(self.map.values(), other.map.values()) and
+            var iter = self.map.iterator();
+            var other_iter = other.map.iterator();
+            while (iter.next()) |next| {
+                if (other_iter.next()) |other_next| {
+                    std.debug.print("\n{s}, {s}\n", .{ next.key_ptr.*, other_next.key_ptr.* });
+                    if (util.deepEql(next, other_next))
+                        continue;
+                }
+                return false;
+            }
+            return other_iter.next() == null and
                 util.deepEql(self, other);
         }
 
@@ -100,6 +113,29 @@ pub fn Pattern(
 }
 
 const testing = std.testing;
+
+test "Pattern: eql" {
+    const Pat = Pattern([]const u8, void, usize);
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p1 = Pat{};
+    var p2 = Pat{
+        .val = 123,
+    };
+    // Reverse order because patterns are values, not references
+    try p2.map.put(
+        allocator,
+        "p1",
+        Pat{ .val = 123 },
+    );
+    try p1.map.put(allocator, "Aa", p2);
+    // try testing.expect(p1.eql(p2));
+
+    try t.debugPattern("", p1, 0);
+    try t.debugPattern("", p2, 0);
+}
 
 test "should behave like a set when given void" {
     const Pat = Pattern(usize, void, void);

@@ -64,9 +64,7 @@ test "slices of different len" {
 }
 
 /// Like std.meta.eql but follows pointers when possible, and requires eql
-/// for struct types to be defined. In the future, Zig might allow @hasDecl
-/// to recurse on fields if eql isn't defined, but that currently segfaults
-/// the compiler.
+/// for struct types to be defined.
 pub fn deepEql(a: anytype, b: @TypeOf(a)) bool {
     const T = @TypeOf(a);
     switch (@typeInfo(T)) {

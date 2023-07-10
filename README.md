@@ -24,11 +24,13 @@
     - variables are just entries `x -> 2` and match anything
     - values are as well `Val1 -> 2` and are treated as literals (strings are just an escaped value)
 
-  - Types
-    - types are just triemaps of values
-    - "fields" are just type level entries
+  - Emergent Types
+    - types are triemaps of values
+    - records are types of types
+    - record fields are type level entries
     - hashmaps of types can trivially implement row types
-    - type checking is just a pattern match
+    - type checking is a pattern match
+    - dependent types are patterns of types with variables
 
   - Compiler builds on the core language, using it as a library
     - complilation is simply creating perfect hashmaps instead of dynamic ones

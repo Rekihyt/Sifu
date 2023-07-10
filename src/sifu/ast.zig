@@ -22,7 +22,9 @@ pub fn Ast(comptime Token: type) type {
 
         /// The Pattern type specific to the Sifu interpreter.
         pub const Pattern = pattern
-            .Pattern([]const u8, []const u8, []const Self);
+            .Pattern([]const u8, []const u8, *const Self);
+
+        pub const VarMap = std.StringArrayHashMapUnmanaged(Self);
 
         pub fn of(token: Token) Self {
             return .{ .token = token };
@@ -44,6 +46,16 @@ pub fn Ast(comptime Token: type) type {
                 }
             else
                 ord;
+        }
+
+        fn rewrite(
+            apps: []const Self,
+            allocator: Allocator,
+            var_map: VarMap,
+        ) Allocator.Error![]const Self {
+            _ = var_map;
+            _ = allocator;
+            _ = apps;
         }
 
         /// Modifies the `pat` pointer to point to the next pattern after the
@@ -70,10 +82,13 @@ pub fn Ast(comptime Token: type) type {
                     if (var_pat.next) |var_next|
                         current = var_next;
                 },
-                .apps => |sub_apps| _ =
-                    // TODO: lookup sub_apps in current's pat_map
-                    try matchPrefix(sub_apps, allocator, &current),
+                .apps => |sub_apps| if (current.*.sub_pat) |sub_pat|
+                    if (try match(sub_apps, allocator, sub_pat.*) == null)
+                        break
+                    else
+                        break,
                 .pattern => |sub_pat| {
+                    // TODO: lookup sub_pat in current's pat_map
                     _ = sub_pat;
                     @panic("unimplemented");
                 },
@@ -85,7 +100,7 @@ pub fn Ast(comptime Token: type) type {
             apps: []const Self,
             allocator: Allocator,
             pat: Pattern,
-        ) Allocator.Error!?[]const Self {
+        ) Allocator.Error!?*const Self {
             var var_map = std.AutoArrayHashMapUnmanaged(Self, Token){};
             _ = var_map;
             var current = &pat;
@@ -103,31 +118,51 @@ pub fn Ast(comptime Token: type) type {
             apps: []const Self,
             allocator: Allocator,
             pat: *Pattern,
-            val: ?[]const Self,
+            val: ?*const Self,
         ) Allocator.Error!bool {
             var current = pat;
             const i = try matchPrefix(apps, allocator, &current);
             // Create the rest of the branches
-            for (apps[i..]) |ast| {
-                switch (ast) {
-                    .token => |token| switch (token.type) {
-                        .Val, .Str, .Infix => {
-                            const put_result = try current.*.map.getOrPut(
-                                allocator,
-                                token.lit,
-                            );
-                            current = put_result.value_ptr;
-                            current.* = Pattern.empty();
-                        },
-                        else => @panic("unimplemented"),
+            for (apps[i..]) |ast| switch (ast) {
+                .token => |token| switch (token.type) {
+                    .Val, .Str, .Infix, .I, .F, .U => {
+                        const put_result = try current.map.getOrPut(
+                            allocator,
+                            token.lit,
+                        );
+                        current = put_result.value_ptr;
+                        current.* = Pattern.empty();
+                    },
+                    .Var => {
+                        const next = try allocator.create(Pattern);
+                        next.* = Pattern.empty();
+                        current.var_pat = .{
+                            .@"var" = token.lit,
+                            .next = next,
+                        };
+                        current = next;
                     },
                     else => @panic("unimplemented"),
-                }
-            }
+                },
+                else => @panic("unimplemented"),
+            };
             const updated = current.val != null;
             // Put the value in this last node
             current.val = val;
             return updated;
+        }
+
+        pub fn write(self: Self, writer: anytype) !void {
+            switch (self) {
+                .apps => |apps| for (apps) |app| {
+                    try app.write(writer);
+                    try writer.writeByte(' ');
+                },
+                .@"var" => |v| try writer.writeAll(v),
+                .token => |token| try writer.writeAll(token.lit),
+                // .pattern => |pat| try pat.write(writer),
+                else => @panic("unimplemented"),
+            }
         }
     };
 }
