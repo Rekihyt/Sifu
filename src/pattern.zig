@@ -95,7 +95,10 @@ pub fn Pattern(
             var other_iter = other.map.iterator();
             while (iter.next()) |next| {
                 if (other_iter.next()) |other_next| {
-                    std.debug.print("\n{s}, {s}\n", .{ next.key_ptr.*, other_next.key_ptr.* });
+                    // std.debug.print(
+                    //     "\n{s}, {s}\n",
+                    //     .{ next.key_ptr.*, other_next.key_ptr.* },
+                    // );
                     if (util.deepEql(next, other_next))
                         continue;
                 }
@@ -109,10 +112,46 @@ pub fn Pattern(
             _ = other;
             _ = self;
         }
+
+        /// Pretty print a pattern
+        pub fn print(self: Self, writer: anytype) !void {
+            try self.printIndent(writer, 0);
+        }
+
+        // TODO: add all pattern fields
+        fn printIndent(self: Self, writer: anytype, indent: usize) !void {
+            try writer.writeByte('|');
+            if (self.val) |val| {
+                try util.genericWrite(val, writer);
+            }
+            try writer.writeByte('|');
+            try writer.print(" {s}\n", .{"{"});
+
+            var iter = self.map.iterator();
+            while (iter.next()) |entry| {
+                for (0..indent + 4) |_|
+                    try writer.print(" ", .{});
+
+                try writer.print("{s} -> ", .{entry.key_ptr.*});
+                try entry.value_ptr.*.printIndent(writer, indent + 4);
+            }
+            for (0..indent) |_|
+                try writer.print(" ", .{});
+
+            try writer.print("{s}\n", .{"}"});
+        }
     };
 }
 
 const testing = std.testing;
+
+// for debugging with zig test --test-filter, comment this import
+const verbose_tests = @import("build_options").verbose_tests;
+// const stderr = if (true)
+const stderr = if (verbose_tests)
+    std.io.getStdErr().writer()
+else
+    std.io.null_writer;
 
 test "Pattern: eql" {
     const Pat = Pattern([]const u8, void, usize);
@@ -133,8 +172,8 @@ test "Pattern: eql" {
     try p1.map.put(allocator, "Aa", p2);
     // try testing.expect(p1.eql(p2));
 
-    try t.debugPattern(p1, 0);
-    try t.debugPattern(p2, 0);
+    // try p1.print(stderr);
+    // try p2.print(stderr);
 }
 
 test "should behave like a set when given void" {

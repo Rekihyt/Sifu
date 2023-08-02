@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 const Pattern = @import("../pattern.zig")
     .Pattern([]const u8, []const u8, Ast);
 pub const Errors = @import("sifu/errors.zig").Errors;
-const Lexer = @import("sifu/lexer.zig");
+const Lexer = @import("sifu/Lexer.zig");
 const syntax = @import("sifu/syntax.zig");
 const Token = syntax.Token(syntax.Location);
 const Ast = @import("sifu/ast.zig").Ast(Token);
@@ -28,7 +28,7 @@ test "Submodules" {
     _ = @import("sifu/ast.zig");
     _ = @import("sifu/errors.zig");
     _ = @import("sifu/interpreter.zig");
-    _ = @import("sifu/lexer.zig");
+    _ = @import("sifu/Lexer.zig");
     _ = @import("sifu/parser.zig");
     _ = @import("sifu/pattern.zig");
     _ = @import("sifu/syntax.zig");

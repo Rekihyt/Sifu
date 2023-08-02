@@ -2,14 +2,10 @@
 /// it greedily lexes seperators like commas into their own ast nodes,
 /// separates vars and vals based on the first character's case, and lexes
 /// numbers. There are no errors, any utf-8 text is parsable.
-///
-// Simple syntax enables lexing and parsing at the same time. Parsing begins
-// with a new `App` ast node. Each term is lexed, parsed into a `Token`, then added
-// to the top-level `Ast`.
-// Pattern construction happens after this, as does error reporting on invalid
-// asts.
-//
-const Lexer = @This();
+
+// Parsing begins with a new `App` ast node. Each term is lexed, parsed into
+// a `Token`, then added  to the top-level `Ast`. Pattern construction happens
+// after this, as does error reporting on invalid asts.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -35,9 +31,11 @@ const math = std.math;
 const assert = std.debug.assert;
 const debug = std.debug;
 
-/// Source code that is being parsed
-source: []const u8,
-/// Current pos in the source
+pub const Self = @This();
+
+/// Current token being parsed in the source
+buff: ArrayListUnmanaged(u8) = .{},
+/// The position in the stream used as context
 pos: usize = 0,
 /// Current line in the source
 line: usize = 0,
@@ -45,132 +43,149 @@ line: usize = 0,
 col: usize = 1,
 /// A single element buffer to hold tokens for `peek`
 token: ?Token = null,
+/// A single element buffer to hold chars for `peekChar`
+char: ?u8 = null,
+/// The allocator used for tokenizing
+allocator: Allocator,
 
-/// Creates a new lexer using the given source code
-pub fn init(source: []const u8) Lexer {
-    return Lexer{
-        .source = source,
-    };
+/// Creates a new lexer using the given allocator
+pub fn init(allocator: Allocator) Self {
+    return .{ .allocator = allocator };
 }
 
-pub fn peek(self: *Lexer, allocator: Allocator) Oom!?Token {
+pub fn peek(
+    self: *Self,
+    reader: anytype,
+) Oom!?Token {
     if (self.token == null)
-        self.token = try self.next(allocator);
+        self.token = try self.next(reader);
 
     return self.token;
 }
 
-pub fn next(self: *Lexer, allocator: Allocator) Oom!?Token {
+pub fn next(
+    self: *Self,
+    reader: anytype,
+) Oom!?Token {
     // Return the current token, if it exists
     if (self.token) |token| {
         defer self.token = null;
         return token;
     }
-    self.skipSpace();
-    const char = self.peekChar() orelse
+    try self.skipSpace(reader);
+    const char = self.peekChar(reader) orelse
         return null;
 
     const pos = self.pos;
-    self.consume(); // tokens always have at least 1 char
+    try self.consume(reader); // tokens always have at least 1 char
     // Parse separators greedily. These can be vals or infixes, it
     // doesn't matter.
     const token_type: Type = switch (char) {
         '\n' => .NewLine,
-        '+', '-' => if (self.peekChar()) |next_char|
+        '+', '-' => if (self.peekChar(reader)) |next_char|
             if (isDigit(next_char))
-                self.integer()
+                try self.integer(reader)
             else
-                self.infix()
+                try self.infix(reader)
         else
             .Infix,
-        '#' => self.comment(),
+        '#' => try self.comment(reader),
         else => if (isSep(char))
             .Val
         else if (isInfix(char))
-            self.infix()
+            try self.infix(reader)
         else if (isUpper(char) or char == '@')
-            self.value()
+            try self.value(reader)
         else if (isLower(char) or char == '_' or char == '$')
-            self.variable()
+            try self.variable(reader)
         else if (isDigit(char))
-            self.integer()
+            try self.integer(reader)
         else
             // This is a debug error only, as we shouldn't encounter an error
             // during lexing
             panic(
                 \\Lexer Bug: Unknown character '{c}' at line {}, col {}.
                 \\Note: Unicode not supported yet.
-            ,
-                .{ char, self.line, self.col },
-            ),
+            , .{ char, self.line, self.col }),
     };
+    // defer self.buff = .{};
     return Token{
         .type = token_type,
-        .lit = try allocator.dupe(
-            u8,
-            self.source[pos..self.pos],
-        ),
+        .lit = try self.buff.toOwnedSlice(self.allocator),
         .context = .{ .pos = pos, .uri = null },
     };
 }
 
 /// Returns the next character but does not increase the Lexer's position, or
 /// returns null if there are no more characters left.
-fn peekChar(self: Lexer) ?u8 {
-    return if (self.pos < self.source.len)
-        self.source[self.pos]
-    else
-        null;
+fn peekChar(self: *Self, reader: anytype) ?u8 {
+    if (self.char == null)
+        self.char = reader.readByte() catch |e| switch (e) {
+            error.EndOfStream => return null,
+        };
+
+    return self.char;
+}
+
+/// Advances one character, reading it into the current token list buff.
+fn consume(self: *Self, reader: anytype) !void {
+    const char = self.nextChar(reader);
+    try self.buff.append(self.allocator, char);
 }
 
 /// Advances one character, or panics (should only be called after `peekChar`)
-fn consume(self: *Lexer) void {
-    if (self.peekChar()) |char| {
-        self.pos += 1;
-        if (char == '\n') {
-            self.col = 1;
-            self.line += 1;
-        } else self.col += 1;
-    } else panic(
-        "Lexer Bug: Attempted to advance to next AST but EOF reached.",
-        .{},
-    );
+fn nextChar(self: *Self, reader: anytype) u8 {
+    const char = if (self.char) |char|
+        char
+    else
+        self.peekChar(reader) orelse panic(
+            "Lexer Bug: Attempted to advance to next AST but EOF reached.",
+            .{},
+        );
+    self.char = null; // clear peek buffer
+    self.pos += 1;
+    if (char == '\n') {
+        self.col = 1;
+        self.line += 1;
+    } else self.col += 1;
+
+    return char;
 }
 
 /// Skips whitespace except for newlines until a non-whitespace character is
 /// found. Not guaranteed to skip anything. Newlines are separators, and thus
 /// treated as tokens.
-fn skipSpace(self: *Lexer) void {
-    while (self.peekChar()) |char|
+fn skipSpace(self: *Self, reader: anytype) !void {
+    while (self.peekChar(reader)) |char|
         switch (char) {
-            ' ', '\t', '\r' => self.consume(),
+            ' ', '\t', '\r' => _ = self.nextChar(reader),
             else => break,
         };
 }
 
-fn consumeIdent(self: *Lexer) void {
-    while (self.peekChar()) |next_char|
+fn nextIdent(self: *Self, reader: anytype) !void {
+    while (self.peekChar(reader)) |next_char|
         if (isIdent(next_char))
-            self.consume()
+            try self.consume(reader)
         else
             break;
 }
 
-fn value(self: *Lexer) Type {
-    self.consumeIdent();
+fn value(self: *Self, reader: anytype) !Type {
+    try self.nextIdent(reader);
     return .Val;
 }
 
-fn variable(self: *Lexer) Type {
-    self.consumeIdent();
+fn variable(self: *Self, reader: anytype) !Type {
+    try self.nextIdent(reader);
     return .Var;
 }
 
 /// Reads the next infix characters
-fn infix(self: *Lexer) Type {
-    while (self.peekChar()) |next_char|
+fn infix(self: *Self, reader: anytype) !Type {
+    while (self.peekChar(reader)) |next_char|
         if (isInfix(next_char))
-            self.consume()
+            try self.consume(reader)
         else
             break;
 
@@ -178,10 +193,10 @@ fn infix(self: *Lexer) Type {
 }
 
 /// Reads the next digits and/or any underscores
-fn integer(self: *Lexer) Type {
-    while (self.peekChar()) |next_char|
+fn integer(self: *Self, reader: anytype) !Type {
+    while (self.peekChar(reader)) |next_char|
         if (isDigit(next_char) or next_char == '_')
-            self.consume()
+            try self.consume(reader)
         else
             break;
 
@@ -190,10 +205,10 @@ fn integer(self: *Lexer) Type {
 
 /// Reads the next characters as number. `parseFloat` only throws
 /// `InvalidCharacter`, so this function cannot fail.
-fn float(self: *Lexer) Type {
+fn float(self: *Self, reader: anytype) !Type {
     self.int();
-    if (self.peekChar() == '.') {
-        self.consume();
+    if (self.peekChar(reader) == '.') {
+        try self.consume(reader);
         self.int();
     }
 
@@ -202,18 +217,18 @@ fn float(self: *Lexer) Type {
 
 /// Reads a value wrapped in double-quotes from the current character. If no
 /// matching quote is found, reads until EOF.
-fn string(self: *Lexer) Type {
-    while (self.peekChar() != '"')
-        self.consume();
+fn string(self: *Self, reader: anytype) !Type {
+    while (self.peekChar(reader) != '"')
+        try self.consume(reader);
 
     return .Str;
 }
 
 /// Reads until the end of the line or EOF
-fn comment(self: *Lexer) Type {
-    while (self.peekChar()) |next_char|
+fn comment(self: *Self, reader: anytype) !Type {
+    while (self.peekChar(reader)) |next_char|
         if (next_char != '\n')
-            self.consume()
+            try self.consume(reader)
         else
             // Newlines that terminate comments are also terms, so no
             // `consume` here
@@ -280,21 +295,30 @@ fn isIdent(char: u8) bool {
 }
 
 const testing = std.testing;
+const io = std.io;
 const meta = std.meta;
 const verbose_tests = @import("build_options").verbose_tests;
-const stderr = if (false)
-    // const stderr = if (verbose_tests)
+// const stderr = if (false)
+const stderr = if (verbose_tests)
     std.io.getStdErr().writer()
 else
     std.io.null_writer;
 
-fn expectEqualTokens(input: []const u8, expecteds: []const []const u8) !void {
+const fs = std.fs;
+
+fn expectEqualTokens(
+    comptime input: []const u8,
+    expecteds: []const []const u8,
+) !void {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var lexer = Lexer.init(input);
+
+    var fbs = io.fixedBufferStream(input);
+    var lex = Self.init(arena.allocator());
+    const reader = fbs.reader();
 
     for (expecteds) |expected| {
-        const next_token = (try lexer.next(arena.allocator())).?;
+        const next_token = (try lex.next(reader)).?;
         try stderr.print("{s}\n", .{next_token.lit});
         try testing.expectEqualStrings(
             expected,

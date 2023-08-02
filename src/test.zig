@@ -7,9 +7,11 @@ const Token = syntax.Token(Location);
 const Term = syntax.Term;
 const Type = syntax.Type;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const Lexer = @import("sifu/lexer.zig");
+const fs = std.fs;
+const Lexer = @import("sifu/Lexer.zig");
 const parse = @import("sifu/parser.zig").parse;
 const Pattern = Ast.Pattern;
+const io = std.io;
 const print = std.debug.print;
 
 // for debugging with zig test --test-filter, comment this import
@@ -22,8 +24,6 @@ else
 
 test "Submodules" {
     _ = @import("sifu.zig");
-    _ = @import("util.zig");
-    _ = @import("pattern.zig");
 }
 
 test "equal strings with different pointers or pos should be equal" {
@@ -64,10 +64,12 @@ test "Pattern: simple vals" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var lexer = Lexer.init("Aa Bb Cc \n\n 123");
+    var fbs = io.fixedBufferStream("Aa Bb Cc \n\n 123");
+    var reader = fbs.reader();
+    var lexer = Lexer.init(allocator);
 
-    const key = (try parse(allocator, &lexer)).?.apps;
-    const val = &(try parse(allocator, &lexer)).?;
+    const key = (try parse(allocator, &lexer, reader)).?.apps;
+    const val = &(try parse(allocator, &lexer, reader)).?;
     var actual = Pattern{};
     const updated = try Ast.insert(key, allocator, &actual, val);
     _ = updated;
@@ -100,9 +102,11 @@ test "Pattern: simple vals" {
     );
 
     // Test branching
-    var lexer2 = Lexer.init("Aa Bb2 \n\n 456");
-    const key2 = (try parse(allocator, &lexer2)).?.apps;
-    const val2 = &(try parse(allocator, &lexer2)).?;
+    fbs = io.fixedBufferStream("Aa Bb2 \n\n 456");
+    var lexer2 = Lexer.init(allocator);
+    reader = fbs.reader();
+    const key2 = (try parse(allocator, &lexer2, reader)).?.apps;
+    const val2 = &(try parse(allocator, &lexer2, reader)).?;
     try expected.map.getPtr("Aa").?
         .map.put(allocator, "Bb2", Pattern{ .val = val2 });
     _ = try Ast.insert(key2, allocator, &actual, val2);
@@ -113,50 +117,6 @@ test "Pattern: simple vals" {
         try Ast.match(key2, allocator, actual),
     );
     try stderr.print(" \n", .{});
-    try debugPattern(expected, 0);
-    try debugPattern(actual, 0);
-}
-
-/// Pretty print a pattern to stderr
-// TODO: add all pattern fields
-pub fn debugPattern(pattern: anytype, indent: usize) !void {
-    try stderr.writeByte('|');
-    if (pattern.val) |val| {
-        const Val = @TypeOf(val);
-
-        blk: {
-            switch (@typeInfo(Val)) {
-                .Struct => if (@hasDecl(Val, "write")) {
-                    try @field(Val, "write")(val, stderr);
-                    break :blk;
-                },
-                .Pointer => |ptr| if (@hasDecl(ptr.child, "write")) {
-                    // @compileError(std.fmt.comptimePrint(
-                    //     "{?}\n",
-                    //     .{ptr},
-                    // ));
-                    try @field(ptr.child, "write")(val.*, stderr);
-                    break :blk;
-                },
-                else => {},
-            }
-            try stderr.print("{any}, ", .{val});
-        }
-    }
-    try stderr.writeByte('|');
-    try stderr.print(" {s}\n", .{"{"});
-
-    var iter = pattern.map.iterator();
-    while (iter.next()) |entry| {
-        const next_indent = indent + 4;
-        for (0..next_indent) |_|
-            try stderr.print(" ", .{});
-
-        try stderr.print("{s} -> ", .{entry.key_ptr.*});
-        try debugPattern(entry.value_ptr.*, next_indent);
-    }
-    for (0..indent) |_|
-        try stderr.print(" ", .{});
-
-    try stderr.print("{s}\n", .{"}"});
+    try expected.print(stderr);
+    try actual.print(stderr);
 }

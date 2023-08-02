@@ -8,7 +8,7 @@ const Order = math.Order;
 const math = std.math;
 const assert = std.debug.assert;
 const Oom = Allocator.Error;
-const Lexer = @import("lexer.zig");
+const Lexer = @import("Lexer.zig");
 
 /// The location info for Sifu tokens. The end position can be calulated from
 /// the slice, so it isn't stored.

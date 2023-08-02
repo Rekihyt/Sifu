@@ -12,6 +12,7 @@ const panic = std.debug.panic;
 const util = @import("../util.zig");
 const fsize = util.fsize();
 const Ast = @import("ast.zig").Ast(Token);
+const AstOf = @import("ast.zig").Ast;
 const syntax = @import("syntax.zig");
 const Token = syntax.Token(Location);
 const Location = syntax.Location;
@@ -26,7 +27,6 @@ const mem = std.mem;
 const math = std.math;
 const assert = std.debug.assert;
 const debug = std.debug;
-const Lexer = @import("lexer.zig");
 
 // TODO: add indentation tracking, and separate based on newlines+indent
 
@@ -47,12 +47,12 @@ fn parseLit(token: Token) Ast {
     };
 }
 
-fn consumeNewLines(allocator: Allocator, lexer: *Lexer) !bool {
+fn consumeNewLines(lexer: anytype, reader: anytype) !bool {
     var consumed: bool = false;
     // Parse all newlines
-    while (try lexer.peek(allocator)) |next_token|
+    while (try lexer.peek(reader)) |next_token|
         if (next_token.type == .NewLine) {
-            _ = try lexer.next(allocator);
+            _ = try lexer.next(reader);
             consumed = true;
         } else break;
 
@@ -60,9 +60,9 @@ fn consumeNewLines(allocator: Allocator, lexer: *Lexer) !bool {
 }
 
 /// Parse a nonempty App if possible, returning null otherwise.
-pub fn parse(allocator: Allocator, lexer: *Lexer) !?Ast {
+pub fn parse(allocator: Allocator, lexer: *Lexer, reader: anytype) !?Ast {
     var result = ArrayListUnmanaged(Ast){};
-    _ = try parseUntil(allocator, lexer, &result, null) orelse
+    _ = try parseUntil(allocator, lexer, reader, &result, null) orelse
         return null;
 
     assert(result.items.len != 0); // returned null if so
@@ -70,9 +70,8 @@ pub fn parse(allocator: Allocator, lexer: *Lexer) !?Ast {
     return Ast{ .apps = try result.toOwnedSlice(allocator) };
 }
 
-// TODO: convert this file to parse directly into patterns, not Asts
-
-/// Parse until sep is encountered, or a double newline.
+/// Parse until sep is encountered, or a newline. The `lexer` should be a
+/// mutable instance of `Lexer()`.
 ///
 /// Memory can be freed by using an arena allocator, or walking the tree and
 /// freeing each app.
@@ -83,17 +82,18 @@ pub fn parse(allocator: Allocator, lexer: *Lexer) !?Ast {
 fn parseUntil(
     allocator: Allocator,
     lexer: *Lexer,
+    reader: anytype,
     result: *ArrayListUnmanaged(Ast),
     sep: ?u8, // must be a greedily parsed, single char sep
 ) !?bool {
-    _ = try lexer.peek(allocator) orelse
+    _ = try lexer.peek(reader) orelse
         return null;
 
     const len = result.*.items.len;
-    return while (try lexer.next(allocator)) |token| {
+    return while (try lexer.next(reader)) |token| {
         const lit = token.lit;
         switch (token.type) {
-            .NewLine => if (try consumeNewLines(allocator, lexer))
+            .NewLine => if (try consumeNewLines(lexer, reader))
                 // Double (or more) line break, stop parsing, and check if
                 // anything was parsed by comparing lengths
                 break if (result.*.items.len == len)
@@ -111,7 +111,7 @@ fn parseUntil(
                     var nested = ArrayListUnmanaged(Ast){};
                     // Try to parse a nested app
                     const matched =
-                        try parseUntil(allocator, lexer, &nested, ')');
+                        try parseUntil(allocator, lexer, reader, &nested, ')');
 
                     try stderr.print("Matched: {?}\n", .{matched});
                     // if (!matched) // copy and free nested to result
@@ -140,8 +140,9 @@ fn parseUntil(
 
 // This function is the responsibility of the Parser, because it is the dual
 // to parsing.
-pub fn print(self: anytype, writer: anytype) !void {
-    switch (self) {
+// `AstOf` is just then Ast type function, but avoids a name collision.
+pub fn print(comptime T: type, ast: AstOf(T), writer: anytype) !void {
+    switch (ast) {
         .apps => |asts| if (asts.len > 0 and asts[0] == .token and
             asts[0].token.type == .Infix)
         {
@@ -152,38 +153,41 @@ pub fn print(self: anytype, writer: anytype) !void {
             assert(asts.len >= 2);
             assert(asts[1] == .apps);
             try writer.writeAll("(");
-            try print(asts[1], writer);
+            try print(T, asts[1], writer);
             try writer.writeByte(' ');
             try writer.writeAll(token.lit);
             if (asts.len >= 2)
                 for (asts[2..]) |arg| {
                     try writer.writeByte(' ');
-                    try print(arg, writer);
+                    try print(T, arg, writer);
                 };
             try writer.writeAll(")");
         } else if (asts.len > 0) {
             try writer.writeAll("(");
-            try print(asts[0], writer);
+            try print(T, asts[0], writer);
             for (asts[1..]) |it| {
                 try writer.writeByte(' ');
-                try print(it, writer);
+                try print(T, it, writer);
             }
             try writer.writeAll(")");
         } else try writer.writeAll("()"),
         .token => |token| try writer.print("{s}", .{token.lit}),
         .@"var" => |v| try writer.print("{s}", .{v}),
-        .pattern => |pat| try writer.print("{?}", .{pat}),
+        .pattern => |pat| try pat.print(writer),
     }
 }
 
 const testing = std.testing;
 const expectEqualStrings = testing.expectEqualStrings;
 const meta = std.meta;
+const fs = std.fs;
+const io = std.io;
+const Lexer = @import("Lexer.zig");
 
 // for debugging with zig test --test-filter, comment this import
 const verbose_tests = @import("build_options").verbose_tests;
-const stderr = if (false)
-    // const stderr = if (verbose_tests)
+// const stderr = if (false)
+const stderr = if (verbose_tests)
     std.io.getStdErr().writer()
 else
     std.io.null_writer;
@@ -192,19 +196,33 @@ test "simple val" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    var lexer = Lexer.init("Asdf");
-    const ast = try parse(arena.allocator(), &lexer);
+    var fbs = io.fixedBufferStream("Asdf");
+    var lexer = Lexer.init(arena.allocator());
+    const ast = try parse(arena.allocator(), &lexer, fbs.reader());
     try testing.expectEqualStrings(ast.?.apps[0].token.lit, "Asdf");
+}
+
+fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var lexer = Lexer.init(allocator);
+    var fbs = io.fixedBufferStream(str);
+    const reader = fbs.reader();
+    for (expecteds) |expected| {
+        const actual = try parse(allocator, &lexer, reader);
+        try expectEqualApps(expected, actual.?);
+    }
 }
 
 fn expectEqualApps(expected: Ast, actual: Ast) !void {
     try stderr.writeByte('\n');
     try stderr.writeAll("expected: ");
-    try print(expected, stderr);
+    try print(Token, expected, stderr);
     try stderr.writeByte('\n');
 
     try stderr.writeAll("actual: ");
-    try print(actual, stderr);
+    try print(Token, actual, stderr);
     try stderr.writeByte('\n');
 
     try testing.expect(.apps == expected);
@@ -289,22 +307,11 @@ test "All Asts" {
             } },
         } },
     };
-    var arena = ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    // TODO: test full input string
-    var lexer = Lexer.init(input[0..7]);
-
+    try testStrParse(input[0..7], expecteds);
     // try expectEqualApps(expected, expected); // test the test function
-    for (expecteds) |expected| {
-        const actual = try parse(arena.allocator(), &lexer);
-        try expectEqualApps(expected, actual.?);
-    }
 }
 
 test "App: simple vals" {
-    var arena = ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var lexer = Lexer.init("Aa Bb Cc");
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             Ast{ .token = .{
@@ -324,16 +331,10 @@ test "App: simple vals" {
             } },
         } },
     };
-    for (expecteds) |expected| {
-        const actual = try parse(arena.allocator(), &lexer);
-        try expectEqualApps(expected, actual.?);
-    }
+    try testStrParse("Aa Bb Cc", expecteds);
 }
 
 test "App: simple op" {
-    var arena = ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var lexer = Lexer.init("1 + 2");
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             Ast{
@@ -361,16 +362,10 @@ test "App: simple op" {
             },
         } },
     };
-    for (expecteds) |expected| {
-        const actual = try parse(arena.allocator(), &lexer);
-        try expectEqualApps(expected, actual.?);
-    }
+    try testStrParse("1 + 2", expecteds);
 }
 
 test "App: simple ops" {
-    var arena = ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var lexer = Lexer.init("1 + 2 + 3");
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             Ast{ .token = .{
@@ -404,16 +399,10 @@ test "App: simple ops" {
             } },
         } },
     };
-    for (expecteds) |expected| {
-        const actual = try parse(arena.allocator(), &lexer);
-        try expectEqualApps(expected, actual.?);
-    }
+    try testStrParse("1 + 2 + 3", expecteds);
 }
 
 test "App: simple op, no first arg" {
-    var arena = ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var lexer = Lexer.init("+ 2");
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             Ast{
@@ -433,17 +422,10 @@ test "App: simple op, no first arg" {
             },
         } },
     };
-    for (expecteds) |expected| {
-        const actual = try parse(arena.allocator(), &lexer);
-        try expectEqualApps(expected, actual.?);
-    }
+    try testStrParse("+ 2", expecteds);
 }
 
 test "App: simple op, no second arg" {
-    var arena = ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    var lexer = Lexer.init("1 +");
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             Ast{
@@ -462,17 +444,10 @@ test "App: simple op, no second arg" {
             } },
         } },
     };
-    for (expecteds) |expected| {
-        const actual = try parse(arena.allocator(), &lexer);
-        try expectEqualApps(expected, actual.?);
-    }
+    try testStrParse("1 +", expecteds);
 }
 
 test "App: simple parens" {
-    var arena = ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    var lexer = Lexer.init("()() (())");
     const expected = Ast{ .apps = &.{
         Ast{ .apps = &.{} },
         Ast{ .apps = &.{} },
@@ -480,37 +455,14 @@ test "App: simple parens" {
             Ast{ .apps = &.{} },
         } },
     } };
-    const actual = try parse(arena.allocator(), &lexer);
-    try expectEqualApps(expected, actual.?);
+    try testStrParse("()() (())", &.{expected});
 }
 
 test "App: empty" {
-    var arena = ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    var lexer = Lexer.init("   \n\n \n  \n\n\n");
-    const actual = try parse(arena.allocator(), &lexer);
-    try testing.expectEqual(@as(?Ast, null), actual);
+    try testStrParse("   \n\n \n  \n\n\n", &.{});
 }
 
 test "App: nested parens 1" {
-    var arena = ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    var lexer = Lexer.init(
-        \\ ()
-        \\
-        \\ () () ( () )
-        \\
-        \\(
-        \\  (
-        \\    () ()
-        \\  )
-        \\  ()
-        \\)
-        \\
-        \\ ( () ( ()) )( )
-    );
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             Ast{ .apps = &.{} },
@@ -541,21 +493,23 @@ test "App: nested parens 1" {
             Ast{ .apps = &.{} },
         } },
     };
-    for (expecteds) |expected| {
-        const actual = try parse(arena.allocator(), &lexer);
-        try expectEqualApps(expected, actual.?);
-    }
+    try testStrParse(
+        \\ ()
+        \\
+        \\ () () ( () )
+        \\
+        \\(
+        \\  (
+        \\    () ()
+        \\  )
+        \\  ()
+        \\)
+        \\
+        \\ ( () ( ()) )( )
+    , expecteds);
 }
 
 test "App: simple newlines" {
-    var arena = ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    var lexer = Lexer.init(
-        \\ Foo
-        \\
-        \\ Bar
-    );
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             Ast{ .token = .{
@@ -572,18 +526,21 @@ test "App: simple newlines" {
             } },
         } },
     };
-    for (expecteds) |expected| {
-        const actual = try parse(arena.allocator(), &lexer);
-        try expectEqualApps(expected, actual.?);
-    }
+    try testStrParse(
+        \\ Foo
+        \\
+        \\ Bar
+    , expecteds);
 }
 
 test "Apps: pattern" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
+    const allocator = arena.allocator();
+    var lexer = Lexer.init(allocator);
+    var fbs = io.fixedBufferStream("{1,2,3}");
 
-    var lexer = Lexer.init("{1,2,3}");
-    const ast = try parse(arena.allocator(), &lexer);
+    const ast = try parse(allocator, &lexer, fbs.reader());
     _ = ast;
     // try testing.expectEqualStrings(ast.?.apps[0].pattern, "Asdf");
 }
