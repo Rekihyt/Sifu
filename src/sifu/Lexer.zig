@@ -24,7 +24,6 @@ const Type = syntax.Type;
 const Set = util.Set;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const ArrayList = std.ArrayList;
-const Oom = Allocator.Error;
 const Order = std.math.Order;
 const mem = std.mem;
 const math = std.math;
@@ -33,7 +32,7 @@ const debug = std.debug;
 
 pub const Self = @This();
 
-/// Current token being parsed in the source
+/// A element buffer to hold chars for the current token
 buff: ArrayListUnmanaged(u8) = .{},
 /// The position in the stream used as context
 pos: usize = 0,
@@ -41,9 +40,9 @@ pos: usize = 0,
 line: usize = 0,
 /// Current column in the source
 col: usize = 1,
-/// A single element buffer to hold tokens for `peek`
+/// Current token being parsed in the source
 token: ?Token = null,
-/// A single element buffer to hold chars for `peekChar`
+/// A single element buffer to hold a char for `peekChar`
 char: ?u8 = null,
 /// The allocator used for tokenizing
 allocator: Allocator,
@@ -56,7 +55,7 @@ pub fn init(allocator: Allocator) Self {
 pub fn peek(
     self: *Self,
     reader: anytype,
-) Oom!?Token {
+) !?Token {
     if (self.token == null)
         self.token = try self.next(reader);
 
@@ -66,14 +65,14 @@ pub fn peek(
 pub fn next(
     self: *Self,
     reader: anytype,
-) Oom!?Token {
+) !?Token {
     // Return the current token, if it exists
     if (self.token) |token| {
         defer self.token = null;
         return token;
     }
     try self.skipSpace(reader);
-    const char = self.peekChar(reader) orelse
+    const char = try self.peekChar(reader) orelse
         return null;
 
     const pos = self.pos;
@@ -82,7 +81,8 @@ pub fn next(
     // doesn't matter.
     const token_type: Type = switch (char) {
         '\n' => .NewLine,
-        '+', '-' => if (self.peekChar(reader)) |next_char|
+        // ',' => .NewLine, // Treat Escape as "continue on newline"
+        '+', '-' => if (try self.peekChar(reader)) |next_char|
             if (isDigit(next_char))
                 try self.integer(reader)
             else
@@ -104,9 +104,9 @@ pub fn next(
             // This is a debug error only, as we shouldn't encounter an error
             // during lexing
             panic(
-                \\Lexer Bug: Unknown character '{c}' at line {}, col {}.
+                \\Lexer Bug: Unknown character '{c}' (0x{X}) at line {}, col {}.
                 \\Note: Unicode not supported yet.
-            , .{ char, self.line, self.col }),
+            , .{ char, char, self.line, self.col }),
     };
     // defer self.buff = .{};
     return Token{
@@ -118,10 +118,11 @@ pub fn next(
 
 /// Returns the next character but does not increase the Lexer's position, or
 /// returns null if there are no more characters left.
-fn peekChar(self: *Self, reader: anytype) ?u8 {
+fn peekChar(self: *Self, reader: anytype) !?u8 {
     if (self.char == null)
         self.char = reader.readByte() catch |e| switch (e) {
             error.EndOfStream => return null,
+            else => return e,
         };
 
     return self.char;
@@ -129,16 +130,16 @@ fn peekChar(self: *Self, reader: anytype) ?u8 {
 
 /// Advances one character, reading it into the current token list buff.
 fn consume(self: *Self, reader: anytype) !void {
-    const char = self.nextChar(reader);
+    const char = try self.nextChar(reader);
     try self.buff.append(self.allocator, char);
 }
 
 /// Advances one character, or panics (should only be called after `peekChar`)
-fn nextChar(self: *Self, reader: anytype) u8 {
+fn nextChar(self: *Self, reader: anytype) !u8 {
     const char = if (self.char) |char|
         char
     else
-        self.peekChar(reader) orelse panic(
+        try self.peekChar(reader) orelse panic(
             "Lexer Bug: Attempted to advance to next AST but EOF reached.",
             .{},
         );
@@ -156,15 +157,15 @@ fn nextChar(self: *Self, reader: anytype) u8 {
 /// found. Not guaranteed to skip anything. Newlines are separators, and thus
 /// treated as tokens.
 fn skipSpace(self: *Self, reader: anytype) !void {
-    while (self.peekChar(reader)) |char|
+    while (try self.peekChar(reader)) |char|
         switch (char) {
-            ' ', '\t', '\r' => _ = self.nextChar(reader),
+            ' ', '\t', '\r' => _ = try self.nextChar(reader),
             else => break,
         };
 }
 
 fn nextIdent(self: *Self, reader: anytype) !void {
-    while (self.peekChar(reader)) |next_char|
+    while (try self.peekChar(reader)) |next_char|
         if (isIdent(next_char))
             try self.consume(reader)
         else
@@ -183,7 +184,7 @@ fn variable(self: *Self, reader: anytype) !Type {
 
 /// Reads the next infix characters
 fn infix(self: *Self, reader: anytype) !Type {
-    while (self.peekChar(reader)) |next_char|
+    while (try self.peekChar(reader)) |next_char|
         if (isInfix(next_char))
             try self.consume(reader)
         else
@@ -194,7 +195,7 @@ fn infix(self: *Self, reader: anytype) !Type {
 
 /// Reads the next digits and/or any underscores
 fn integer(self: *Self, reader: anytype) !Type {
-    while (self.peekChar(reader)) |next_char|
+    while (try self.peekChar(reader)) |next_char|
         if (isDigit(next_char) or next_char == '_')
             try self.consume(reader)
         else
@@ -207,7 +208,7 @@ fn integer(self: *Self, reader: anytype) !Type {
 /// `InvalidCharacter`, so this function cannot fail.
 fn float(self: *Self, reader: anytype) !Type {
     self.int();
-    if (self.peekChar(reader) == '.') {
+    if (try self.peekChar(reader) == '.') {
         try self.consume(reader);
         self.int();
     }
@@ -218,7 +219,7 @@ fn float(self: *Self, reader: anytype) !Type {
 /// Reads a value wrapped in double-quotes from the current character. If no
 /// matching quote is found, reads until EOF.
 fn string(self: *Self, reader: anytype) !Type {
-    while (self.peekChar(reader) != '"')
+    while (try self.peekChar(reader) != '"')
         try self.consume(reader);
 
     return .Str;
@@ -226,7 +227,7 @@ fn string(self: *Self, reader: anytype) !Type {
 
 /// Reads until the end of the line or EOF
 fn comment(self: *Self, reader: anytype) !Type {
-    while (self.peekChar(reader)) |next_char|
+    while (try self.peekChar(reader)) |next_char|
         if (next_char != '\n')
             try self.consume(reader)
         else

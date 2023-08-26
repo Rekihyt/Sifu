@@ -29,7 +29,7 @@ pub const Type = enum {
     U, // unsigned
     F, // float
     Comment,
-    NewLine,
+    NewLine, // New line separator
 
     /// Compares by value, not by len, pos, or pointers.
     pub fn order(self: Type, other: Type) Order {
@@ -53,7 +53,7 @@ pub const Term = union(Type) {
     Comment: []const u8,
 };
 
-/// Any word with with context, including vars.
+/// Any source code word with with context, including vars.
 pub fn Token(comptime Context: type) type {
     return struct {
         /// The string value of this token.
@@ -68,6 +68,10 @@ pub fn Token(comptime Context: type) type {
 
         pub const Self = @This();
 
+        pub fn getHashData(self: Self) []const u8 {
+            return self.lit;
+        }
+
         /// Ignores Context.
         pub fn order(self: Self, other: Self) Order {
             // Don't need to use `Token.Type` because it depends entirely on the
@@ -80,7 +84,7 @@ pub fn Token(comptime Context: type) type {
             return .eq == self.order(other);
         }
 
-        /// Memory valid until this token's `lit` is freed.
+        /// Memory valid until this token is freed.
         pub fn toString(self: Self) []const u8 {
             return self.lit;
         }

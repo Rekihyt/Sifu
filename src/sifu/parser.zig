@@ -11,8 +11,8 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const panic = std.debug.panic;
 const util = @import("../util.zig");
 const fsize = util.fsize();
-const Ast = @import("ast.zig").Ast(Token);
-const AstOf = @import("ast.zig").Ast;
+const Ast = @import("ast.zig").Ast;
+const AstOf = @import("../ast.zig").Ast;
 const syntax = @import("syntax.zig");
 const Token = syntax.Token(Location);
 const Location = syntax.Location;
@@ -89,18 +89,10 @@ fn parseUntil(
     _ = try lexer.peek(reader) orelse
         return null;
 
-    const len = result.*.items.len;
     return while (try lexer.next(reader)) |token| {
         const lit = token.lit;
         switch (token.type) {
-            .NewLine => if (try consumeNewLines(lexer, reader))
-                // Double (or more) line break, stop parsing, and check if
-                // anything was parsed by comparing lengths
-                break if (result.*.items.len == len)
-                    null
-                else
-                    sep == null,
-
+            .NewLine => break '\n' == sep,
             // Vals always have at least one char
             .Val => if (lit[0] == sep)
                 break true // ignore sep
@@ -121,19 +113,19 @@ fn parseUntil(
                         Ast{ .apps = try nested.toOwnedSlice(allocator) },
                     );
                 },
-                else => try result.append(allocator, Ast.of(token)),
+                else => try result.append(allocator, Ast.ofLit(token)),
             },
             // The current list becomes the first argument to the infix, then we
             // add any following asts to that
             .Infix => {
                 var infix_apps = ArrayListUnmanaged(Ast){};
-                try infix_apps.append(allocator, Ast.of(token));
+                try infix_apps.append(allocator, Ast.ofLit(token));
                 try infix_apps.append(allocator, Ast{
                     .apps = try result.toOwnedSlice(allocator),
                 });
                 result.* = infix_apps;
             },
-            else => try result.append(allocator, Ast.of(token)),
+            else => try result.append(allocator, Ast.ofLit(token)),
         }
     } else false;
 }
@@ -141,37 +133,37 @@ fn parseUntil(
 // This function is the responsibility of the Parser, because it is the dual
 // to parsing.
 // `AstOf` is just then Ast type function, but avoids a name collision.
-pub fn print(comptime T: type, ast: AstOf(T), writer: anytype) !void {
+pub fn print(ast: anytype, writer: anytype) !void {
     switch (ast) {
-        .apps => |asts| if (asts.len > 0 and asts[0] == .token and
-            asts[0].token.type == .Infix)
+        .apps => |asts| if (asts.len > 0 and asts[0] == .key and
+            asts[0].key.type == .Infix)
         {
-            const token = asts[0].token;
+            const key = asts[0].key;
             // An infix always forms an App with at least 2
             // nodes, the second of which must be an App (which
             // may be empty)
             assert(asts.len >= 2);
             assert(asts[1] == .apps);
             try writer.writeAll("(");
-            try print(T, asts[1], writer);
+            try print(asts[1], writer);
             try writer.writeByte(' ');
-            try writer.writeAll(token.lit);
+            try writer.writeAll(key.lit);
             if (asts.len >= 2)
                 for (asts[2..]) |arg| {
                     try writer.writeByte(' ');
-                    try print(T, arg, writer);
+                    try print(arg, writer);
                 };
             try writer.writeAll(")");
         } else if (asts.len > 0) {
             try writer.writeAll("(");
-            try print(T, asts[0], writer);
+            try print(asts[0], writer);
             for (asts[1..]) |it| {
                 try writer.writeByte(' ');
-                try print(T, it, writer);
+                try print(it, writer);
             }
             try writer.writeAll(")");
         } else try writer.writeAll("()"),
-        .token => |token| try writer.print("{s}", .{token.lit}),
+        .key => |key| try writer.print("{s}", .{key.lit}),
         .@"var" => |v| try writer.print("{s}", .{v}),
         .pattern => |pat| try pat.print(writer),
     }
@@ -199,7 +191,7 @@ test "simple val" {
     var fbs = io.fixedBufferStream("Asdf");
     var lexer = Lexer.init(arena.allocator());
     const ast = try parse(arena.allocator(), &lexer, fbs.reader());
-    try testing.expectEqualStrings(ast.?.apps[0].token.lit, "Asdf");
+    try testing.expectEqualStrings(ast.?.apps[0].key.lit, "Asdf");
 }
 
 fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
@@ -218,11 +210,11 @@ fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
 fn expectEqualApps(expected: Ast, actual: Ast) !void {
     try stderr.writeByte('\n');
     try stderr.writeAll("expected: ");
-    try print(Token, expected, stderr);
+    try print(expected, stderr);
     try stderr.writeByte('\n');
 
     try stderr.writeAll("actual: ");
-    try print(Token, actual, stderr);
+    try print(actual, stderr);
     try stderr.writeByte('\n');
 
     try testing.expect(.apps == expected);
@@ -233,14 +225,14 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
     for (expected.apps, actual.apps) |expected_elem, actual_elem| {
         if (@intFromEnum(expected_elem) == @intFromEnum(actual_elem)) {
             switch (expected_elem) {
-                .token => |token| {
+                .key => |key| {
                     try testing.expectEqual(
                         @as(Order, .eq),
-                        token.order(actual_elem.token),
+                        key.order(actual_elem.key),
                     );
                     try testing.expectEqualDeep(
-                        token.lit,
-                        actual_elem.token.lit,
+                        key.lit,
+                        actual_elem.key.lit,
                     );
                 },
                 .@"var" => |v| try expectEqualStrings(v, actual_elem.@"var"),
@@ -285,22 +277,22 @@ test "All Asts" {
     ;
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
-            .{ .token = .{
+            .{ .key = .{
                 .type = .Val,
                 .lit = "Val1",
                 .context = .{ .pos = 0, .uri = null },
             } },
-            .{ .token = .{
+            .{ .key = .{
                 .type = .Val,
                 .lit = ",",
                 .context = .{ .pos = 4, .uri = null },
             } },
-            .{ .token = .{
+            .{ .key = .{
                 .type = .I,
                 .lit = "5",
                 .context = .{ .pos = 5, .uri = null },
             } },
-            .{ .token = .{
+            .{ .key = .{
                 .type = .Val,
                 .lit = ";",
                 .context = .{ .pos = 6, .uri = null },
@@ -314,17 +306,17 @@ test "All Asts" {
 test "App: simple vals" {
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
-            Ast{ .token = .{
+            Ast{ .key = .{
                 .type = .Val,
                 .lit = "Aa",
                 .context = .{ .pos = 0, .uri = null },
             } },
-            Ast{ .token = .{
+            Ast{ .key = .{
                 .type = .Val,
                 .lit = "Bb",
                 .context = .{ .pos = 3, .uri = null },
             } },
-            Ast{ .token = .{
+            Ast{ .key = .{
                 .type = .Val,
                 .lit = "Cc",
                 .context = .{ .pos = 6, .uri = null },
@@ -338,7 +330,7 @@ test "App: simple op" {
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             Ast{
-                .token = .{
+                .key = .{
                     .type = .Infix,
                     .lit = "+",
                     .context = .{ .pos = 2, .uri = null },
@@ -346,7 +338,7 @@ test "App: simple op" {
             },
             Ast{ .apps = &.{
                 Ast{
-                    .token = .{
+                    .key = .{
                         .type = .I,
                         .lit = "1",
                         .context = .{ .pos = 0, .uri = null },
@@ -354,7 +346,7 @@ test "App: simple op" {
                 },
             } },
             Ast{
-                .token = .{
+                .key = .{
                     .type = .I,
                     .lit = "2",
                     .context = .{ .pos = 4, .uri = null },
@@ -368,31 +360,31 @@ test "App: simple op" {
 test "App: simple ops" {
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
-            Ast{ .token = .{
+            Ast{ .key = .{
                 .type = .Infix,
                 .lit = "+",
                 .context = .{ .pos = 6, .uri = null },
             } },
             Ast{ .apps = &.{
-                Ast{ .token = .{
+                Ast{ .key = .{
                     .type = .Infix,
                     .lit = "+",
                     .context = .{ .pos = 2, .uri = null },
                 } },
                 Ast{ .apps = &.{
-                    Ast{ .token = .{
+                    Ast{ .key = .{
                         .type = .I,
                         .lit = "1",
                         .context = .{ .pos = 0, .uri = null },
                     } },
                 } },
-                Ast{ .token = .{
+                Ast{ .key = .{
                     .type = .I,
                     .lit = "2",
                     .context = .{ .pos = 4, .uri = null },
                 } },
             } },
-            Ast{ .token = .{
+            Ast{ .key = .{
                 .type = .I,
                 .lit = "3",
                 .context = .{ .pos = 8, .uri = null },
@@ -406,7 +398,7 @@ test "App: simple op, no first arg" {
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             Ast{
-                .token = .{
+                .key = .{
                     .type = .Infix,
                     .lit = "+",
                     .context = .{ .pos = 2, .uri = null },
@@ -414,7 +406,7 @@ test "App: simple op, no first arg" {
             },
             Ast{ .apps = &.{} },
             Ast{
-                .token = .{
+                .key = .{
                     .type = .I,
                     .lit = "2",
                     .context = .{ .pos = 4, .uri = null },
@@ -429,14 +421,14 @@ test "App: simple op, no second arg" {
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             Ast{
-                .token = .{
+                .key = .{
                     .type = .Infix,
                     .lit = "+",
                     .context = .{ .pos = 2, .uri = null },
                 },
             },
             Ast{ .apps = &.{
-                Ast{ .token = .{
+                Ast{ .key = .{
                     .type = .I,
                     .lit = "1",
                     .context = .{ .pos = 0, .uri = null },
@@ -512,14 +504,14 @@ test "App: nested parens 1" {
 test "App: simple newlines" {
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
-            Ast{ .token = .{
+            Ast{ .key = .{
                 .type = .Val,
                 .lit = "Foo",
                 .context = .{ .pos = 0, .uri = null },
             } },
         } },
         Ast{ .apps = &.{
-            Ast{ .token = .{
+            Ast{ .key = .{
                 .type = .Val,
                 .lit = "Bar",
                 .context = .{ .pos = 0, .uri = null },

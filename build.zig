@@ -64,6 +64,7 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption(bool, "verbose_tests", verbose_tests);
     unit_tests.addOptions("build_options", build_options);
+    exe.addOptions("build_options", build_options);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
