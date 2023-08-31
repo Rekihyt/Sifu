@@ -5,18 +5,48 @@ const math = std.math;
 const assert = std.debug.assert;
 const util = @import("util.zig");
 const Order = math.Order;
+const Wyhash = std.hash.Wyhash;
+
+fn StringOrAutoArrayMap(comptime Key: type) fn (type) type {
+    return if (Key == []const u8)
+        std.StringArrayHashMapUnmanaged
+    else
+        struct {
+            fn KeyedArrayHashMapUnmanaged(comptime Val: type) type {
+                return std.AutoArrayHashMapUnmanaged(Key, Val);
+            }
+        }.KeyedArrayHashMapUnmanaged;
+}
+
+// Allows []const u8.
+pub fn AutoAst(
+    comptime Key: type,
+    comptime Var: type,
+    comptime ValOrSelf: ?type,
+) type {
+    return Ast(
+        Key,
+        Var,
+        StringOrAutoArrayMap(Key),
+        StringOrAutoArrayMap(Var),
+        ValOrSelf,
+    );
+}
 
 /// The AST is the structure given to the source code and IR. It handles
 /// infix, nesting, and separator operators but does not differentiate between
 /// builtins. The `Key` is a custom type to allow storing of metainfo such as
 /// `Location`, and must implement `toString()` for pattern conversion. It
 /// could also be a simple type for optimization purposes.
-/// Pass null for `Val` to use the instantiated Ast type as the Val type
-/// in the Pattern, as it isn't possible to specify this before the type is
-/// instantiated.
+///
+/// Pass null for `Val` to use the instantiated Ast (the Self type in this
+/// struct definition) type as the Val type in the Pattern, as it isn't possible
+/// to specify this before the type is instantiated.
 pub fn Ast(
     comptime Key: type,
     comptime Var: type,
+    comptime KeyMapFn: fn (type) type,
+    comptime VarMapFn: fn (type) type,
     comptime ValOrSelf: ?type,
 ) type {
     return union(enum) {
@@ -31,28 +61,10 @@ pub fn Ast(
         /// of this `Ast`.
         pub const Val = ValOrSelf orelse *Self;
 
-        /// Whether this Key type can be hashed directly or `getHashData` must
-        /// be called first.
-        pub const simple_key_hash = !(@typeInfo(Key) == .Struct and
-            @hasDecl(Key, "getHashData"));
-
-        /// TODO: add switch
-        pub fn hash(self: Self) KeyData {
-            return if (simple_key_hash)
-                self.key
-            else
-                self.getHashData();
-        }
-
-        /// The part of data in the Key that is hashed and pattern matched on.
-        pub const KeyData = if (simple_key_hash)
-            Key
-        else
-            @typeInfo(@TypeOf(Key.getHashData)).Fn.return_type.?;
-
         /// The Pattern type specific to this Ast.
-        pub const Pat = Pattern(KeyData, Var, ValOrSelf);
+        pub const Pat = Pattern(Key, Var, KeyMapFn, VarMapFn, ValOrSelf);
 
+        pub const KeyMap = Pat.KeyMap;
         pub const VarMap = Pat.VarMap;
 
         pub fn ofLit(key: Key) Self {
@@ -114,37 +126,55 @@ const t = @import("test.zig");
 /// A trie-like type based on the given term type. Each pattern contains zero or
 /// more children.
 ///
-/// The term and var type must be hashable. Nodes track context, the recursive
-/// structures (map, match) do not.
+/// The term and var type must be hashable, and must NOT contain any cycles.
+/// TODO: reword this: Nodes track context, the recursive structures (map,
+/// match) do not.
 ///
 /// Params
 /// `Key` - the type of literal keys
 /// `Var` - the type of variable keys
 /// `Val` - type of values that a successful key match will evaluate to
 ///
-pub fn Pattern(
+/// Note: must be used with an Ast of the same types, you probably want to
+/// instantiate an Ast instead and alias it's `Pat` definition.
+fn Pattern(
     comptime Key: type,
     comptime Var: type,
+    comptime KeyMapFn: fn (type) type,
+    comptime VarMapFn: fn (type) type,
     comptime ValOrSelf: ?type,
 ) type {
     return struct {
         pub const Self = @This();
 
         // pub const Val = ValOrSelf orelse *Ast(Key, Var, null);
-        pub const AstKey = Ast(Key, Var, ValOrSelf);
-        pub const Val = AstKey.Val;
+        pub const AstType = Ast(Key, Var, KeyMapFn, VarMapFn, ValOrSelf);
+        pub const Val = AstType.Val;
 
-        pub const Map = if (Key == []const u8)
-            std.StringArrayHashMapUnmanaged(Self)
-        else
-            std.AutoArrayHashMapUnmanaged(Key, Self);
+        pub const KeyMap = KeyMapFn(Self);
+        pub const VarMap = VarMapFn(Self);
 
-        pub const VarMap = if (Var == []const u8)
-            std.StringArrayHashMapUnmanaged(Self)
-        else
-            std.AutoArrayHashMapUnmanaged(Var, Self);
+        const Context = struct {
+            pub fn hash(self: Self) u64 {
+                var hasher = Wyhash.init(0);
+                std.hash.autoHashStrat(&hasher, self, .DeepRecursive);
+                return hasher.final();
+            }
 
-        pub const PatMap = std.AutoArrayHashMapUnmanaged(*Self, Self);
+            pub fn eql(self: Self, k1: Key, k2: Key) bool {
+                _ = k2;
+                _ = k1;
+                _ = self;
+                return false;
+            }
+        };
+
+        pub const PatMap = std.ArrayHashMapUnmanaged(
+            *Self,
+            Self,
+            Context,
+            true, // store hash
+        );
 
         pub const VarPat = struct {
             @"var": Var,
@@ -172,7 +202,7 @@ pub fn Pattern(
 
         /// Maps literal terms to the next pattern, if there is one. These form
         /// the branches of the trie.
-        map: Map = Map{},
+        map: KeyMap = KeyMap{},
 
         /// A null value represents an undefined pattern, for example in `Foo
         /// Bar -> 123`, the value at `Foo` would be null.
@@ -187,7 +217,7 @@ pub fn Pattern(
             lit: Key,
             val: ?Val,
         ) !Self {
-            var map = Map{};
+            var map = KeyMap{};
             try map.put(allocator, lit, Self{ .val = val });
             return .{
                 .map = map,
@@ -235,14 +265,13 @@ pub fn Pattern(
         pub fn findPrefix(
             pat: *Self,
             allocator: Allocator,
-            apps: []const AstKey,
+            apps: []const AstType,
         ) Allocator.Error!?*Self {
             var current = pat;
             // Follow the longest branch that exists
             return for (apps) |app| switch (app) {
                 .key => |key| {
-                    const data = key.keyData();
-                    if (current.map.getPtr(data)) |next|
+                    if (current.map.getPtr(key)) |next|
                         current = next
                     else
                         break null;
@@ -272,7 +301,7 @@ pub fn Pattern(
         // pub fn match(
         //     pat: Self,
         //     allocator: Allocator,
-        //     apps: []const AstKey,
+        //     apps: []const AstType,
         // ) Allocator.Error!?Val {
         //     // var var_map = VarMap{};
         //     const result = try pat.matchPrefix(allocator, apps);
@@ -406,7 +435,7 @@ test "should behave like a set when given void" {
     // Empty pattern
     // try testing.expectEqual(@as(?void, {}), pat.match(.{
     //     .val = {},
-    //     .kind = .{ .map = Pat.Map{} },
+    //     .kind = .{ .map = Pat.KeyMap{} },
     // }));
 }
 

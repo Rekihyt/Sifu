@@ -5,7 +5,7 @@ const Location = syntax.Location;
 const Token = syntax.Token(Location);
 const Term = syntax.Term;
 const Type = syntax.Type;
-pub const Ast = @import("../ast.zig").Ast(
+pub const Ast = @import("../ast.zig").AutoAst(
     Token,
     []const u8,
     null,

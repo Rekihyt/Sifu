@@ -15,7 +15,6 @@ const util = @import("../util.zig");
 const fsize = fsize;
 const ast = @import("ast.zig");
 const Lit = ast.Lit;
-const Ast = ast.Ast(Token);
 const syntax = @import("syntax.zig");
 const Token = syntax.Token(Location);
 const Location = syntax.Location;
