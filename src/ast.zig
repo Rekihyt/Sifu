@@ -7,17 +7,6 @@ const util = @import("util.zig");
 const Order = math.Order;
 const Wyhash = std.hash.Wyhash;
 
-fn StringOrAutoArrayMap(comptime Key: type) fn (type) type {
-    return if (Key == []const u8)
-        std.StringArrayHashMapUnmanaged
-    else
-        struct {
-            fn KeyedArrayHashMapUnmanaged(comptime Val: type) type {
-                return std.AutoArrayHashMapUnmanaged(Key, Val);
-            }
-        }.KeyedArrayHashMapUnmanaged;
-}
-
 // Allows []const u8.
 pub fn AutoAst(
     comptime Key: type,
@@ -27,8 +16,8 @@ pub fn AutoAst(
     return Ast(
         Key,
         Var,
-        StringOrAutoArrayMap(Key),
-        StringOrAutoArrayMap(Var),
+        util.StringOrAutoArrayMap(Key),
+        util.StringOrAutoArrayMap(Var),
         ValOrSelf,
     );
 }
@@ -154,26 +143,9 @@ fn Pattern(
         pub const KeyMap = KeyMapFn(Self);
         pub const VarMap = VarMapFn(Self);
 
-        const Context = struct {
-            pub fn hash(self: Self) u64 {
-                var hasher = Wyhash.init(0);
-                std.hash.autoHashStrat(&hasher, self, .DeepRecursive);
-                return hasher.final();
-            }
-
-            pub fn eql(self: Self, k1: Key, k2: Key) bool {
-                _ = k2;
-                _ = k1;
-                _ = self;
-                return false;
-            }
-        };
-
-        pub const PatMap = std.ArrayHashMapUnmanaged(
+        pub const PatMap = std.AutoArrayHashMapUnmanaged(
             *Self,
             Self,
-            Context,
-            true, // store hash
         );
 
         pub const VarPat = struct {

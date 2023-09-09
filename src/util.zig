@@ -4,7 +4,61 @@ const Order = math.Order;
 const meta = std.meta;
 const mem = std.mem;
 
-pub fn Set(comptime T: type) type {
+// From: https://github.com/bcrist/vera
+pub fn getAutoHashFn(
+    comptime K: type,
+    comptime strat: std.hash.Strategy,
+    comptime Context: type,
+) fn (Context, K) u32 {
+    return struct {
+        fn hash(ctx: Context, key: K) u32 {
+            _ = ctx;
+            var hasher = std.hash.Wyhash.init(0);
+            std.hash.autoHashStrat(&hasher, key, strat);
+            return hasher.final();
+        }
+    }.hash;
+}
+
+// From: https://github.com/bcrist/vera
+pub fn getAutoEqlFn(
+    comptime K: type,
+    comptime strat: std.hash.Strategy,
+    comptime Context: type,
+) fn (Context, K, K) bool {
+    return struct {
+        fn eql(ctx: Context, a: K, b: K) bool {
+            _ = ctx;
+            return deepEql(a, b, strat);
+        }
+    }.eql;
+}
+
+// From: https://github.com/bcrist/vera
+pub fn DeepRecursiveAutoArrayHashMapUnmanaged(
+    comptime K: type,
+    comptime V: type,
+) type {
+    return std.ArrayHashMapUnmanaged(
+        K,
+        V,
+        StrategyContext(K, .DeepRecursive),
+        true,
+    );
+}
+
+// From: https://github.com/bcrist/vera
+pub fn StrategyContext(
+    comptime K: type,
+    comptime strat: std.hash.Strategy,
+) type {
+    return struct {
+        pub const hash = getAutoHashFn(K, strat, @This());
+        pub const eql = getAutoEqlFn(K, strat, @This());
+    };
+}
+
+pub fn AutoSet(comptime T: type) type {
     return std.AutoHashMap(T, void);
 }
 
