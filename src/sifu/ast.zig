@@ -7,7 +7,10 @@ const Token = syntax.Token(Location);
 const Term = syntax.Term;
 const Type = syntax.Type;
 const Wyhash = std.hash.Wyhash;
+const mem = std.mem;
 
+/// The Sifu-specific interpreter Ast, using Tokens as keys and strings as
+/// values.
 pub const Ast = @import("../ast.zig").Ast(
     Token,
     []const u8,
@@ -31,10 +34,8 @@ pub const Ast = @import("../ast.zig").Ast(
                         b_index: usize,
                     ) bool {
                         _ = b_index;
-                        _ = k2;
-                        _ = k1;
                         _ = self;
-                        return false;
+                        return k1.eql(k2);
                     }
                 },
                 true,

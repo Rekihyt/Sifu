@@ -24,6 +24,7 @@ pub fn main() !void {
     const stdin = io.getStdIn().reader();
     const stdout = io.getStdOut().writer();
     var buff_writer = io.bufferedWriter(stdout);
+    const buff_stdout = buff_writer.writer();
     const buff_size = 4096;
     var buff: [buff_size]u8 = undefined;
     var fbs = io.fixedBufferStream(&buff);
@@ -44,7 +45,8 @@ pub fn main() !void {
             break;
 
         _ = try repl_pat.findPrefix(allocator, ast.apps);
-        try ast.write(buff_writer.writer());
+        try ast.write(buff_stdout);
+        try repl_pat.print(buff_stdout);
         try buff_writer.flush();
         fbs.reset();
     } else |e| switch (e) {

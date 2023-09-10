@@ -214,15 +214,14 @@ pub fn genericWrite(val: anytype, writer: anytype) !void {
     const T = @TypeOf(val);
     switch (@typeInfo(T)) {
         .Struct => if (@hasDecl(T, "write")) {
-            return @field(T, "write")(val, writer);
+            _ = try @field(T, "write")(val, writer);
         },
         .Pointer => |ptr| if (@hasDecl(ptr.child, "write")) {
             // @compileError(std.fmt.comptimePrint("{?}\n", .{ptr}));
-            return @field(ptr.child, "write")(val.*, writer);
+            _ = try @field(ptr.child, "write")(val.*, writer);
         },
-        else => {},
+        else => try writer.print("{any}, ", .{val}),
     }
-    try writer.print("{any}, ", .{val});
 }
 
 test "deepEql" {

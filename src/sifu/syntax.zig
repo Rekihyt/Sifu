@@ -81,12 +81,17 @@ pub fn Token(comptime Context: type) type {
 
         /// Ignores Context.
         pub fn eql(self: Self, other: Self) bool {
-            return .eq == self.order(other);
+            return mem.eql(u8, self.lit, other.lit);
         }
 
         /// Memory valid until this token is freed.
+        // TODO: print all fields instead of just `lit`
         pub fn toString(self: Self) []const u8 {
             return self.lit;
+        }
+
+        pub fn write(self: Self, writer: anytype) !usize {
+            return writer.write(self.lit);
         }
 
         /// Convert this to a term by parsing its literal value.

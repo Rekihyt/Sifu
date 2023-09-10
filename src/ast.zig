@@ -343,7 +343,8 @@ fn Pattern(
                 for (0..indent + 4) |_|
                     try writer.print(" ", .{});
 
-                try writer.print("{s} -> ", .{entry.key_ptr.*});
+                try util.genericWrite(entry.key_ptr.*, writer);
+                _ = try writer.write(" -> ");
                 try entry.value_ptr.*.printIndent(writer, indent + 4);
             }
             for (0..indent) |_|
