@@ -5,8 +5,7 @@ const Pattern = @import("../pattern.zig")
 pub const Errors = @import("sifu/errors.zig").Errors;
 const Lexer = @import("sifu/Lexer.zig");
 const syntax = @import("sifu/syntax.zig");
-const Token = syntax.Token(syntax.Location);
-const Ast = @import("sifu/ast.zig").Ast(Token);
+const Ast = @import("sifu/ast.zig").Ast;
 const parser = @import("sifu/parser.zig");
 const ArenaAllocator = std.heap.ArenaAllocator;
 

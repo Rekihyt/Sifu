@@ -2,8 +2,8 @@ const std = @import("std");
 const testing = std.testing;
 const syntax = @import("syntax.zig");
 const util = @import("../util.zig");
-const Location = syntax.Location;
-const Token = syntax.Token(Location);
+// Store the position of the token in the source as a usize
+const Token = syntax.Token(usize);
 const Term = syntax.Term;
 const Type = syntax.Type;
 const Wyhash = std.hash.Wyhash;
@@ -50,14 +50,14 @@ test "simple ast to pattern" {
     const term = Token{
         .type = .Val,
         .lit = "My-Token",
-        .context = .{ .uri = null, .pos = 0 },
+        .context = 0,
     };
     _ = term;
     const ast = Ast{
         .key = .{
             .type = .Val,
             .lit = "Some-Other-Token",
-            .context = .{ .uri = null, .pos = 20 },
+            .context = 20,
         },
     };
     _ = ast;

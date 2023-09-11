@@ -4,6 +4,19 @@ const Order = math.Order;
 const meta = std.meta;
 const mem = std.mem;
 
+/// Curry a function. Necessary in cases where a type is unknown until after its
+/// parent's instantiation.
+pub fn Curry(
+    comptime Fn: fn (type, type) type,
+    comptime Arg1: type,
+) fn (type) type {
+    return struct {
+        pub fn Curried(comptime Arg2: type) type {
+            return Fn(Arg1, Arg2);
+        }
+    }.Curried;
+}
+
 // From: https://github.com/bcrist/vera
 pub fn getAutoHashFn(
     comptime K: type,

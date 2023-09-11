@@ -14,8 +14,7 @@ const fsize = util.fsize();
 const Ast = @import("ast.zig").Ast;
 const AstOf = @import("../ast.zig").Ast;
 const syntax = @import("syntax.zig");
-const Token = syntax.Token(Location);
-const Location = syntax.Location;
+const Token = syntax.Token(usize);
 const Term = syntax.Term;
 const Type = syntax.Type;
 const Set = util.Set;
@@ -280,22 +279,22 @@ test "All Asts" {
             .{ .key = .{
                 .type = .Val,
                 .lit = "Val1",
-                .context = .{ .pos = 0, .uri = null },
+                .context = 0,
             } },
             .{ .key = .{
                 .type = .Val,
                 .lit = ",",
-                .context = .{ .pos = 4, .uri = null },
+                .context = 4,
             } },
             .{ .key = .{
                 .type = .I,
                 .lit = "5",
-                .context = .{ .pos = 5, .uri = null },
+                .context = 5,
             } },
             .{ .key = .{
                 .type = .Val,
                 .lit = ";",
-                .context = .{ .pos = 6, .uri = null },
+                .context = 6,
             } },
         } },
     };
@@ -309,17 +308,17 @@ test "App: simple vals" {
             Ast{ .key = .{
                 .type = .Val,
                 .lit = "Aa",
-                .context = .{ .pos = 0, .uri = null },
+                .context = 0,
             } },
             Ast{ .key = .{
                 .type = .Val,
                 .lit = "Bb",
-                .context = .{ .pos = 3, .uri = null },
+                .context = 3,
             } },
             Ast{ .key = .{
                 .type = .Val,
                 .lit = "Cc",
-                .context = .{ .pos = 6, .uri = null },
+                .context = 6,
             } },
         } },
     };
@@ -333,7 +332,7 @@ test "App: simple op" {
                 .key = .{
                     .type = .Infix,
                     .lit = "+",
-                    .context = .{ .pos = 2, .uri = null },
+                    .context = 2,
                 },
             },
             Ast{ .apps = &.{
@@ -341,7 +340,7 @@ test "App: simple op" {
                     .key = .{
                         .type = .I,
                         .lit = "1",
-                        .context = .{ .pos = 0, .uri = null },
+                        .context = 0,
                     },
                 },
             } },
@@ -349,7 +348,7 @@ test "App: simple op" {
                 .key = .{
                     .type = .I,
                     .lit = "2",
-                    .context = .{ .pos = 4, .uri = null },
+                    .context = 4,
                 },
             },
         } },
@@ -363,31 +362,31 @@ test "App: simple ops" {
             Ast{ .key = .{
                 .type = .Infix,
                 .lit = "+",
-                .context = .{ .pos = 6, .uri = null },
+                .context = 6,
             } },
             Ast{ .apps = &.{
                 Ast{ .key = .{
                     .type = .Infix,
                     .lit = "+",
-                    .context = .{ .pos = 2, .uri = null },
+                    .context = 2,
                 } },
                 Ast{ .apps = &.{
                     Ast{ .key = .{
                         .type = .I,
                         .lit = "1",
-                        .context = .{ .pos = 0, .uri = null },
+                        .context = 0,
                     } },
                 } },
                 Ast{ .key = .{
                     .type = .I,
                     .lit = "2",
-                    .context = .{ .pos = 4, .uri = null },
+                    .context = 4,
                 } },
             } },
             Ast{ .key = .{
                 .type = .I,
                 .lit = "3",
-                .context = .{ .pos = 8, .uri = null },
+                .context = 8,
             } },
         } },
     };
@@ -401,7 +400,7 @@ test "App: simple op, no first arg" {
                 .key = .{
                     .type = .Infix,
                     .lit = "+",
-                    .context = .{ .pos = 2, .uri = null },
+                    .context = 2,
                 },
             },
             Ast{ .apps = &.{} },
@@ -409,7 +408,7 @@ test "App: simple op, no first arg" {
                 .key = .{
                     .type = .I,
                     .lit = "2",
-                    .context = .{ .pos = 4, .uri = null },
+                    .context = 4,
                 },
             },
         } },
@@ -424,14 +423,14 @@ test "App: simple op, no second arg" {
                 .key = .{
                     .type = .Infix,
                     .lit = "+",
-                    .context = .{ .pos = 2, .uri = null },
+                    .context = 2,
                 },
             },
             Ast{ .apps = &.{
                 Ast{ .key = .{
                     .type = .I,
                     .lit = "1",
-                    .context = .{ .pos = 0, .uri = null },
+                    .context = 0,
                 } },
             } },
         } },
@@ -507,14 +506,14 @@ test "App: simple newlines" {
             Ast{ .key = .{
                 .type = .Val,
                 .lit = "Foo",
-                .context = .{ .pos = 0, .uri = null },
+                .context = 0,
             } },
         } },
         Ast{ .apps = &.{
             Ast{ .key = .{
                 .type = .Val,
                 .lit = "Bar",
-                .context = .{ .pos = 0, .uri = null },
+                .context = 0,
             } },
         } },
     };

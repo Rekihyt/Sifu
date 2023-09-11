@@ -3,7 +3,6 @@ const sifu = @import("sifu.zig");
 const Ast = @import("sifu/ast.zig").Ast;
 const Pat = Ast.Pat;
 const syntax = @import("sifu/syntax.zig");
-const Location = syntax.Location;
 const interpreter = @import("sifu/interpreter.zig");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;

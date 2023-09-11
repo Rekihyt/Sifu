@@ -16,8 +16,7 @@ const fsize = fsize;
 const ast = @import("ast.zig");
 const Lit = ast.Lit;
 const syntax = @import("syntax.zig");
-const Token = syntax.Token(Location);
-const Location = syntax.Location;
+const Token = syntax.Token(usize);
 const Term = syntax.Term;
 const Type = syntax.Type;
 const Set = util.Set;
@@ -111,7 +110,7 @@ pub fn next(
     return Token{
         .type = token_type,
         .lit = try self.buff.toOwnedSlice(self.allocator),
-        .context = .{ .pos = pos, .uri = null },
+        .context = pos,
     };
 }
 

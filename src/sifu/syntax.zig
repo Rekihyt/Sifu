@@ -10,14 +10,6 @@ const assert = std.debug.assert;
 const Oom = Allocator.Error;
 const Lexer = @import("Lexer.zig");
 
-/// The location info for Sifu tokens. The end position can be calulated from
-/// the slice, so it isn't stored.
-// TODO: Store a URI pointer here.
-pub const Location = struct {
-    pos: usize,
-    uri: ?[]const u8,
-};
-
 /// Builtin Sifu types, values here correspond exactly to a type name in Sifu.
 pub const Type = enum {
     Val,

@@ -16,17 +16,25 @@ pub fn AutoAst(
     return Ast(
         Key,
         Var,
-        util.StringOrAutoArrayMap(Key),
-        util.StringOrAutoArrayMap(Var),
+        util.Curry(std.AutoArrayHashMapUnmanaged, Key),
+        util.Curry(std.AutoArrayHashMapUnmanaged, Var),
         ValOrSelf,
     );
 }
 
+pub const StringAst = Ast(
+    []const u8,
+    []const u8,
+    std.StringArrayHashMapUnmanaged,
+    std.StringArrayHashMapUnmanaged,
+    null,
+);
+
 /// The AST is the structure given to the source code and IR. It handles
 /// infix, nesting, and separator operators but does not differentiate between
-/// builtins. The `Key` is a custom type to allow storing of metainfo such as
-/// `Location`, and must implement `toString()` for pattern conversion. It
-/// could also be a simple type for optimization purposes.
+/// builtins. The `Key` is a custom type to allow storing of metainfo such as a
+/// position, and must implement `toString()` for pattern conversion. It could
+/// also be a simple type for optimization purposes.
 ///
 /// Pass null for `Val` to use the instantiated Ast (the Self type in this
 /// struct definition) type as the Val type in the Pattern, as it isn't possible
@@ -366,7 +374,8 @@ else
     std.io.null_writer;
 
 test "Pattern: eql" {
-    const Pat = Pattern([]const u8, void, usize);
+    const TestAst = AutoAst([]const u8, void, usize);
+    const Pat = TestAst.Pat;
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -389,7 +398,8 @@ test "Pattern: eql" {
 }
 
 test "should behave like a set when given void" {
-    const Pat = Pattern(usize, void, void);
+    const TestAst = AutoAst(usize, void, void);
+    const Pat = TestAst.Pat;
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const al = arena.allocator();
@@ -424,9 +434,10 @@ test "compile: nested" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const al = arena.allocator();
-    const Pat = Pattern(usize, void, void);
+    const TestAst = AutoAst(usize, void, void);
+    const Pat = TestAst.Pat;
     var pat = try Pat.ofLit(al, 123, {});
-    _ = try pat.match(al, &.{});
+    _ = try pat.findPrefix(al, &.{});
     // Test nested
     // const Pat2 = Pat{};
     // Pat2.pat_map.put( &pat, 456 };

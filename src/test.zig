@@ -2,15 +2,14 @@ const std = @import("std");
 const testing = std.testing;
 const Ast = @import("sifu/ast.zig").Ast;
 const syntax = @import("sifu/syntax.zig");
-const Location = syntax.Location;
-const Token = syntax.Token(Location);
+const Token = syntax.Token(usize);
 const Term = syntax.Term;
 const Type = syntax.Type;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const fs = std.fs;
 const Lexer = @import("sifu/Lexer.zig");
 const parse = @import("sifu/parser.zig").parse;
-const Pattern = Ast.Pat;
+const Pat = Ast.Pat;
 const io = std.io;
 const print = std.debug.print;
 
@@ -34,12 +33,12 @@ test "equal strings with different pointers or pos should be equal" {
     const term1 = Token{
         .type = .Val,
         .lit = str1,
-        .context = Location{ .pos = 0, .uri = null },
+        .context = 0,
     };
     const term2 = Token{
         .type = .Val,
         .lit = str2,
-        .context = Location{ .pos = 1, .uri = null },
+        .context = 1,
     };
 
     try testing.expect(term1.eql(term2));
@@ -49,12 +48,12 @@ test "equal contexts with different values should not be equal" {
     const term1 = Token{
         .type = .Val,
         .lit = "Foo",
-        .context = Location{ .pos = 0, .uri = null },
+        .context = 0,
     };
     const term2 = Token{
         .type = .Val,
         .lit = "Bar",
-        .context = Location{ .pos = 0, .uri = null },
+        .context = 0,
     };
 
     try testing.expect(!term1.eql(term2));
@@ -71,19 +70,36 @@ test "Pattern: simple vals" {
     const key = (try parse(allocator, &lexer, reader)).?.apps;
     _ = key;
     var val = (try parse(allocator, &lexer, reader)).?;
-    var actual = Pattern{};
+    var actual = Pat{};
     // TODO: match patterns instead
     // const updated = try Ast.insert(key, allocator, &actual, val);
-    var expected = Pattern{};
-    var expected_a = Pattern{};
-    var expected_b = Pattern{};
-    var expected_c = Pattern{
+    var expected = Pat{};
+    var expected_a = Pat{};
+    var expected_b = Pat{};
+    var expected_c = Pat{
         .val = &val,
     };
+    const token_aa = Token{ .lit = "Aa", .type = .Val, .context = 0 };
+    const token_bb = Token{ .lit = "Bb", .type = .Val, .context = 3 };
+    const token_bb2 = Token{ .lit = "Bb2", .type = .Val, .context = 123 };
+    const token_cc = Token{ .lit = "Cc", .type = .Val, .context = 6 };
+
     // Reverse order because patterns are values, not references
-    try expected_b.map.put(allocator, "Cc", expected_c);
-    try expected_a.map.put(allocator, "Bb", expected_b);
-    try expected.map.put(allocator, "Aa", expected_a);
+    try expected_b.map.put(
+        allocator,
+        token_cc,
+        expected_c,
+    );
+    try expected_a.map.put(
+        allocator,
+        token_bb,
+        expected_b,
+    );
+    try expected.map.put(
+        allocator,
+        token_cc,
+        expected_a,
+    );
     try testing.expect(expected.eql(expected));
 
     try testing.expect(!expected_b.eql(expected_a));
@@ -108,10 +124,10 @@ test "Pattern: simple vals" {
     var lexer2 = Lexer.init(allocator);
     reader = fbs.reader();
     const key2 = (try parse(allocator, &lexer2, reader)).?.apps;
-    const val2 = &(try parse(allocator, &lexer2, reader)).?;
-    try expected.map.getPtr("Aa").?
-        .map.put(allocator, "Bb2", Pattern{ .val = val2 });
-    _ = try Ast.insert(key2, allocator, &actual, val2);
+    var val2 = (try parse(allocator, &lexer2, reader)).?;
+    try expected.map.getPtr(token_aa).?
+        .map.put(allocator, token_bb2, Pat{ .val = &val2 });
+    _ = try Ast.add(key2, allocator, &actual, &val2);
 
     try testing.expect(expected.eql(actual));
     try testing.expectEqual(
