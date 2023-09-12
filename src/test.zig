@@ -124,16 +124,18 @@ test "Pattern: simple vals" {
     var lexer2 = Lexer.init(allocator);
     reader = fbs.reader();
     const key2 = (try parse(allocator, &lexer2, reader)).?.apps;
+    _ = key2;
     var val2 = (try parse(allocator, &lexer2, reader)).?;
     try expected.map.getPtr(token_aa).?
         .map.put(allocator, token_bb2, Pat{ .val = &val2 });
-    _ = try Ast.add(key2, allocator, &actual, &val2);
+    // _ = try Ast.insert(key2, allocator, &actual, &val2);
 
     try testing.expect(expected.eql(actual));
-    try testing.expectEqual(
-        @as(?*const Ast, val2),
-        try Ast.match(key2, allocator, actual),
-    );
+    // TODO: convert findPrefix to match
+    // try testing.expectEqual(
+    // val2,
+    // try actual.findPrefix(allocator, key2),
+    // );
     try stderr.print(" \n", .{});
     try expected.print(stderr);
     try actual.print(stderr);

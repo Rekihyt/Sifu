@@ -22,13 +22,15 @@ pub fn AutoAst(
     );
 }
 
-pub const StringAst = Ast(
-    []const u8,
-    []const u8,
-    std.StringArrayHashMapUnmanaged,
-    std.StringArrayHashMapUnmanaged,
-    null,
-);
+pub fn StringAst(comptime Var: type, comptime ValOrSelf: ?type) type {
+    return Ast(
+        []const u8,
+        Var,
+        std.StringArrayHashMapUnmanaged,
+        util.Curry(std.AutoArrayHashMapUnmanaged, Var),
+        ValOrSelf,
+    );
+}
 
 /// The AST is the structure given to the source code and IR. It handles
 /// infix, nesting, and separator operators but does not differentiate between
@@ -115,6 +117,7 @@ pub fn Ast(
         }
     };
 }
+
 const meta = std.meta;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const t = @import("test.zig");
@@ -374,7 +377,7 @@ else
     std.io.null_writer;
 
 test "Pattern: eql" {
-    const TestAst = AutoAst([]const u8, void, usize);
+    const TestAst = StringAst(void, usize);
     const Pat = TestAst.Pat;
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
