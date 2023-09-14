@@ -11,6 +11,7 @@ const parse = @import("sifu/parser.zig").parse;
 const io = std.io;
 const fs = std.fs;
 const log = std.log.scoped(.sifu_cli);
+const mem = std.mem;
 
 pub fn main() !void {
     // var gpa_alloc = std.heap.GeneralPurposeAllocator(.{}){};
@@ -43,7 +44,19 @@ pub fn main() !void {
         const ast = try parse(allocator, &lexer, fbs_reader.reader()) orelse
             break;
 
-        _ = try repl_pat.matchPrefix(allocator, ast.apps);
+        switch (ast) {
+            .apps => |apps| if (mem.eql(u8, apps[0].key.lit, "->")) {
+                try buff_stdout.print("Inserting\n", .{});
+                _ = try repl_pat.insert(allocator, apps[1].apps, &apps[2]);
+            } else {
+                _ = try repl_pat.matchPrefix(allocator, apps);
+            },
+            else => @panic("asts are always apps"),
+        }
+        // for (ast.apps) |debug_ast|
+        //     try debug_ast.write(buff_stdout);
+        // _ = try buff_writer.write("\n");
+
         try ast.write(buff_stdout);
         try repl_pat.print(buff_stdout);
         try buff_writer.flush();
