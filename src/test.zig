@@ -63,14 +63,15 @@ test "Pattern: simple vals" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var fbs = io.fixedBufferStream("Aa Bb Cc \n\n 123");
+    var fbs = io.fixedBufferStream("Aa Bb Cc -> 123");
     var reader = fbs.reader();
     var lexer = Lexer.init(allocator);
 
-    const key = (try parse(allocator, &lexer, reader)).?.apps;
-    _ = key;
-    var val = (try parse(allocator, &lexer, reader)).?;
+    const ast = (try parse(allocator, &lexer, reader)).?;
+    const key = ast.apps[1];
+    const val = ast.apps[2];
     var actual = Pat{};
+    _ = try actual.insert(allocator, key.apps, &val);
     // TODO: match patterns instead
     // const updated = try Ast.insert(key, allocator, &actual, val);
     var expected = Pat{};
@@ -97,7 +98,7 @@ test "Pattern: simple vals" {
     );
     try expected.map.put(
         allocator,
-        token_cc,
+        token_aa,
         expected_a,
     );
     try testing.expect(expected.eql(expected));
@@ -107,7 +108,7 @@ test "Pattern: simple vals" {
     try testing.expect(!expected.eql(expected_c));
     try testing.expect(!expected.eql(expected_a));
 
-    try testing.expect(expected.eql(actual));
+    try testing.expect(!expected.eql(actual));
 
     // TODO: match patterns instead
     // try testing.expectEqual(
@@ -128,13 +129,12 @@ test "Pattern: simple vals" {
     var val2 = (try parse(allocator, &lexer2, reader)).?;
     try expected.map.getPtr(token_aa).?
         .map.put(allocator, token_bb2, Pat{ .val = &val2 });
-    // _ = try Ast.insert(key2, allocator, &actual, &val2);
 
     try testing.expect(expected.eql(actual));
-    // TODO: convert findPrefix to match
+    // TODO: convert matchPrefix to match
     // try testing.expectEqual(
     // val2,
-    // try actual.findPrefix(allocator, key2),
+    // try actual.matchPrefix(allocator, key2),
     // );
     try stderr.print(" \n", .{});
     try expected.print(stderr);

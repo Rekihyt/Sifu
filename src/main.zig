@@ -43,7 +43,7 @@ pub fn main() !void {
         const ast = try parse(allocator, &lexer, fbs_reader.reader()) orelse
             break;
 
-        _ = try repl_pat.findPrefix(allocator, ast.apps);
+        _ = try repl_pat.matchPrefix(allocator, ast.apps);
         try ast.write(buff_stdout);
         try repl_pat.print(buff_stdout);
         try buff_writer.flush();

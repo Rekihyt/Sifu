@@ -112,14 +112,13 @@ pub fn orderWith(
 ) Order {
     const n = @min(lhs.len, rhs.len);
     var i: usize = 0;
-    while (i < n) : (i += 1) {
+    return while (i < n) : (i += 1) {
         switch (op(lhs[i], rhs[i])) {
             .eq => continue,
-            .lt => return .lt,
-            .gt => return .gt,
+            .lt => break .lt,
+            .gt => break .gt,
         }
-    }
-    return math.order(lhs.len, rhs.len);
+    } else math.order(lhs.len, rhs.len);
 }
 
 const testing = std.testing;
@@ -127,7 +126,7 @@ const testing = std.testing;
 test "slices of different len" {
     const s1 = &[_]usize{ 1, 2 };
     const s2 = &[_]usize{ 1, 2, 3 };
-    try testing.expectEqual(@as(Order, .lt), orderWith(s1, s2, math.order));
+    try testing.expectEqual(Order.lt, orderWith(s1, s2, math.order));
 }
 
 /// Like std.meta.eql but follows pointers when possible, and requires eql

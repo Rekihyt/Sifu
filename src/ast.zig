@@ -51,14 +51,17 @@ pub fn Ast(
     return union(enum) {
         key: Key,
         @"var": Var,
-        apps: []const Self,
+        apps: Apps,
         pattern: Pat,
 
         pub const Self = @This();
 
         /// The type that the `Pat` evaluates to after matching on an instance
         /// of this `Ast`.
-        pub const Val = ValOrSelf orelse *Self;
+        pub const Val = ValOrSelf orelse *const Self;
+
+        /// The type of apps
+        pub const Apps = []const Self;
 
         /// The Pattern type specific to this Ast.
         pub const Pat = Pattern(Key, Var, KeyMapFn, VarMapFn, ValOrSelf);
@@ -150,6 +153,7 @@ fn Pattern(
         // pub const Val = ValOrSelf orelse *Ast(Key, Var, null);
         pub const AstType = Ast(Key, Var, KeyMapFn, VarMapFn, ValOrSelf);
         pub const Val = AstType.Val;
+        pub const Apps = AstType.Apps;
 
         pub const KeyMap = KeyMapFn(Self);
         pub const VarMap = VarMapFn(Self);
@@ -237,44 +241,52 @@ fn Pattern(
             _ = self;
         }
 
-        // pub const MatchResult = struct {
-        //   len: usize,
-        //     last: *Self,
-        // };
+        pub const PrefixResult = struct {
+            len: usize,
+            pat_ptr: *Self,
+        };
 
-        /// Return a pointer to the next pattern in `pat` after the longest path
-        /// matching `apps`, or null if a key fails to match (an empty `apps` is
-        /// ok though).
-        pub fn findPrefix(
+        /// Return a pointer to the last pattern in `pat` after the longest path
+        /// matching `apps`. This pointer is valid unless reassigned in `pat`.
+        /// If there is no last pattern (no apps matched) the same `pat` pointer
+        /// will be return. If the entire `apps` is a prefix, a pointer to the
+        /// last pat will be returned.
+        pub fn matchPrefix(
             pat: *Self,
             allocator: Allocator,
             apps: []const AstType,
-        ) Allocator.Error!?*Self {
+        ) Allocator.Error!PrefixResult {
             var current = pat;
             // Follow the longest branch that exists
-            return for (apps) |app| switch (app) {
+            const prefix_len = for (apps, 0..) |app, i| switch (app) {
                 .key => |key| {
                     if (current.map.getPtr(key)) |next|
                         current = next
                     else
-                        break null;
+                        break i;
                 },
                 .@"var" => |v| if (current.var_pat) |var_pat| {
                     _ = v;
                     if (var_pat.next) |var_next|
                         current = var_next;
                 },
-                .apps => |sub_apps| if (current.*.sub_pat) |sub_pat|
-                    if (try sub_pat.findPrefix(allocator, sub_apps)) |_|
+                .apps => |sub_apps| if (current.sub_pat) |sub_pat| {
+                    const sub_prefix =
+                        try sub_pat.matchPrefix(allocator, sub_apps);
+                    // Check that the entire sub_apps matched sub_pat
+                    if (sub_prefix.len == sub_apps.len)
                         continue
                     else
-                        break null,
+                        break i;
+                },
                 .pattern => |sub_pat| {
                     // TODO: lookup sub_pat in current's pat_map
                     _ = sub_pat;
                     @panic("unimplemented");
                 },
-            } else current;
+            } else apps.len;
+
+            return .{ .len = prefix_len, .pat_ptr = current };
         }
 
         /// Creates a new ast app containing the subset of `pat` that matches
@@ -298,20 +310,21 @@ fn Pattern(
         /// each var's bound variable. These can the be used by the caller for
         /// rewriting.
         pub fn insert(
-            apps: []const Val,
-            allocator: Allocator,
             pat: *Self,
-            val: ?*const Val,
+            allocator: Allocator,
+            apps: Apps,
+            val: ?Val,
         ) Allocator.Error!bool {
-            var current = pat;
-            const i = try findPrefix(apps, allocator, &current);
+            const prefix = try pat.matchPrefix(allocator, apps);
+            var current = prefix.pat_ptr;
+
             // Create the rest of the branches
-            for (apps[i..]) |ast| switch (ast) {
+            for (apps[prefix.len..]) |ast| switch (ast) {
                 .key => |key| switch (key.type) {
                     .Val, .Str, .Infix, .I, .F, .U => {
                         const put_result = try current.map.getOrPut(
                             allocator,
-                            key.lit,
+                            key,
                         );
                         current = put_result.value_ptr;
                         current.* = Self.empty();
@@ -331,7 +344,7 @@ fn Pattern(
             };
             const updated = current.val != null;
             // Put the value in this last node
-            current.val = val;
+            current.*.val = val;
             return updated;
         }
 
@@ -440,7 +453,7 @@ test "compile: nested" {
     const TestAst = AutoAst(usize, void, void);
     const Pat = TestAst.Pat;
     var pat = try Pat.ofLit(al, 123, {});
-    _ = try pat.findPrefix(al, &.{});
+    _ = try pat.matchPrefix(al, &.{});
     // Test nested
     // const Pat2 = Pat{};
     // Pat2.pat_map.put( &pat, 456 };
