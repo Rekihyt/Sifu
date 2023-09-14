@@ -29,23 +29,6 @@ const debug = std.debug;
 
 // TODO: add indentation tracking, and separate based on newlines+indent
 
-fn parseLit(token: Token) Ast {
-    const lit = token.lit;
-    return if (mem.eql(u8, lit, "->")) {
-        // The next pattern is the key in an App, followed by the val as args
-        // parseApps(allocator, )
-    } else if (mem.eql(u8, lit, "{")) {
-        //
-    } else if (mem.eql(u8, lit, "}")) {
-        //
-    } else Ast{
-        .kind = switch (token.type) {
-            .Var => .{ .@"var" = lit },
-            else => .{ .lit = lit },
-        },
-    };
-}
-
 fn consumeNewLines(lexer: anytype, reader: anytype) !bool {
     var consumed: bool = false;
     // Parse all newlines
@@ -63,8 +46,6 @@ pub fn parse(allocator: Allocator, lexer: *Lexer, reader: anytype) !?Ast {
     var result = ArrayListUnmanaged(Ast){};
     _ = try parseUntil(allocator, lexer, reader, &result, null) orelse
         return null;
-
-    // assert(result.items.len != 0); // returned null if so
 
     return Ast{ .apps = try result.toOwnedSlice(allocator) };
 }
@@ -104,12 +85,33 @@ fn parseUntil(
                     const matched =
                         try parseUntil(allocator, lexer, reader, &nested, ')');
 
-                    try stderr.print("Matched: {?}\n", .{matched});
-                    // if (!matched) // copy and free nested to result
+                    try stderr.print("Nested App: {?}\n", .{matched});
+                    // if (!matched) // TODO: copy and free nested to result
                     // else
                     try result.append(
                         allocator,
                         Ast{ .apps = try nested.toOwnedSlice(allocator) },
+                    );
+                },
+                '{' => {
+                    var nested = ArrayListUnmanaged(Ast){};
+                    var pat = Ast.Pat{};
+                    // Try to parse a nested app
+                    const matched =
+                        try parseUntil(allocator, lexer, reader, &nested, '}');
+
+                    // if (!matched) // TODO: check if matched brace was found
+
+                    const asts = nested.items;
+                    _ = if (asts.len > 0 and mem.eql(u8, asts[0].key.lit, "->"))
+                        try pat.insert(allocator, asts[1].apps, &asts[2])
+                    else
+                        try pat.insert(allocator, asts, null);
+
+                    try stderr.print("Nested Pat: {?}\n", .{matched});
+                    try result.append(
+                        allocator,
+                        Ast{ .pat = pat },
                     );
                 },
                 else => try result.append(allocator, Ast.ofLit(token)),
@@ -164,7 +166,7 @@ pub fn print(ast: anytype, writer: anytype) !void {
         } else try writer.writeAll("()"),
         .key => |key| try writer.print("{s}", .{key.lit}),
         .@"var" => |v| try writer.print("{s}", .{v}),
-        .pattern => |pat| try pat.print(writer),
+        .pat => |pat| try pat.print(writer),
     }
 }
 
@@ -236,9 +238,9 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
                 },
                 .@"var" => |v| try expectEqualStrings(v, actual_elem.@"var"),
                 .apps => try expectEqualApps(expected_elem, actual_elem),
-                .pattern => |pat| try testing.expectEqual(
+                .pat => |pat| try testing.expectEqual(
                     pat,
-                    actual_elem.pattern,
+                    actual_elem.pat,
                 ),
             }
         } else {
@@ -529,5 +531,5 @@ test "Apps: pattern" {
 
     const ast = try parse(allocator, &lexer, fbs.reader());
     _ = ast;
-    // try testing.expectEqualStrings(ast.?.apps[0].pattern, "Asdf");
+    // try testing.expectEqualStrings(ast.?.apps[0].pat, "Asdf");
 }

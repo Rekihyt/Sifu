@@ -52,7 +52,7 @@ pub fn Ast(
         key: Key,
         @"var": Var,
         apps: Apps,
-        pattern: Pat,
+        pat: Pat,
 
         pub const Self = @This();
 
@@ -85,7 +85,7 @@ pub fn Ast(
                     .apps => |apps| util.orderWith(apps, other.apps, Self.order),
                     .@"var" => |v| mem.order(u8, v, other.@"var"),
                     .key => |key| key.order(other.key),
-                    .pattern => |pat| pat.order(other.pattern),
+                    .pat => |pat| pat.order(other.pat),
                 }
             else
                 ord;
@@ -114,8 +114,7 @@ pub fn Ast(
                     },
                 .@"var" => |v| try writer.writeAll(v),
                 .key => |key| try writer.writeAll(key.lit),
-                // .pattern => |pat| try pat.write(writer),
-                else => @panic("unimplemented"),
+                .pat => |pat| try pat.print(writer),
             }
         }
     };
@@ -279,7 +278,7 @@ fn Pattern(
                     else
                         break i;
                 },
-                .pattern => |sub_pat| {
+                .pat => |sub_pat| {
                     // TODO: lookup sub_pat in current's pat_map
                     _ = sub_pat;
                     @panic("unimplemented");
@@ -354,10 +353,14 @@ fn Pattern(
         }
 
         // TODO: add all pattern fields
-        fn printIndent(self: Self, writer: anytype, indent: usize) !void {
+        fn printIndent(
+            self: Self,
+            writer: anytype,
+            indent: usize,
+        ) @TypeOf(writer).Error!void {
             try writer.writeByte('|');
             if (self.val) |val| {
-                try util.genericWrite(val, writer);
+                try val.write(writer);
             }
             try writer.writeByte('|');
             try writer.print(" {s}\n", .{"{"});
@@ -367,9 +370,9 @@ fn Pattern(
                 for (0..indent + 4) |_|
                     try writer.print(" ", .{});
 
-                try util.genericWrite(entry.key_ptr.*, writer);
+                _ = try entry.key_ptr.write(writer);
                 _ = try writer.write(" -> ");
-                try entry.value_ptr.*.printIndent(writer, indent + 4);
+                try entry.value_ptr.printIndent(writer, indent + 4);
             }
             for (0..indent) |_|
                 try writer.print(" ", .{});

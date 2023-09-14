@@ -23,7 +23,7 @@ pub const Ast = @import("../ast.zig").Ast(
                     pub fn hash(self: @This(), key: Token) u32 {
                         _ = self;
                         var hasher = Wyhash.init(0);
-                        std.hash.autoHashStrat(&hasher, key, .DeepRecursive);
+                        std.hash.autoHashStrat(&hasher, key.lit, .DeepRecursive);
                         return @truncate(hasher.final());
                     }
 

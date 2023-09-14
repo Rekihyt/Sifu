@@ -46,7 +46,7 @@ pub fn main() !void {
 
         switch (ast) {
             .apps => |apps| if (mem.eql(u8, apps[0].key.lit, "->")) {
-                try buff_stdout.print("Inserting\n", .{});
+                // try buff_stdout.print("Inserting\n", .{});
                 _ = try repl_pat.insert(allocator, apps[1].apps, &apps[2]);
             } else {
                 _ = try repl_pat.matchPrefix(allocator, apps);
@@ -56,8 +56,10 @@ pub fn main() !void {
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
         // _ = try buff_writer.write("\n");
+        // try buff_stdout.print("KeyMap size: {}\n", .{repl_pat.map.count()});
 
         try ast.write(buff_stdout);
+
         try repl_pat.print(buff_stdout);
         try buff_writer.flush();
         fbs.reset();
