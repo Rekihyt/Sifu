@@ -3,6 +3,109 @@ const math = std.math;
 const Order = math.Order;
 const meta = std.meta;
 const mem = std.mem;
+const Strategy = std.hash.Strategy;
+const Wyhash = std.hash.Wyhash;
+
+pub fn hashFromHasherUpdate(
+    comptime K: type,
+    hasherUpdate: fn (anytype, K) void,
+) fn (K) u32 {
+    return struct {
+        fn hash(self: K) u32 {
+            var hasher = Wyhash.init(0);
+            hasherUpdate(&hasher, self);
+            return @truncate(hasher.final());
+        }
+    }.hash;
+}
+
+pub fn hasherUpdateFromHash(
+    comptime K: type,
+    hash: fn (K) u32,
+) fn (anytype, K) void {
+    return struct {
+        fn hasherUpdate(hasher: anytype, self: K) u32 {
+            hasher.update(&mem.toBytes(hash(self)));
+        }
+    }.hasherUpdate;
+}
+
+/// Convert a type with a hash and eql function with typical signatures to a
+/// context compatible with std.array_hash_map.
+pub fn IntoArrayContext(
+    comptime Key: type,
+) type {
+    const K = switch (@typeInfo(Key)) {
+        .Struct, .Union, .Enum, .Opaque => Key,
+        .Pointer => |ptr| ptr.child,
+        else => @compileError(
+            "Key type must be a struct/union or pointer to one",
+        ),
+    };
+    _ = K;
+
+    // if (@hasDecl(K, "hash")) {
+    // util.hasherUpdateFromHash(Key.hash);
+    // }
+    // TODO: convert hasherUpdate to hash, and same for eql
+    // else if (@hasDecl(Key, "hasherUpdate"))
+    //     Key.hasherUpdate
+    // else @compileError(
+    //     \\ Context must contain either a hash or hasherUpdate
+    //     \\ function
+    // );
+
+    return struct {
+        pub fn hash(self: @This(), key: Key) u32 {
+            _ = self;
+            return key.hash();
+        }
+        pub fn eql(
+            self: @This(),
+            key: Key,
+            other: Key,
+            b_index: usize,
+        ) bool {
+            _ = b_index;
+            _ = self;
+            return key.eql(other);
+        }
+    };
+}
+
+/// Calls `hash` on a struct or pointer to a struct if the method exists,
+/// or uses `hasherUpdate` if it exists, otherwise hashes the value using
+/// autoHashStrat. Follows a single pointer if necessary when calling `hash`.
+pub fn genericHash(val: anytype) u32 {
+    const Val = @TypeOf(val);
+    const T = switch (@typeInfo(Val)) {
+        .Pointer => |ptr| ptr.child,
+        else => Val,
+    };
+    if (@typeInfo(T) == .Struct and @hasDecl(T, "hash"))
+        return val.hash();
+
+    var hasher = Wyhash.init(0);
+    genericHasherUpdate(hasher, val);
+    return @truncate(hasher.final());
+}
+
+/// Calls `hasherUpdate` on a struct or pointer to a struct if the method
+/// exists, or uses `hash` if it exists, otherwises hashes the value using
+/// autoHashStrat. Follows a single pointer if necessary when calling `hash`.
+pub fn genericHasherUpdate(hasher: anytype, val: anytype) void {
+    const Val = @TypeOf(val);
+    const T = switch (@typeInfo(Val)) {
+        .Pointer => |ptr| ptr.child,
+        else => Val,
+    };
+    if (@typeInfo(T) == .Struct and @hasDecl(T, "hasherUpdate"))
+        val.hasherUpdate(hasher)
+    else if (@typeInfo(T) == .Struct and @hasDecl(T, "hash"))
+        hasher.update(&mem.toBytes(val.hash()))
+    else
+        std.hash.autoHash(hasher, val);
+}
 
 /// Curry a function. Necessary in cases where a type is unknown until after its
 /// parent's instantiation.
@@ -55,13 +158,13 @@ pub fn DeepRecursiveAutoArrayHashMapUnmanaged(
     return std.ArrayHashMapUnmanaged(
         K,
         V,
-        StrategyContext(K, .DeepRecursive),
+        AutoStrategyContext(K, .DeepRecursive),
         true,
     );
 }
 
 // From: https://github.com/bcrist/vera
-pub fn StrategyContext(
+pub fn AutoStrategyContext(
     comptime K: type,
     comptime strat: std.hash.Strategy,
 ) type {
@@ -96,11 +199,11 @@ test "expect f64" {
 }
 
 pub fn first(comptime T: type, slice: []const T) ?T {
-    if (slice.len == 0) null else slice[0];
+    return if (slice.len == 0) null else slice[0];
 }
 
 pub fn last(comptime T: type, slice: []const T) ?T {
-    if (slice.len == 0) null else slice[slice.len - 1];
+    return if (slice.len == 0) null else slice[slice.len - 1];
 }
 
 /// Compare two slices whose elements can be compared by the `order` function.

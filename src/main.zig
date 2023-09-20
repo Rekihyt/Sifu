@@ -1,7 +1,7 @@
 const std = @import("std");
 const sifu = @import("sifu.zig");
-const Ast = @import("sifu/ast.zig").Ast;
-const Pat = Ast.Pat;
+const Pat = @import("sifu/ast.zig").Pat;
+const Ast = Pat.Node;
 const syntax = @import("sifu/syntax.zig");
 const interpreter = @import("sifu/interpreter.zig");
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -37,22 +37,28 @@ pub fn main() !void {
     while (stdin.streamUntilDelimiter(fbs.writer(), '\n', null)) |_| {
         var fbs_reader = io.fixedBufferStream(fbs.getWritten());
         for (fbs_reader.getWritten()) |char| {
-            if (char == 0x1b) { // escape
-
-            }
+            // escape (from pressing alt+enter in most terminals)
+            if (char == 0x1b) {}
         }
         const ast = try parse(allocator, &lexer, fbs_reader.reader()) orelse
             break;
 
-        switch (ast) {
-            .apps => |apps| if (mem.eql(u8, apps[0].key.lit, "->")) {
+        const apps = ast.apps;
+        if (ast.apps.len > 0) switch (apps[0]) {
+            .key => |key| if (mem.eql(u8, key.lit, "->")) {
                 // try buff_stdout.print("Inserting\n", .{});
-                _ = try repl_pat.insert(allocator, apps[1].apps, &apps[2]);
+                _ = try repl_pat.insert(
+                    allocator,
+                    apps[1].apps,
+                    if (apps.len > 2) @ptrCast(apps[2..]) else null,
+                );
             } else {
                 _ = try repl_pat.matchPrefix(allocator, apps);
             },
-            else => @panic("asts are always apps"),
-        }
+            else => {
+                _ = try repl_pat.matchPrefix(allocator, apps);
+            },
+        };
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
         // _ = try buff_writer.write("\n");

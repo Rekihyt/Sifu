@@ -11,8 +11,9 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const panic = std.debug.panic;
 const util = @import("../util.zig");
 const fsize = util.fsize();
-const Ast = @import("ast.zig").Ast;
-const AstOf = @import("../ast.zig").Ast;
+const Pat = @import("ast.zig").Pat;
+const Ast = Pat.Node;
+const Pattern = @import("../pattern.zig").Pattern;
 const syntax = @import("syntax.zig");
 const Token = syntax.Token(usize);
 const Term = syntax.Term;
@@ -95,7 +96,7 @@ fn parseUntil(
                 },
                 '{' => {
                     var nested = ArrayListUnmanaged(Ast){};
-                    var pat = Ast.Pat{};
+                    var pat = Pat{};
                     // Try to parse a nested app
                     const matched =
                         try parseUntil(allocator, lexer, reader, &nested, '}');
@@ -133,7 +134,6 @@ fn parseUntil(
 
 // This function is the responsibility of the Parser, because it is the dual
 // to parsing.
-// `AstOf` is just then Ast type function, but avoids a name collision.
 pub fn print(ast: anytype, writer: anytype) !void {
     switch (ast) {
         .apps => |asts| if (asts.len > 0 and asts[0] == .key and

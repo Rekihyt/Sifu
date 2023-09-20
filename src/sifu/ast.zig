@@ -11,38 +11,12 @@ const mem = std.mem;
 
 /// The Sifu-specific interpreter Ast, using Tokens as keys and strings as
 /// values.
-pub const Ast = @import("../ast.zig").Ast(
+pub const Ast = Pat.Node;
+pub const Pat = @import("../pattern.zig").PatternOfValWithContext(
     Token,
     []const u8,
-    struct {
-        pub fn Map(comptime Val: type) type {
-            return std.ArrayHashMapUnmanaged(
-                Token,
-                Val,
-                struct {
-                    pub fn hash(self: @This(), key: Token) u32 {
-                        _ = self;
-                        var hasher = Wyhash.init(0);
-                        std.hash.autoHashStrat(&hasher, key.lit, .DeepRecursive);
-                        return @truncate(hasher.final());
-                    }
-
-                    pub fn eql(
-                        self: @This(),
-                        k1: Token,
-                        k2: Token,
-                        b_index: usize,
-                    ) bool {
-                        _ = b_index;
-                        _ = self;
-                        return k1.eql(k2);
-                    }
-                },
-                true,
-            );
-        }
-    }.Map,
-    std.StringArrayHashMapUnmanaged,
+    util.IntoArrayContext(Token),
+    std.array_hash_map.StringContext,
     null,
 );
 

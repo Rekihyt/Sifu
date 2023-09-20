@@ -9,6 +9,7 @@ const math = std.math;
 const assert = std.debug.assert;
 const Oom = Allocator.Error;
 const Lexer = @import("Lexer.zig");
+const Wyhash = std.hash.Wyhash;
 
 /// Builtin Sifu types, values here correspond exactly to a type name in Sifu.
 pub const Type = enum {
@@ -26,10 +27,6 @@ pub const Type = enum {
     /// Compares by value, not by len, pos, or pointers.
     pub fn order(self: Type, other: Type) Order {
         return math.order(@intFromEnum(self), @intFromEnum(other));
-    }
-
-    pub fn eql(self: Type, other: Type) bool {
-        return .eq == self.order(other);
     }
 };
 
@@ -66,9 +63,17 @@ pub fn Token(comptime Context: type) type {
 
         /// Ignores Context.
         pub fn order(self: Self, other: Self) Order {
-            // Don't need to use `Token.Type` because it depends entirely on the
+            // Doesn't use `Token.Type` because it depends entirely on the
             // literal anyways.
             return mem.order(u8, self.lit, other.lit);
+        }
+
+        pub fn hash(self: Self) u32 {
+            var hasher = Wyhash.init(0);
+            // Don't need to use `Token.Type` because it depends entirely on the
+            // literal anyways.
+            hasher.update(self.lit);
+            return @truncate(hasher.final());
         }
 
         /// Ignores Context.
