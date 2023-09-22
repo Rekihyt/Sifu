@@ -8,12 +8,11 @@ const Wyhash = std.hash.Wyhash;
 
 pub fn hashFromHasherUpdate(
     comptime K: type,
-    hasherUpdate: fn (anytype, K) void,
 ) fn (K) u32 {
     return struct {
         fn hash(self: K) u32 {
             var hasher = Wyhash.init(0);
-            hasherUpdate(&hasher, self);
+            self.hasherUpdate(&hasher);
             return @truncate(hasher.final());
         }
     }.hash;
@@ -22,19 +21,59 @@ pub fn hashFromHasherUpdate(
 pub fn hasherUpdateFromHash(
     comptime K: type,
     hash: fn (K) u32,
-) fn (anytype, K) void {
+) fn (K, anytype) void {
     return struct {
-        fn hasherUpdate(hasher: anytype, self: K) u32 {
-            hasher.update(&mem.toBytes(hash(self)));
+        fn hasherUpdate(key: K, hasher: anytype) u32 {
+            hasher.update(&mem.toBytes(hash(key)));
         }
     }.hasherUpdate;
 }
 
+pub fn ArrayToUpdateContext(comptime ArrayCtx: anytype, comptime K: type) type {
+    return struct {
+        pub fn hasherUpdate(key: K, hasher: anytype) void {
+            hasher.update(&mem.toBytes(ArrayCtx.hash(undefined, key)));
+        }
+        pub fn eql(k1: K, k2: K) bool {
+            return ArrayCtx.eql(undefined, k1, k2, undefined);
+        }
+    };
+}
+
+pub fn UpdateToArrayContext(comptime Ctx: type, comptime K: type) type {
+    return struct {
+        pub fn hash(self: @This(), key: K) u32 {
+            _ = self;
+            var hasher = Wyhash.init(0);
+            hasher.update(&mem.toBytes(Ctx.hash(key)));
+            return @truncate(hasher.final());
+        }
+        pub fn eql(self: @This(), k1: K, k2: K, b_index: usize) bool {
+            _ = b_index;
+            _ = self;
+            return Ctx.eql(k1, k2);
+        }
+    };
+}
+
+pub fn IntoUpdateContext(comptime Key: type) type {
+    return struct {
+        pub fn hasherUpdate(key: Key, hasher: anytype) void {
+            return key.hasherUpdate(hasher);
+        }
+
+        pub fn eql(
+            key: Key,
+            other: Key,
+        ) bool {
+            return key.eql(other);
+        }
+    };
+}
+
 /// Convert a type with a hash and eql function with typical signatures to a
 /// context compatible with std.array_hash_map.
-pub fn IntoArrayContext(
-    comptime Key: type,
-) type {
+pub fn IntoArrayContext(comptime Key: type) type {
     const K = switch (@typeInfo(Key)) {
         .Struct, .Union, .Enum, .Opaque => Key,
         .Pointer => |ptr| ptr.child,
@@ -99,12 +138,12 @@ pub fn genericHasherUpdate(hasher: anytype, val: anytype) void {
         .Pointer => |ptr| ptr.child,
         else => Val,
     };
-    if (@typeInfo(T) == .Struct and @hasDecl(T, "hasherUpdate"))
-        val.hasherUpdate(hasher)
-    else if (@typeInfo(T) == .Struct and @hasDecl(T, "hash"))
-        hasher.update(&mem.toBytes(val.hash()))
-    else
-        std.hash.autoHash(hasher, val);
+    if (@typeInfo(T) == .Struct) {
+        if (@hasDecl(T, "hasherUpdate"))
+            val.hasherUpdate(hasher)
+        else if (@hasDecl(T, "hash"))
+            hasher.update(&mem.toBytes(val.hash()));
+    } else std.hash.autoHash(hasher, val);
 }
 
 /// Curry a function. Necessary in cases where a type is unknown until after its
@@ -145,7 +184,7 @@ pub fn getAutoEqlFn(
     return struct {
         fn eql(ctx: Context, a: K, b: K) bool {
             _ = ctx;
-            return deepEql(a, b, strat);
+            return genericEql(a, b, strat);
         }
     }.eql;
 }
@@ -232,93 +271,78 @@ test "slices of different len" {
     try testing.expectEqual(Order.lt, orderWith(s1, s2, math.order));
 }
 
-/// Like std.meta.eql but follows pointers when possible, and requires eql
-/// for struct types to be defined.
-pub fn deepEql(a: anytype, b: @TypeOf(a)) bool {
-    const T = @TypeOf(a);
-    switch (@typeInfo(T)) {
-        .Struct => |info| {
-            inline for (info.fields) |field_info| {
-                // @compileError(std.fmt.comptimePrint(
-                //     "{?}\n",
-                //     .{field_info},
-                // ));
-                const eqlFn = if (@typeInfo(field_info.type) == .Struct and
-                    @hasDecl(field_info.type, "eql"))
-                    @field(field_info.type, "eql")
-                else
-                    deepEql;
+// TODO: convert to a generic deep function builder that takes a function
+// name like "eql" or a function type and calls when possible recursively
+// traversing the type.
 
-                return eqlFn(
-                    @field(a, field_info.name),
-                    @field(b, field_info.name),
-                );
-            }
+/// Like std.meta.eql but follows pointers when possible, and calls eql
+/// on container types to be defined.
+pub fn genericEql(a: anytype, b: @TypeOf(a)) bool {
+    const T = @TypeOf(a);
+
+    switch (@typeInfo(T)) {
+        .Struct => |info| if (@hasDecl(T, "eql"))
+            return a.eql(b)
+        else inline for (info.fields) |field_info| {
+            if (!genericEql(
+                @field(a, field_info.name),
+                @field(b, field_info.name),
+            )) break false;
+        } else true,
+        .ErrorUnion => return if (a) |a_p| {
+            if (b) |b_p| genericEql(a_p, b_p) else |_| false;
+        } else |a_e| {
+            if (b) |_| false else |b_e| a_e == b_e;
         },
-        .ErrorUnion => return if (a) |a_p|
-            if (b) |b_p|
-                deepEql(a_p, b_p)
-            else |_|
-                false
-        else |a_e| if (b) |_|
-            false
-        else |b_e|
-            a_e == b_e,
         .Union => |info| {
-            if (info.tag_type) |UnionTag| {
+            if (@hasDecl(info.type, "eql"))
+                return a.eql(b);
+
+            if (info.tag_type) |_| {
                 const tag_a = meta.activeTag(a);
                 const tag_b = meta.activeTag(b);
-                if (tag_a != tag_b)
-                    return false;
-
-                inline for (info.fields) |field_info| {
-                    if (@field(UnionTag, field_info.name) == tag_a) {
-                        return deepEql(
-                            @field(a, field_info.name),
-                            @field(b, field_info.name),
-                        );
-                    }
-                }
-                return false;
-            }
-            @compileError(
+                return if (tag_a != tag_b)
+                    false
+                else switch (info.fields) {
+                    inline else => |tag| genericEql(
+                        @field(a, tag),
+                        @field(b, tag),
+                    ),
+                };
+            } else @compileError(
                 "cannot compare untagged union type " ++ @typeName(T),
             );
         },
         .Array => {
             if (a.len != b.len)
                 return false;
+
             for (a, 0..) |e, i|
-                if (!deepEql(e, b[i]))
+                if (!genericEql(e, b[i]))
                     return false;
 
             return true;
         },
         .Vector => |info| {
             var i: usize = 0;
-            while (i < info.len) : (i += 1)
-                if (!deepEql(a[i], b[i]))
+            while (i < info.len) : (i += 1) {
+                if (!genericEql(a[i], b[i]))
                     return false;
-
+            }
             return true;
         },
-        .Pointer => |info| {
-            return switch (info.size) {
-                .One, .C => deepEql(a.*, b.*),
-                .Many => a == b,
-                .Slice => a.len == b.len and for (a, b) |x, y| {
-                    if (!deepEql(x, y))
-                        return false;
-                } else true,
-            };
+        .Pointer => |info| return if (@hasDecl(info.child.type, "eql"))
+            a.eql(b)
+        else switch (info.size) {
+            .One, .Many, .C => a == b,
+            .Slice => a.ptr == b.ptr and a.len == b.len,
         },
         .Optional => {
             if (a == null and b == null)
                 return true;
             if (a == null or b == null)
                 return false;
-
-            return deepEql(a.?, b.?);
+            return genericEql(a.?, b.?);
         },
         else => return a == b,
     }
@@ -339,7 +363,7 @@ pub fn genericWrite(val: anytype, writer: anytype) !void {
     }
 }
 
-test "deepEql" {
+test "genericEql" {
     const S = struct {
         a: u32,
         b: f64,
@@ -367,21 +391,21 @@ test "deepEql" {
     const u_2 = U{ .s = s_1 };
     const u_3 = U{ .f = 24 };
 
-    try testing.expect(deepEql(s_1, s_3));
-    try testing.expect(deepEql(&s_1, &s_1));
-    try testing.expect(deepEql(&s_1, &s_3));
-    try testing.expect(deepEql(u_1, u_3));
-    try testing.expect(!deepEql(u_1, u_2));
+    try testing.expect(genericEql(s_1, s_3));
+    try testing.expect(genericEql(&s_1, &s_1));
+    try testing.expect(genericEql(&s_1, &s_3));
+    try testing.expect(genericEql(u_1, u_3));
+    try testing.expect(!genericEql(u_1, u_2));
 
     const a1 = "abcdef";
     const a2 = "abcdef";
     const a3 = "ghijkl";
     const a4 = "abc   ";
-    try testing.expect(deepEql(a1, a2));
-    try testing.expect(deepEql(a1.*, a2.*));
-    try testing.expect(!deepEql(a1, a4));
-    try testing.expect(!deepEql(a1, a3));
-    try testing.expect(deepEql(a1[0..], a2[0..]));
+    try testing.expect(genericEql(a1, a2));
+    try testing.expect(genericEql(a1.*, a2.*));
+    try testing.expect(!genericEql(a1, a4));
+    try testing.expect(!genericEql(a1, a3));
+    try testing.expect(genericEql(a1[0..], a2[0..]));
 
     const EU = struct {
         fn tst(err: bool) !u8 {
@@ -390,15 +414,15 @@ test "deepEql" {
         }
     };
 
-    try testing.expect(deepEql(EU.tst(true), EU.tst(true)));
-    try testing.expect(deepEql(EU.tst(false), EU.tst(false)));
-    try testing.expect(!deepEql(EU.tst(false), EU.tst(true)));
+    try testing.expect(genericEql(EU.tst(true), EU.tst(true)));
+    try testing.expect(genericEql(EU.tst(false), EU.tst(false)));
+    try testing.expect(!genericEql(EU.tst(false), EU.tst(true)));
 
     // TODO: fix, currently crashing compiler
     // var v1: u32 = @splat(@as(u32, 1));
     // var v2: u32 = @splat(@as(u32, 1));
     // var v3: u32 = @splat(@as(u32, 2));
 
-    // try testing.expect(deepEql(v1, v2));
-    // try testing.expect(!deepEql(v1, v3));
+    // try testing.expect(genericEql(v1, v2));
+    // try testing.expect(!genericEql(v1, v3));
 }

@@ -8,6 +8,7 @@ const Term = syntax.Term;
 const Type = syntax.Type;
 const Wyhash = std.hash.Wyhash;
 const mem = std.mem;
+const StringContext = std.array_hash_map.StringContext;
 
 /// The Sifu-specific interpreter Ast, using Tokens as keys and strings as
 /// values.
@@ -16,7 +17,7 @@ pub const Pat = @import("../pattern.zig").PatternOfValWithContext(
     Token,
     []const u8,
     util.IntoArrayContext(Token),
-    std.array_hash_map.StringContext,
+    StringContext,
     null,
 );
 

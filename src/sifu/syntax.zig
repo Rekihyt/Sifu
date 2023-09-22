@@ -68,11 +68,15 @@ pub fn Token(comptime Context: type) type {
             return mem.order(u8, self.lit, other.lit);
         }
 
+        pub fn hasherUpdate(self: Self, hasher: anytype) void {
+            hasher.update(self.lit);
+        }
+
         pub fn hash(self: Self) u32 {
             var hasher = Wyhash.init(0);
             // Don't need to use `Token.Type` because it depends entirely on the
             // literal anyways.
-            hasher.update(self.lit);
+            self.hasherUpdate(&hasher);
             return @truncate(hasher.final());
         }
 
