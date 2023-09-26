@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const Ast = @import("sifu/ast.zig").Ast;
+const Pat = @import("sifu/ast.zig").Pat;
+const Ast = Pat.Node;
 const syntax = @import("sifu/syntax.zig");
 const Token = syntax.Token(usize);
 const Term = syntax.Term;
@@ -9,7 +10,6 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const fs = std.fs;
 const Lexer = @import("sifu/Lexer.zig");
 const parse = @import("sifu/parser.zig").parse;
-const Pat = Ast.Pat;
 const io = std.io;
 const print = std.debug.print;
 

@@ -16,6 +16,7 @@ pub const Ast = Pat.Node;
 pub const Pat = @import("../pattern.zig").PatternOfValWithContext(
     Token,
     []const u8,
+    null,
     util.IntoArrayContext(Token),
     StringContext,
     null,

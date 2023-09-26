@@ -46,7 +46,7 @@ pub fn main() !void {
         const apps = ast.apps;
         if (ast.apps.len > 0) switch (apps[0]) {
             .key => |key| if (mem.eql(u8, key.lit, "->")) {
-                // try buff_stdout.print("Inserting\n", .{});
+                try buff_stdout.print("Inserting\n", .{});
                 _ = try repl_pat.insert(
                     allocator,
                     apps[1].apps,
@@ -59,10 +59,10 @@ pub fn main() !void {
                 _ = try repl_pat.matchPrefix(allocator, apps);
             },
         };
-        // for (ast.apps) |debug_ast|
-        //     try debug_ast.write(buff_stdout);
-        // _ = try buff_writer.write("\n");
-        // try buff_stdout.print("KeyMap size: {}\n", .{repl_pat.map.count()});
+        for (ast.apps) |debug_ast|
+            try debug_ast.write(buff_stdout);
+        _ = try buff_writer.write("\n");
+        try buff_stdout.print("KeyMap size: {}\n", .{repl_pat.map.count()});
 
         try ast.write(buff_stdout);
 
