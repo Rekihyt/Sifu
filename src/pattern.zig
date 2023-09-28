@@ -472,7 +472,7 @@ pub fn PatternOfValWithContext(
         /// - A literal Node that matches a literal-var pattern matches the
         ///    literal part, not the var
         pub fn matchPrefix(
-            pat: Self,
+            pat: *Self,
             allocator: Allocator,
             apps: Apps,
         ) Allocator.Error!PrefixResult {
@@ -505,12 +505,12 @@ pub fn PatternOfValWithContext(
                     .pat => |node_pat| current.pat_map.getPtr(&node_pat),
                 };
                 if (next) |next_pat|
-                    current = next_pat.*
+                    current = next_pat
                 else
                     break i;
             } else apps.len;
 
-            return .{ .len = prefix_len, .pat_ptr = &current };
+            return .{ .len = prefix_len, .pat_ptr = current };
         }
 
         /// Creates a new node app containing the subset of `pat` that matches
@@ -566,7 +566,7 @@ pub fn PatternOfValWithContext(
                 },
                 else => @panic("unimplemented"),
             };
-            const updated = current.val != null;
+            const updated = current.*.val != null;
             // Put the value in this last node
             current.*.val = val;
             return updated;

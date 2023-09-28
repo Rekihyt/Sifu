@@ -46,12 +46,13 @@ pub fn main() !void {
         const apps = ast.apps;
         if (ast.apps.len > 0) switch (apps[0]) {
             .key => |key| if (mem.eql(u8, key.lit, "->")) {
-                try buff_stdout.print("Inserting\n", .{});
-                _ = try repl_pat.insert(
+                // try buff_stdout.print("Inserting, updated: ", .{});
+                const updated = try repl_pat.insert(
                     allocator,
                     apps[1].apps,
                     if (apps.len > 2) @ptrCast(apps[2..]) else null,
                 );
+                try buff_stdout.print("{}\n", .{updated});
             } else {
                 _ = try repl_pat.matchPrefix(allocator, apps);
             },
@@ -62,8 +63,6 @@ pub fn main() !void {
         for (ast.apps) |debug_ast|
             try debug_ast.write(buff_stdout);
         _ = try buff_writer.write("\n");
-        try buff_stdout.print("KeyMap size: {}\n", .{repl_pat.map.count()});
-
         try ast.write(buff_stdout);
 
         try repl_pat.print(buff_stdout);
