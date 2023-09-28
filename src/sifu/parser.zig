@@ -44,8 +44,8 @@ fn consumeNewLines(lexer: anytype, reader: anytype) !bool {
 
 /// Parse a nonempty App if possible, returning null otherwise.
 pub fn parse(allocator: Allocator, lexer: *Lexer, reader: anytype) !?Ast {
-    var result = ArrayListUnmanaged(Ast){};
-    _ = try parseUntil(allocator, lexer, reader, &result, null) orelse
+    var found_sep: bool = undefined;
+    var result = try parseUntil(allocator, lexer, reader, &found_sep, null) orelse
         return null;
 
     return Ast{ .apps = try result.toOwnedSlice(allocator) };
@@ -59,18 +59,19 @@ pub fn parse(allocator: Allocator, lexer: *Lexer, reader: anytype) !?Ast {
 /// Returns:
 /// - true if sep was found
 /// - false if sep wasn't found, but something was parsed
-/// - null if only whitespace was parsed
+/// - null if no tokens were parsed
 fn parseUntil(
     allocator: Allocator,
     lexer: *Lexer,
     reader: anytype,
-    result: *ArrayListUnmanaged(Ast),
+    found_sep: *bool,
     sep: ?u8, // must be a greedily parsed, single char sep
-) !?bool {
+) !?ArrayListUnmanaged(Ast) {
     _ = try lexer.peek(reader) orelse
         return null;
 
-    return while (try lexer.next(reader)) |token| {
+    var result = ArrayListUnmanaged(Ast){};
+    found_sep.* = while (try lexer.next(reader)) |token| {
         const lit = token.lit;
         switch (token.type) {
             .NewLine => break '\n' == sep,
@@ -81,34 +82,35 @@ fn parseUntil(
                 // Separators are parsed greedily, so its impossible to
                 // encounter any with more than one char (like "{}")
                 '(' => {
-                    var nested = ArrayListUnmanaged(Ast){};
+                    var matched: bool = undefined;
                     // Try to parse a nested app
-                    const matched =
-                        try parseUntil(allocator, lexer, reader, &nested, ')');
+                    var nested =
+                        try parseUntil(allocator, lexer, reader, &matched, ')');
 
                     try stderr.print("Nested App: {?}\n", .{matched});
                     // if (!matched) // TODO: copy and free nested to result
                     // else
-                    try result.append(
-                        allocator,
-                        Ast{ .apps = try nested.toOwnedSlice(allocator) },
-                    );
+                    if (nested) |*nested_apps|
+                        try result.append(allocator, Ast{
+                            .apps = try nested_apps.toOwnedSlice(allocator),
+                        });
                 },
                 '{' => {
-                    var nested = ArrayListUnmanaged(Ast){};
                     var pat = Pat{};
+                    var matched: bool = undefined;
                     // Try to parse a nested app
-                    const matched =
-                        try parseUntil(allocator, lexer, reader, &nested, '}');
+                    var nested =
+                        try parseUntil(allocator, lexer, reader, &matched, '}');
 
                     // if (!matched) // TODO: check if matched brace was found
 
-                    const asts = nested.items;
-                    _ = if (asts.len > 0 and mem.eql(u8, asts[0].key.lit, "->"))
-                        try pat.insert(allocator, asts[1].apps, &asts[2])
-                    else
-                        try pat.insert(allocator, asts, null);
-
+                    if (nested) |*nested_apps| {
+                        const asts = nested_apps.items;
+                        _ = if (asts.len > 0 and mem.eql(u8, asts[0].key.lit, "->"))
+                            try pat.insert(allocator, asts[1].apps, &asts[2])
+                        else
+                            try pat.insert(allocator, asts, null);
+                    }
                     try stderr.print("Nested Pat: {?}\n", .{matched});
                     try result.append(
                         allocator,
@@ -125,11 +127,12 @@ fn parseUntil(
                 try infix_apps.append(allocator, Ast{
                     .apps = try result.toOwnedSlice(allocator),
                 });
-                result.* = infix_apps;
+                result = infix_apps;
             },
             else => try result.append(allocator, Ast.ofLit(token)),
         }
     } else false;
+    return result;
 }
 
 // This function is the responsibility of the Parser, because it is the dual

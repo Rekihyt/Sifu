@@ -41,7 +41,7 @@ pub fn main() !void {
             if (char == 0x1b) {}
         }
         const ast = try parse(allocator, &lexer, fbs_reader.reader()) orelse
-            break;
+            continue;
 
         const apps = ast.apps;
         if (ast.apps.len > 0) switch (apps[0]) {
