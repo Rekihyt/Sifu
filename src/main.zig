@@ -41,31 +41,45 @@ pub fn main() !void {
             if (char == 0x1b) {}
         }
         const ast = try parse(allocator, &lexer, fbs_reader.reader()) orelse
-            continue;
+            // Match the empty apps for just a newline
+            if ((try repl_pat.matchExactPrefix(allocator, &.{})).pat_ptr.val) |val|
+            val.*
+        else
+            Ast.ofApps(&.{});
+
+        try ast.write(buff_stdout);
+        _ = try buff_writer.write("\n");
+        // for (ast.apps) |debug_ast|
+        //     try debug_ast.write(buff_stdout);
 
         const apps = ast.apps;
-        if (ast.apps.len > 0) switch (apps[0]) {
-            .key => |key| if (mem.eql(u8, key.lit, "->")) {
-                // try buff_stdout.print("Inserting, updated: ", .{});
-                const updated = try repl_pat.insert(
-                    allocator,
-                    apps[1].apps,
-                    if (apps.len > 2) @ptrCast(apps[2..]) else null,
-                );
-                try buff_stdout.print("{}\n", .{updated});
-            } else {
-                _ = try repl_pat.matchPrefix(allocator, apps);
-            },
-            else => {
-                _ = try repl_pat.matchPrefix(allocator, apps);
-            },
-        };
-        for (ast.apps) |debug_ast|
-            try debug_ast.write(buff_stdout);
-        _ = try buff_writer.write("\n");
-        try ast.write(buff_stdout);
+        if (ast.apps.len > 0) blk: {
+            switch (apps[0]) {
+                .key => |key| if (mem.eql(u8, key.lit, "->")) {
+                    // try buff_stdout.print("Inserting, updated: ", .{});
+                    const updated = try repl_pat.insert(
+                        allocator,
+                        apps[1].apps,
+                        if (apps.len > 2)
+                            @ptrCast(apps[2..])
+                            // Create an empty ast because lines like ` -> ` denote
+                            // empty apps, not null
+                        else
+                            try Ast.createApps(allocator),
+                    );
+                    try buff_stdout.print("{}\n", .{updated});
+                    break :blk;
+                },
+                else => {},
+            }
+            // If not inserting, then try to match the expression
+            if (try repl_pat.match(allocator, apps)) |matched| {
+                try matched.write(buff_stdout);
+                _ = try buff_writer.write("\n");
+            }
+        }
 
-        try repl_pat.print(buff_stdout);
+        try repl_pat.write(buff_stdout);
         try buff_writer.flush();
         fbs.reset();
     } else |e| switch (e) {

@@ -104,9 +104,11 @@ fn parseUntil(
 
                     // if (!matched) // TODO: check if matched brace was found
 
+                    // TODO: fix parsing nested patterns with comma seperators
                     if (nested) |*nested_apps| {
                         const asts = nested_apps.items;
-                        _ = if (asts.len > 0 and mem.eql(u8, asts[0].key.lit, "->"))
+                        _ = if (asts.len > 0 and
+                            mem.eql(u8, asts[0].key.lit, "->"))
                             try pat.insert(allocator, asts[1].apps, &asts[2])
                         else
                             try pat.insert(allocator, asts, null);

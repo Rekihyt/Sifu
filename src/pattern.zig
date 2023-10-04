@@ -10,17 +10,6 @@ const array_hash_map = std.array_hash_map;
 const AutoContext = std.array_hash_map.AutoContext;
 const StringContext = std.array_hash_map.StringContext;
 
-// TODO: check if using []const u8, and use this instead maybe?
-// pub const StringCtx = struct {
-//     pub fn hasherUpdate(key: []const u8, hasher: anytype) void {
-//         hasher.update(key);
-//     }
-
-//     pub fn eql(s1: []const u8, s2: []const u8) bool {
-//         mem.eql(s1, s2);
-//     }
-// };
-
 // - refactor node/pat creation api to use pat instead of node
 // - convert hasherUpdate to hash and match the array_hash_map Context api
 // - add hash or hasherUpdate and eql / eql + b_index option
@@ -228,8 +217,8 @@ pub fn PatternOfValWithContext(
             // A var pat might not necessarily have a next pattern (the var is
             // at the end)
             next: ?*Self = null,
-            // The value for the var pattern
-            val: ?Val = null,
+            // The value for the var pattern, stored in the next pat
+            // val: ?Val = null,
 
             pub const hash = util.hashFromHasherUpdate(VarPat);
 
@@ -238,8 +227,8 @@ pub fn PatternOfValWithContext(
                 if (self.next) |next|
                     next.hasherUpdate(hasher);
 
-                if (self.val) |val|
-                    hasher.update(&mem.toBytes(ValCtx.hash(undefined, val)));
+                // if (self.val) |val|
+                //     hasher.update(&mem.toBytes(ValCtx.hash(undefined, val)));
             }
 
             pub fn eql(
@@ -322,6 +311,12 @@ pub fn PatternOfValWithContext(
                 return .{ .apps = apps };
             }
 
+            pub fn createApps(allocator: Allocator) Allocator.Error!*Node {
+                var node = try allocator.create(Node);
+                node.* = Node{ .apps = &.{} };
+                return node;
+            }
+
             /// Compares by value, not by len, pos, or pointers.
             pub fn order(self: Node, other: Node) Order {
                 const ord = math.order(@intFromEnum(self), @intFromEnum(other));
@@ -363,7 +358,7 @@ pub fn PatternOfValWithContext(
                         },
                     .@"var" => |v| try writer.writeAll(v),
                     .key => |key| try writer.writeAll(key.lit),
-                    .pat => |pat| try pat.print(writer),
+                    .pat => |pat| try pat.write(writer),
                 }
             }
         };
@@ -461,17 +456,32 @@ pub fn PatternOfValWithContext(
             };
         }
 
+        pub fn create(allocator: Allocator) !*Self {
+            const result = try allocator.create(Self);
+            result.* = Self.empty();
+            return result;
+        }
+
+        // /// - Any Node matches a var pattern including a var
+        // /// - A var Node doesn't match a non-var pattern (var matching is one
+        // ///    way)
+        // /// - A literal Node that matches a literal-var pattern matches the
+        // ///    literal part, not the var
+        // pub fn matchPrefix(
+        //     pat: *Self,
+        //     allocator: Allocator,
+        //     apps: Apps,
+        // ) Allocator.Error!PrefixResult {
+        // }
+
         /// Return a pointer to the last pattern in `pat` after the longest path
-        /// matching `apps`. This pointer is valid unless reassigned in `pat`.
+        /// matching `apps`. This is an exact match, so variables only match
+        /// variables and a subpattern will be returned. This pointer is valid
+        /// unless reassigned in `pat`.
         /// If there is no last pattern (no apps matched) the same `pat` pointer
-        /// will be return. If the entire `apps` is a prefix, a pointer to the
+        /// will be returned. If the entire `apps` is a prefix, a pointer to the
         /// last pat will be returned.
-        /// - Any Node matches a var pattern including a var
-        /// - A var Node doesn't match a non-var pattern (var matching is one
-        ///    way)
-        /// - A literal Node that matches a literal-var pattern matches the
-        ///    literal part, not the var
-        pub fn matchPrefix(
+        pub fn matchExactPrefix(
             pat: *Self,
             allocator: Allocator,
             apps: Apps,
@@ -494,7 +504,7 @@ pub fn PatternOfValWithContext(
                             break :blk null;
 
                         const sub_prefix =
-                            try sub_pat.matchPrefix(allocator, sub_apps);
+                            try sub_pat.matchExactPrefix(allocator, sub_apps);
                         // Check that the entire sub_apps matched sub_pat
                         if (sub_prefix.len != sub_apps.len)
                             break :blk null;
@@ -518,16 +528,13 @@ pub fn PatternOfValWithContext(
         /// this position in apps.
         /// The result is a tree of all branches that matched the pattern.
         pub fn match(
-            pat: Self,
+            pat: *Self,
             allocator: Allocator,
             apps: []const Node,
         ) Allocator.Error!?Val {
             // var var_map = VarMap{};
-            const result = try pat.matchPrefix(allocator, apps);
-            return if (result) |result_ptr|
-                result_ptr.val
-            else
-                null;
+            const prefix = try pat.matchExactPrefix(allocator, apps);
+            return prefix.pat_ptr.val;
         }
 
         /// As a pattern is matched, a hashmap for vars is populated with
@@ -539,11 +546,12 @@ pub fn PatternOfValWithContext(
             apps: Apps,
             val: ?Val,
         ) Allocator.Error!bool {
-            const prefix = try pat.matchPrefix(allocator, apps);
+            const prefix = try pat.matchExactPrefix(allocator, apps);
             var current = prefix.pat_ptr;
+            var updated = false;
 
             // Create the rest of the branches
-            for (apps[prefix.len..]) |node| switch (node) {
+            for (apps[prefix.len..]) |app| switch (app) {
                 .key => |key| switch (key.type) {
                     .Val, .Str, .Infix, .I, .F, .U => {
                         const put_result = try current.map.getOrPut(
@@ -551,34 +559,67 @@ pub fn PatternOfValWithContext(
                             key,
                         );
                         current = put_result.value_ptr;
-                        current.* = Self.empty();
+                        if (!put_result.found_existing) {
+                            updated = true;
+                            current.* = Self.empty();
+                        }
                     },
-                    .Var => {
-                        const next = try allocator.create(Self);
-                        next.* = Self.empty();
-                        current.var_pat = .{
-                            .@"var" = key.lit,
-                            .next = next,
-                        };
-                        current = next;
-                    },
-                    else => @panic("unimplemented"),
+                    .Var => @panic("unimplemented"),
+                    .NewLine => @panic("unimplemented"),
+                    .Comment => @panic("unimplemented"),
                 },
-                else => @panic("unimplemented"),
+                .@"var" => |v| {
+                    // TODO: fix overwriting an old var_pat's next
+                    // pattern, and instead insert into it if it exists
+                    const next = try Self.create(allocator);
+                    current.var_pat = .{
+                        .@"var" = v,
+                        .next = next,
+                    };
+                    current = next;
+                },
+                .apps => |nodes| {
+                    const sub_pat = current.sub_pat orelse blk: {
+                        updated = true;
+                        break :blk try Self.create(allocator);
+                    };
+                    current.sub_pat = sub_pat;
+                    updated = updated or
+                        try sub_pat.insert(allocator, nodes, val);
+                },
+                .pat => |p| {
+                    const put_result = try current.pat_map.getOrPut(
+                        allocator,
+                        &p,
+                    );
+                    // Move to the next pattern
+                    current = put_result.value_ptr;
+
+                    // Initialize it if not already
+                    if (!put_result.found_existing) {
+                        updated = true;
+                        current.* = Self.empty();
+                    }
+                },
             };
-            const updated = current.*.val != null;
+            updated = updated or if (current.*.val) |current_val| blk: {
+                break :blk if (val) |new_val|
+                    !current_val.eql(new_val.*)
+                else
+                    true;
+            } else val != null;
             // Put the value in this last node
             current.*.val = val;
             return updated;
         }
 
         /// Pretty print a pattern
-        pub fn print(self: Self, writer: anytype) !void {
-            try self.printIndent(writer, 0);
+        pub fn write(self: Self, writer: anytype) !void {
+            try self.writeIndent(writer, 0);
         }
 
         // TODO: add all pattern fields
-        fn printIndent(
+        fn writeIndent(
             self: Self,
             writer: anytype,
             indent: usize,
@@ -597,7 +638,7 @@ pub fn PatternOfValWithContext(
 
                 _ = try entry.key_ptr.write(writer);
                 _ = try writer.write(" -> ");
-                try entry.value_ptr.printIndent(writer, indent + 4);
+                try entry.value_ptr.writeIndent(writer, indent + 4);
             }
             for (0..indent) |_|
                 try writer.print(" ", .{});
@@ -678,7 +719,7 @@ test "compile: nested" {
     const al = arena.allocator();
     const Pat = AutoPatternOfVal(usize, void, void);
     var pat = try Pat.ofLit(al, 123, {});
-    _ = try pat.matchPrefix(al, &.{});
+    _ = try pat.matchExactPrefix(al, &.{});
     // Test nested
     // const Pat2 = Pat{};
     // Pat2.pat_map.put( &pat, 456 };
