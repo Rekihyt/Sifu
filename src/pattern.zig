@@ -156,19 +156,19 @@ pub fn PatternOfValWithContext(
 
         /// The type that the `Pat` evaluates to after matching on an instance
         /// of this `Node`.
-        pub const Val = ValOrSelf orelse *const Node;
+        pub const Val = ValOrSelf orelse *Node;
 
         pub const ValCtx = ValOrSelfCtx orelse NodeCtx;
 
         const NodeCtx = struct {
-            pub fn hash(self: @This(), node: *const Node) u32 {
+            pub fn hash(self: @This(), node: *Node) u32 {
                 _ = self;
                 return node.*.hash();
             }
             pub fn eql(
                 self: @This(),
-                node: *const Self,
-                other: *const Self,
+                node: *Self,
+                other: *Self,
                 b_index: usize,
             ) bool {
                 _ = b_index;
@@ -178,14 +178,14 @@ pub fn PatternOfValWithContext(
         };
 
         const PatCtx = struct {
-            pub fn hash(self: @This(), pat: *const Self) u32 {
+            pub fn hash(self: @This(), pat: *Self) u32 {
                 _ = self;
                 return pat.*.hash();
             }
             pub fn eql(
                 self: @This(),
-                pat: *const Self,
-                other: *const Self,
+                pat: *Self,
+                other: *Self,
                 b_index: usize,
             ) bool {
                 _ = b_index;
@@ -206,7 +206,7 @@ pub fn PatternOfValWithContext(
             true,
         );
         pub const PatMap = std.ArrayHashMapUnmanaged(
-            *const Self,
+            *Self,
             Self,
             PatCtx,
             true,
@@ -217,8 +217,6 @@ pub fn PatternOfValWithContext(
             // A var pat might not necessarily have a next pattern (the var is
             // at the end)
             next: ?*Self = null,
-            // The value for the var pattern, stored in the next pat
-            // val: ?Val = null,
 
             pub const hash = util.hashFromHasherUpdate(VarPat);
 
@@ -226,9 +224,6 @@ pub fn PatternOfValWithContext(
                 hasher.update(&mem.toBytes(VarCtx.hash(undefined, self.@"var")));
                 if (self.next) |next|
                     next.hasherUpdate(hasher);
-
-                // if (self.val) |val|
-                //     hasher.update(&mem.toBytes(ValCtx.hash(undefined, val)));
             }
 
             pub fn eql(
@@ -279,8 +274,12 @@ pub fn PatternOfValWithContext(
                 switch (self) {
                     .apps => |apps| for (apps) |app|
                         app.hasherUpdate(hasher),
-                    .@"var" => |v| hasher.update(&mem.toBytes(VarCtx.hash(undefined, v))),
-                    .key => |k| hasher.update(&mem.toBytes(KeyCtx.hash(undefined, k))),
+                    .@"var" => |v| hasher.update(
+                        &mem.toBytes(VarCtx.hash(undefined, v)),
+                    ),
+                    .key => |k| hasher.update(
+                        &mem.toBytes(KeyCtx.hash(undefined, k)),
+                    ),
                     .pat => |p| p.hasherUpdate(hasher),
                 }
             }
@@ -311,9 +310,21 @@ pub fn PatternOfValWithContext(
                 return .{ .apps = apps };
             }
 
-            pub fn createApps(allocator: Allocator) Allocator.Error!*Node {
+            pub fn createApps(
+                allocator: Allocator,
+                apps: []const Node,
+            ) Allocator.Error!*Node {
                 var node = try allocator.create(Node);
-                node.* = Node{ .apps = &.{} };
+                node.* = Node{ .apps = apps };
+                return node;
+            }
+
+            pub fn createPat(
+                allocator: Allocator,
+                pat: Self,
+            ) Allocator.Error!*Node {
+                var node = try allocator.create(Node);
+                node.* = Node{ .pat = pat };
                 return node;
             }
 
@@ -512,7 +523,7 @@ pub fn PatternOfValWithContext(
                         break :blk sub_pat;
                     },
 
-                    .pat => |node_pat| current.pat_map.getPtr(&node_pat),
+                    .pat => |*node_pat| current.pat_map.getPtr(@constCast(node_pat)),
                 };
                 if (next) |next_pat|
                     current = next_pat
@@ -537,18 +548,38 @@ pub fn PatternOfValWithContext(
             return prefix.pat_ptr.val;
         }
 
-        /// As a pattern is matched, a hashmap for vars is populated with
-        /// each var's bound variable. These can the be used by the caller for
-        /// rewriting.
         pub fn insert(
             pat: *Self,
             allocator: Allocator,
             apps: Apps,
             val: ?Val,
-        ) Allocator.Error!bool {
+        ) Allocator.Error!*Self {
+            var result = try pat.getOrPut(allocator, apps);
+            result.value_ptr.* = val;
+            return result.pat_ptr;
+        }
+
+        /// Similar to ArrayHashMap's type, but the index is specific to the
+        /// last hashmap.
+        pub const GetOrPutResult = struct {
+            pat_ptr: *Self,
+            value_ptr: *?Val,
+            found_existing: bool,
+            index: usize,
+        };
+
+        /// As a pattern is matched, a hashmap for vars is populated with
+        /// each var's bound variable. These can the be used by the caller for
+        /// rewriting.
+        pub fn getOrPut(
+            pat: *Self,
+            allocator: Allocator,
+            apps: Apps,
+        ) Allocator.Error!GetOrPutResult {
             const prefix = try pat.matchExactPrefix(allocator, apps);
             var current = prefix.pat_ptr;
-            var updated = false;
+            var found_existing = true;
+            std.debug.print("Prefix len: {}\n", .{prefix.len});
 
             // Create the rest of the branches
             for (apps[prefix.len..]) |app| switch (app) {
@@ -560,7 +591,7 @@ pub fn PatternOfValWithContext(
                         );
                         current = put_result.value_ptr;
                         if (!put_result.found_existing) {
-                            updated = true;
+                            found_existing = false;
                             current.* = Self.empty();
                         }
                     },
@@ -579,38 +610,44 @@ pub fn PatternOfValWithContext(
                     current = next;
                 },
                 .apps => |nodes| {
-                    const sub_pat = current.sub_pat orelse blk: {
-                        updated = true;
+                    var sub_pat = current.sub_pat orelse blk: {
+                        found_existing = false;
                         break :blk try Self.create(allocator);
                     };
-                    current.sub_pat = sub_pat;
-                    updated = updated or
-                        try sub_pat.insert(allocator, nodes, val);
-                },
-                .pat => |p| {
-                    const put_result = try current.pat_map.getOrPut(
+                    // const next = Self.create(allocator);
+                    var put_result = try sub_pat.getOrPut(
                         allocator,
-                        &p,
+                        nodes,
                     );
+                    // TODO: update found_existing
+                    // if (!put_result.found_existing)
+                    // Zig Compiler can't handle a Pattern with itself as
+                    // value, so we use the original type as a wrapper.
+                    // Therefore, subapps will always be `Node.pat`.
+                    const value_ptr = put_result.value_ptr.* orelse
+                        try Node.createPat(allocator, Self.empty());
+
+                    current = &value_ptr.pat;
+                },
+                .pat => |*p| {
+                    var put_result =
+                        try current.pat_map.getOrPut(allocator, @constCast(p));
                     // Move to the next pattern
                     current = put_result.value_ptr;
 
                     // Initialize it if not already
                     if (!put_result.found_existing) {
-                        updated = true;
+                        found_existing = false;
                         current.* = Self.empty();
                     }
                 },
             };
-            updated = updated or if (current.*.val) |current_val| blk: {
-                break :blk if (val) |new_val|
-                    !current_val.eql(new_val.*)
-                else
-                    true;
-            } else val != null;
-            // Put the value in this last node
-            current.*.val = val;
-            return updated;
+            return GetOrPutResult{
+                .pat_ptr = current,
+                .value_ptr = &current.val,
+                .found_existing = found_existing,
+                .index = 0, // TODO
+            };
         }
 
         /// Pretty print a pattern
@@ -631,7 +668,22 @@ pub fn PatternOfValWithContext(
             try writer.writeByte('|');
             try writer.print(" {s}\n", .{"{"});
 
-            var iter = self.map.iterator();
+            try writeIndentMap(self.map, writer, indent);
+            if (self.sub_pat) |sub_pat| {
+                for (0..indent + 4) |_|
+                    try writer.print(" ", .{});
+
+                try sub_pat.writeIndent(writer, indent + 4);
+            }
+
+            for (0..indent) |_|
+                try writer.print(" ", .{});
+
+            try writer.print("{s}\n", .{"}"});
+        }
+
+        fn writeIndentMap(map: anytype, writer: anytype, indent: usize) @TypeOf(writer).Error!void {
+            var iter = map.iterator();
             while (iter.next()) |entry| {
                 for (0..indent + 4) |_|
                     try writer.print(" ", .{});
@@ -640,10 +692,6 @@ pub fn PatternOfValWithContext(
                 _ = try writer.write(" -> ");
                 try entry.value_ptr.writeIndent(writer, indent + 4);
             }
-            for (0..indent) |_|
-                try writer.print(" ", .{});
-
-            try writer.print("{s}\n", .{"}"});
         }
     };
 }

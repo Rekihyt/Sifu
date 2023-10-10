@@ -34,7 +34,7 @@ pub fn main() !void {
     //    - exit on EOF
     var lexer = Lexer.init(allocator);
     var repl_pat = Pat{};
-    while (stdin.streamUntilDelimiter(fbs.writer(), '\n', null)) |_| {
+    while (stdin.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
         var fbs_reader = io.fixedBufferStream(fbs.getWritten());
         for (fbs_reader.getWritten()) |char| {
             // escape (from pressing alt+enter in most terminals)
@@ -57,16 +57,20 @@ pub fn main() !void {
             switch (apps[0]) {
                 .key => |key| if (mem.eql(u8, key.lit, "->")) {
                     // try buff_stdout.print("Inserting, updated: ", .{});
-                    const updated = try repl_pat.insert(
+                    var updated = false;
+                    const result = try repl_pat.getOrPut(
                         allocator,
                         apps[1].apps,
-                        if (apps.len > 2)
-                            @ptrCast(apps[2..])
-                            // Create an empty ast because lines like ` -> ` denote
-                            // empty apps, not null
-                        else
-                            try Ast.createApps(allocator),
                     );
+                    result.value_ptr.* = try Ast.createApps(
+                        allocator,
+                        // if (apps.len > 2)
+                        apps[2..]
+                        // Create an empty ast because lines like ` -> ` denote
+                        // empty apps, not null
+                        ,
+                    );
+
                     try buff_stdout.print("{}\n", .{updated});
                     break :blk;
                 },
