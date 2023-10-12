@@ -47,8 +47,8 @@ pub fn main() !void {
         else
             Ast.ofApps(&.{});
 
-        try ast.write(buff_stdout);
-        _ = try buff_writer.write("\n");
+        // try ast.write(buff_stdout);
+        // _ = try buff_writer.write("\n");
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
 
@@ -56,22 +56,16 @@ pub fn main() !void {
         if (ast.apps.len > 0) blk: {
             switch (apps[0]) {
                 .key => |key| if (mem.eql(u8, key.lit, "->")) {
-                    // try buff_stdout.print("Inserting, updated: ", .{});
                     var updated = false;
-                    const result = try repl_pat.getOrPut(
+                    _ = updated;
+                    const result = try repl_pat.insert(
                         allocator,
                         apps[1].apps,
+                        try Ast.createApps(allocator, apps[2..]),
                     );
-                    result.node_ptr.* = try Ast.createApps(
-                        allocator,
-                        // if (apps.len > 2)
-                        apps[2..]
-                        // Create an empty ast because lines like ` -> ` denote
-                        // empty apps, not null
-                        ,
-                    );
+                    _ = result;
 
-                    try buff_stdout.print("{}\n", .{updated});
+                    // try buff_stdout.print("{}\n", .{updated});
                     break :blk;
                 },
                 else => {},

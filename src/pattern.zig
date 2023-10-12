@@ -156,7 +156,7 @@ pub fn PatternWithContext(
             ) bool {
                 if (self.next) |self_next| {
                     return if (other.next) |other_next|
-                        self_next.eql(other_next)
+                        self_next.eql(other_next.*)
                     else
                         false;
                 } else return other.next == null;
@@ -383,12 +383,49 @@ pub fn PatternWithContext(
         }
 
         pub fn eql(self: Self, other: Self) bool {
-            _ = other;
-            _ = self;
-            // return KeyCtx.eql(undefined, self.key, other.key, undefined) and
-            //     VarCtx.eql(undefined, self.@"var", other.@"var", undefined) and
-            //     self.node.equal(other.node);
-            return false;
+            _ = if (self.node) |self_node|
+                if (other.node) |other_node|
+                    self_node.eql(other_node.*) or return false
+                else
+                    return false
+            else
+                other.node == null or return false;
+
+            for (self.map.keys(), other.map.keys()) |self_node, other_node|
+                _ = self_node.eql(other_node) or return false;
+
+            for (self.map.values(), other.map.values()) |self_node, other_node|
+                _ = self_node.eql(other_node) or return false;
+
+            for (
+                self.pat_map.keys(),
+                other.pat_map.keys(),
+            ) |self_pat, other_pat|
+                _ = self_pat.eql(other_pat.*) or return false;
+
+            for (
+                self.pat_map.values(),
+                other.pat_map.values(),
+            ) |self_pat, other_pat|
+                _ = self_pat.eql(other_pat) or return false;
+
+            _ = if (self.var_pat) |self_var_pat|
+                if (other.var_pat) |other_var_pat|
+                    self_var_pat.eql(other_var_pat) or return false
+                else
+                    return false
+            else
+                other.var_pat == null or return false;
+
+            _ = if (self.sub_pat) |self_sub_pat|
+                if (other.sub_pat) |other_sub_pat|
+                    self_sub_pat.eql(other_sub_pat.*) or return false
+                else
+                    return false
+            else
+                return false;
+
+            return true;
         }
 
         pub fn ofVar(@"var": Var, node: ?Node) Self {
@@ -450,11 +487,13 @@ pub fn PatternWithContext(
                             try sub_pat.match(allocator, sub_apps) orelse
                             break :blk null;
 
-                        print("Matched sub_pat {*}\n", .{&sub_match.pat});
+                        // print("Matched sub_pat {*}\n", .{&sub_match.pat});
                         break :blk &sub_match.pat;
                     },
 
-                    .pat => |*node_pat| current.pat_map.getPtr(@constCast(node_pat)),
+                    .pat => |*node_pat| current.pat_map.getPtr(
+                        @constCast(node_pat),
+                    ),
                 };
                 if (next) |next_pat|
                     current = next_pat
@@ -462,10 +501,10 @@ pub fn PatternWithContext(
                     break i;
             } else apps.len;
 
-            print("Matched prefix:\n", .{});
-            const prefix = Node{ .apps = apps[0..prefix_len] };
-            prefix.write(std.io.getStdOut().writer()) catch unreachable;
-            print("\n", .{});
+            // print("Matched prefix:\n", .{});
+            // const prefix = Node{ .apps = apps[0..prefix_len] };
+            // prefix.write(stderr) catch unreachable;
+            // print("\n", .{});
 
             return .{ .len = prefix_len, .pat_ptr = current };
         }
@@ -518,7 +557,7 @@ pub fn PatternWithContext(
             const prefix = try pat.matchExactPrefix(allocator, apps);
             var current = prefix.pat_ptr;
             var found_existing = true;
-            print("Prefix len: {}\n", .{prefix.len});
+            // print("Prefix len: {}\n", .{prefix.len});
 
             // Create the rest of the branches
             for (apps[prefix.len..]) |app| switch (app) {
@@ -549,15 +588,18 @@ pub fn PatternWithContext(
                     current = next;
                 },
                 .apps => |sub_apps| {
-                    var sub_pat = current.sub_pat orelse blk: {
+                    const sub_pat = current.sub_pat orelse blk: {
                         found_existing = false;
-                        break :blk try Self.create(allocator);
+                        current.sub_pat = try Self.create(allocator);
+                        break :blk current.sub_pat.?;
                     };
-                    var put_result = try sub_pat.getOrPut(
+                    const put_result = try sub_pat.getOrPut(
                         allocator,
                         sub_apps,
                     );
-                    print("Node Pointer: {?*}\n", .{put_result.node_ptr.*});
+
+                    if (!put_result.found_existing)
+                        found_existing = false;
 
                     // Because of the recursive type, we need to use a *Node
                     // here instead of a *Pat, so subapps wraps everything into
@@ -565,18 +607,13 @@ pub fn PatternWithContext(
                     const next_pat: *Node = put_result.node_ptr.* orelse
                         try Node.createPat(allocator, Self.empty());
 
-                    print("Next Pat: \n", .{});
-                    next_pat.write(stderr) catch unreachable;
+                    // next_pat.write(stderr) catch unreachable;
 
                     put_result.node_ptr.* = next_pat;
                     current = &next_pat.pat;
-                    if (!put_result.found_existing) {
-                        found_existing = false;
-                        current.* = Self.empty();
-                    }
                 },
                 .pat => |*p| {
-                    var put_result =
+                    const put_result =
                         try current.pat_map.getOrPut(allocator, @constCast(p));
                     // Move to the next pattern
                     current = put_result.value_ptr;
@@ -619,7 +656,7 @@ pub fn PatternWithContext(
                 for (0..indent + 4) |_|
                     try writer.print(" ", .{});
 
-                print("Subpat: {}\n", .{sub_pat.map.count()});
+                // print("Subpat: {}\n", .{sub_pat.map.count()});
                 try sub_pat.writeIndent(writer, indent + 4);
             }
             // TODO: var_pat
