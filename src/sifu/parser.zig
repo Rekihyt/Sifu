@@ -139,41 +139,41 @@ fn parseUntil(
 
 // This function is the responsibility of the Parser, because it is the dual
 // to parsing.
-pub fn print(ast: anytype, writer: anytype) !void {
-    switch (ast) {
-        .apps => |asts| if (asts.len > 0 and asts[0] == .key and
-            asts[0].key.type == .Infix)
-        {
-            const key = asts[0].key;
-            // An infix always forms an App with at least 2
-            // nodes, the second of which must be an App (which
-            // may be empty)
-            assert(asts.len >= 2);
-            assert(asts[1] == .apps);
-            try writer.writeAll("(");
-            try print(asts[1], writer);
-            try writer.writeByte(' ');
-            try writer.writeAll(key.lit);
-            if (asts.len >= 2)
-                for (asts[2..]) |arg| {
-                    try writer.writeByte(' ');
-                    try print(arg, writer);
-                };
-            try writer.writeAll(")");
-        } else if (asts.len > 0) {
-            try writer.writeAll("(");
-            try print(asts[0], writer);
-            for (asts[1..]) |it| {
-                try writer.writeByte(' ');
-                try print(it, writer);
-            }
-            try writer.writeAll(")");
-        } else try writer.writeAll("()"),
-        .key => |key| try writer.print("{s}", .{key.lit}),
-        .@"var" => |v| try writer.print("{s}", .{v}),
-        .pat => |pat| try pat.print(writer),
-    }
-}
+// pub fn print(ast: anytype, writer: anytype) !void {
+//     switch (ast) {
+//         .apps => |asts| if (asts.len > 0 and asts[0] == .key and
+//             asts[0].key.type == .Infix)
+//         {
+//             const key = asts[0].key;
+//             // An infix always forms an App with at least 2
+//             // nodes, the second of which must be an App (which
+//             // may be empty)
+//             assert(asts.len >= 2);
+//             assert(asts[1] == .apps);
+//             try writer.writeAll("(");
+//             try print(asts[1], writer);
+//             try writer.writeByte(' ');
+//             try writer.writeAll(key.lit);
+//             if (asts.len >= 2)
+//                 for (asts[2..]) |arg| {
+//                     try writer.writeByte(' ');
+//                     try print(arg, writer);
+//                 };
+//             try writer.writeAll(")");
+//         } else if (asts.len > 0) {
+//             try writer.writeAll("(");
+//             try print(asts[0], writer);
+//             for (asts[1..]) |it| {
+//                 try writer.writeByte(' ');
+//                 try print(it, writer);
+//             }
+//             try writer.writeAll(")");
+//         } else try writer.writeAll("()"),
+//         .key => |key| try writer.print("{s}", .{key.lit}),
+//         .@"var" => |v| try writer.print("{s}", .{v}),
+//         .pat => |pat| try pat.print(writer),
+//     }
+// }
 
 const testing = std.testing;
 const expectEqualStrings = testing.expectEqualStrings;
@@ -216,11 +216,11 @@ fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
 fn expectEqualApps(expected: Ast, actual: Ast) !void {
     try stderr.writeByte('\n');
     try stderr.writeAll("expected: ");
-    try print(expected, stderr);
+    try expected.write(stderr);
     try stderr.writeByte('\n');
 
     try stderr.writeAll("actual: ");
-    try print(actual, stderr);
+    try actual.write(stderr);
     try stderr.writeByte('\n');
 
     try testing.expect(.apps == expected);

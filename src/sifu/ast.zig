@@ -13,13 +13,11 @@ const StringContext = std.array_hash_map.StringContext;
 /// The Sifu-specific interpreter Ast, using Tokens as keys and strings as
 /// values.
 pub const Ast = Pat.Node;
-pub const Pat = @import("../pattern.zig").PatternOfValWithContext(
+pub const Pat = @import("../pattern.zig").PatternWithContext(
     Token,
     []const u8,
-    null,
     util.IntoArrayContext(Token),
     StringContext,
-    null,
 );
 
 test "simple ast to pattern" {

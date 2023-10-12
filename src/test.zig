@@ -69,16 +69,16 @@ test "Pattern: simple vals" {
 
     const ast = (try parse(allocator, &lexer, reader)).?;
     const key = ast.apps[1];
-    const val = ast.apps[2];
+    var node = ast.apps[2];
     var actual = Pat{};
-    _ = try actual.insert(allocator, key.apps, &val);
+    _ = try actual.insert(allocator, key.apps, &node);
     // TODO: match patterns instead
-    // const updated = try Ast.insert(key, allocator, &actual, val);
+    // const updated = try Ast.insert(key, allocator, &actual, node);
     var expected = Pat{};
     var expected_a = Pat{};
     var expected_b = Pat{};
     var expected_c = Pat{
-        .val = &val,
+        .node = &node,
     };
     const token_aa = Token{ .lit = "Aa", .type = .Val, .context = 0 };
     const token_bb = Token{ .lit = "Bb", .type = .Val, .context = 3 };
@@ -112,7 +112,7 @@ test "Pattern: simple vals" {
 
     // TODO: match patterns instead
     // try testing.expectEqual(
-    //     @as(?*const Ast, val),
+    //     @as(?*const Ast, node),
     //     try Ast.match(key, allocator, actual),
     // );
     // try testing.expectEqual(
@@ -126,17 +126,17 @@ test "Pattern: simple vals" {
     reader = fbs.reader();
     const key2 = (try parse(allocator, &lexer2, reader)).?.apps;
     _ = key2;
-    var val2 = (try parse(allocator, &lexer2, reader)).?;
+    var node2 = (try parse(allocator, &lexer2, reader)).?;
     try expected.map.getPtr(token_aa).?
-        .map.put(allocator, token_bb2, Pat{ .val = &val2 });
+        .map.put(allocator, token_bb2, Pat{ .node = &node2 });
 
     try testing.expect(expected.eql(actual));
     // TODO: convert matchPrefix to match
     // try testing.expectEqual(
-    // val2,
+    // node2,
     // try actual.matchPrefix(allocator, key2),
     // );
     try stderr.print(" \n", .{});
-    try expected.print(stderr);
-    try actual.print(stderr);
+    try expected.write(stderr);
+    try actual.write(stderr);
 }

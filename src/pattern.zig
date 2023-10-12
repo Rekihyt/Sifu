@@ -9,6 +9,7 @@ const Wyhash = std.hash.Wyhash;
 const array_hash_map = std.array_hash_map;
 const AutoContext = std.array_hash_map.AutoContext;
 const StringContext = std.array_hash_map.StringContext;
+const print = std.debug.print;
 
 // - refactor node/pat creation api to use pat instead of node
 // - convert hasherUpdate to hash and match the array_hash_map Context api
@@ -18,94 +19,33 @@ pub fn AutoPattern(
     comptime Key: type,
     comptime Var: type,
 ) type {
-    return AutoPatternOfVal(Key, Var, AutoContext(Key), AutoContext(Var), null);
-}
-
-pub fn AutoPatternOfVal(
-    comptime Key: type,
-    comptime Var: type,
-    comptime Val: type,
-) type {
-    return PatternOfValWithContext(
-        Key,
-        Var,
-        Val,
-        AutoContext(Key),
-        AutoContext(Var),
-        AutoContext(Val),
-    );
+    return PatternWithContext(Key, Var, AutoContext(Key), AutoContext(Var));
 }
 
 pub fn StringPattern(
     comptime Var: type,
     comptime VarCtx: type,
 ) type {
-    return PatternOfValWithContext(
-        []const u8,
-        Var,
-        null,
-        StringContext,
-        VarCtx,
-        null,
-    );
+    return PatternWithContext([]const u8, Var, StringContext, VarCtx);
 }
 
 pub fn AutoStringPattern(
     comptime Var: type,
 ) type {
-    return PatternOfValWithContext(
-        []const u8,
-        Var,
-        null,
-        StringContext,
-        AutoContext(Var),
-        null,
-    );
+    return PatternWithContext([]const u8, Var, StringContext, AutoContext(Var));
 }
 
-pub fn AutoStringPatternOfVal(
-    comptime Var: type,
-    comptime Val: type,
-) type {
-    return PatternOfValWithContext(
-        []const u8,
-        Var,
-        Val,
-        StringContext,
-        AutoContext(Var),
-        AutoContext(Val),
-    );
-}
-
-/// A pattern that uses a pointer to its own type as its value. Used for
+/// A pattern that uses a pointer to its own type as its node. Used for
 /// parsing. Provided types must implement hash and eql.
 pub fn Pattern(
     comptime Key: type,
     comptime Var: type,
 ) type {
-    return PatternOfValWithContext(
+    return PatternWithContext(
         Key,
         Var,
-        null,
         util.IntoArrayContext(Key),
         util.IntoArrayContext(Var),
-        null,
-    );
-}
-
-pub fn PatternOfVal(
-    comptime Key: type,
-    comptime Var: type,
-    comptime Val: type,
-    comptime ValContext: type,
-) type {
-    return PatternOfValWithContext(
-        Key,
-        Var,
-        Val,
-        util.IntoArrayContext(Key),
-        util.IntoArrayContext(Var),
-        ValContext,
     );
 }
 
@@ -113,9 +53,6 @@ const meta = std.meta;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const t = @import("test.zig");
 
-// TODO: create a PatternWithContext function for basic and custom types that
-// takes contexts and calls PatternOfVal with a new struct that stores both the
-// original Keys / Vals with the new functions.
 // TODO: don't ignore contexts functions
 
 ///
@@ -129,36 +66,23 @@ const t = @import("test.zig");
 /// Params
 /// `Key` - the type of literal keys
 /// `Var` - the type of variable keys
-/// `Val` - type of values that a successful key match will evaluate to
 ///
 /// Contexts must be either nulls or structs with a type and two functions:
 ///    - `hasherUpdate` a hash function for `T`, of type `fn (T, anytype)
 ///        void` that updates a hasher (instead of a direct hash function for
 ///        efficiency)
 ///    - `eql` a function to compare two `T`s, of type `fn (T, T) bool`
-/// Pass null for `ValOrSelf` and `ValOrSelfCtx` to use the instantiated
-/// Node (the Self type in this struct definition) type as the Val type in
-/// the Pattern, as it isn't possible to specify this before the type is
-/// instantiated.
-pub fn PatternOfValWithContext(
+pub fn PatternWithContext(
     comptime Key: type,
     comptime Var: type,
-    comptime ValOrSelf: ?type,
     comptime KeyCtx: type,
     comptime VarCtx: type,
-    comptime ValOrSelfCtx: ?type,
 ) type {
     return struct {
         pub const Self = @This();
 
         /// The type of apps
         pub const Apps = []const Node;
-
-        /// The type that the `Pat` evaluates to after matching on an instance
-        /// of this `Node`.
-        pub const Val = ValOrSelf orelse *Node;
-
-        pub const ValCtx = ValOrSelfCtx orelse NodeCtx;
 
         const NodeCtx = struct {
             pub fn hash(self: @This(), node: *Node) u32 {
@@ -243,7 +167,7 @@ pub fn PatternOfValWithContext(
                     other.@"var",
                     undefined,
                 ) and
-                    ValCtx.eql(undefined, self.val, other.val, undefined);
+                    self.node.eql(other.node);
             }
         };
 
@@ -356,20 +280,28 @@ pub fn PatternOfValWithContext(
                 _ = apps;
             }
 
-            pub fn write(self: Node, writer: anytype) !void {
+            fn writeSExp(self: Node, writer: anytype) !void {
                 switch (self) {
-                    .apps => |apps| for (apps) |app|
-                        if (std.meta.activeTag(app) == .apps) {
-                            try writer.writeByte('(');
-                            try app.write(writer);
-                            try writer.writeByte(')');
-                        } else {
-                            try app.write(writer);
+                    .apps => |apps| {
+                        try writer.writeByte('(');
+                        for (apps) |app| {
+                            try app.writeSExp(writer);
                             try writer.writeByte(' ');
-                        },
+                        }
+                        try writer.writeByte(')');
+                    },
                     .@"var" => |v| try writer.writeAll(v),
                     .key => |key| try writer.writeAll(key.lit),
                     .pat => |pat| try pat.write(writer),
+                }
+            }
+            pub fn write(self: Node, writer: anytype) !void {
+                switch (self) {
+                    .apps => |apps| for (apps) |app| {
+                        try app.writeSExp(writer);
+                        try writer.writeByte(' ');
+                    },
+                    else => try self.writeSExp(writer),
                 }
             }
         };
@@ -381,7 +313,7 @@ pub fn PatternOfValWithContext(
 
         /// A Var matches and stores a locally-unique key. During rewriting,
         /// whenever the key is encountered again, it is rewritten to this
-        /// pattern's value. A Var pattern matches anything, including nested
+        /// pattern's node. A Var pattern matches anything, including nested
         /// patterns. It only makes sense to match anything after trying to
         /// match something specific, so Vars always successfully match (if
         /// there is a Var) after a Key or Subpat match fails.
@@ -402,9 +334,9 @@ pub fn PatternOfValWithContext(
         /// the branches of the trie.
         map: KeyMap = KeyMap{},
 
-        /// A null value represents an undefined pattern, for example in `Foo
-        /// Bar -> 123`, the value at `Foo` would be null.
-        val: ?Val = null,
+        /// A null node represents an undefined pattern, for example in `Foo
+        /// Bar -> 123`, the node at `Foo` would be null.
+        node: ?*Node = null,
 
         pub fn empty() Self {
             return Self{};
@@ -413,16 +345,15 @@ pub fn PatternOfValWithContext(
         pub fn ofLit(
             allocator: Allocator,
             lit: Key,
-            val: ?Val,
+            node: ?Node,
         ) !Self {
             var map = KeyMap{};
-            try map.put(allocator, lit, Self{ .val = val });
+            try map.put(allocator, lit, Self{ .node = node });
             return .{
                 .map = map,
             };
         }
 
-        // = util.hashFromHasherUpdate(Self, hasherUpdate);
         pub fn hash(self: Self) u32 {
             var hasher = Wyhash.init(0);
             self.hasherUpdate(&hasher);
@@ -438,14 +369,14 @@ pub fn PatternOfValWithContext(
             for (pat.pat_map.keys()) |p|
                 p.hasherUpdate(hasher);
 
-            // TODO: add comptime if for hashing vals in a pattern
+            // TODO: add comptime if for hashing nodes in a pattern
             for (pat.map.values()) |p|
                 p.hasherUpdate(hasher);
             for (pat.pat_map.values()) |p|
                 p.hasherUpdate(hasher);
 
-            if (pat.val) |val|
-                hasher.update(&mem.toBytes(ValCtx.hash(undefined, val)));
+            if (pat.node) |node|
+                hasher.update(&mem.toBytes(node.hash()));
 
             if (pat.sub_pat) |sub_pat|
                 sub_pat.hasherUpdate(hasher);
@@ -456,14 +387,14 @@ pub fn PatternOfValWithContext(
             _ = self;
             // return KeyCtx.eql(undefined, self.key, other.key, undefined) and
             //     VarCtx.eql(undefined, self.@"var", other.@"var", undefined) and
-            //     ValCtx.eql(undefined, self.val, other.val, undefined);
+            //     self.node.equal(other.node);
             return false;
         }
 
-        pub fn ofVar(@"var": Var, val: ?Val) Self {
+        pub fn ofVar(@"var": Var, node: ?Node) Self {
             return .{
                 .@"var" = @"var",
-                .val = val,
+                .node = node,
             };
         }
 
@@ -514,13 +445,13 @@ pub fn PatternOfValWithContext(
                         const sub_pat = current.sub_pat orelse
                             break :blk null;
 
-                        const sub_prefix =
-                            try sub_pat.matchExactPrefix(allocator, sub_apps);
                         // Check that the entire sub_apps matched sub_pat
-                        if (sub_prefix.len != sub_apps.len)
+                        const sub_match =
+                            try sub_pat.match(allocator, sub_apps) orelse
                             break :blk null;
 
-                        break :blk sub_pat;
+                        print("Matched sub_pat {*}\n", .{&sub_match.pat});
+                        break :blk &sub_match.pat;
                     },
 
                     .pat => |*node_pat| current.pat_map.getPtr(@constCast(node_pat)),
@@ -530,6 +461,11 @@ pub fn PatternOfValWithContext(
                 else
                     break i;
             } else apps.len;
+
+            print("Matched prefix:\n", .{});
+            const prefix = Node{ .apps = apps[0..prefix_len] };
+            prefix.write(std.io.getStdOut().writer()) catch unreachable;
+            print("\n", .{});
 
             return .{ .len = prefix_len, .pat_ptr = current };
         }
@@ -542,20 +478,23 @@ pub fn PatternOfValWithContext(
             pat: *Self,
             allocator: Allocator,
             apps: []const Node,
-        ) Allocator.Error!?Val {
+        ) Allocator.Error!?*Node {
             // var var_map = VarMap{};
             const prefix = try pat.matchExactPrefix(allocator, apps);
-            return prefix.pat_ptr.val;
+            return if (prefix.len == apps.len)
+                prefix.pat_ptr.node
+            else
+                null;
         }
 
         pub fn insert(
             pat: *Self,
             allocator: Allocator,
             apps: Apps,
-            val: ?Val,
+            node: ?*Node,
         ) Allocator.Error!*Self {
             var result = try pat.getOrPut(allocator, apps);
-            result.value_ptr.* = val;
+            result.node_ptr.* = node;
             return result.pat_ptr;
         }
 
@@ -563,7 +502,7 @@ pub fn PatternOfValWithContext(
         /// last hashmap.
         pub const GetOrPutResult = struct {
             pat_ptr: *Self,
-            value_ptr: *?Val,
+            node_ptr: *?*Node,
             found_existing: bool,
             index: usize,
         };
@@ -579,7 +518,7 @@ pub fn PatternOfValWithContext(
             const prefix = try pat.matchExactPrefix(allocator, apps);
             var current = prefix.pat_ptr;
             var found_existing = true;
-            std.debug.print("Prefix len: {}\n", .{prefix.len});
+            print("Prefix len: {}\n", .{prefix.len});
 
             // Create the rest of the branches
             for (apps[prefix.len..]) |app| switch (app) {
@@ -609,25 +548,32 @@ pub fn PatternOfValWithContext(
                     };
                     current = next;
                 },
-                .apps => |nodes| {
+                .apps => |sub_apps| {
                     var sub_pat = current.sub_pat orelse blk: {
                         found_existing = false;
                         break :blk try Self.create(allocator);
                     };
-                    // const next = Self.create(allocator);
                     var put_result = try sub_pat.getOrPut(
                         allocator,
-                        nodes,
+                        sub_apps,
                     );
-                    // TODO: update found_existing
-                    // if (!put_result.found_existing)
-                    // Zig Compiler can't handle a Pattern with itself as
-                    // value, so we use the original type as a wrapper.
-                    // Therefore, subapps will always be `Node.pat`.
-                    const value_ptr = put_result.value_ptr.* orelse
+                    print("Node Pointer: {?*}\n", .{put_result.node_ptr.*});
+
+                    // Because of the recursive type, we need to use a *Node
+                    // here instead of a *Pat, so subapps wraps everything into
+                    // a `Node.pat`.
+                    const next_pat: *Node = put_result.node_ptr.* orelse
                         try Node.createPat(allocator, Self.empty());
 
-                    current = &value_ptr.pat;
+                    print("Next Pat: \n", .{});
+                    next_pat.write(stderr) catch unreachable;
+
+                    put_result.node_ptr.* = next_pat;
+                    current = &next_pat.pat;
+                    if (!put_result.found_existing) {
+                        found_existing = false;
+                        current.* = Self.empty();
+                    }
                 },
                 .pat => |*p| {
                     var put_result =
@@ -644,7 +590,7 @@ pub fn PatternOfValWithContext(
             };
             return GetOrPutResult{
                 .pat_ptr = current,
-                .value_ptr = &current.val,
+                .node_ptr = &current.node,
                 .found_existing = found_existing,
                 .index = 0, // TODO
             };
@@ -662,8 +608,8 @@ pub fn PatternOfValWithContext(
             indent: usize,
         ) @TypeOf(writer).Error!void {
             try writer.writeByte('|');
-            if (self.val) |val| {
-                try val.write(writer);
+            if (self.node) |node| {
+                try node.write(writer);
             }
             try writer.writeByte('|');
             try writer.print(" {s}\n", .{"{"});
@@ -673,9 +619,10 @@ pub fn PatternOfValWithContext(
                 for (0..indent + 4) |_|
                     try writer.print(" ", .{});
 
+                print("Subpat: {}\n", .{sub_pat.map.count()});
                 try sub_pat.writeIndent(writer, indent + 4);
             }
-
+            // TODO: var_pat
             for (0..indent) |_|
                 try writer.print(" ", .{});
 
@@ -707,20 +654,20 @@ else
     std.io.null_writer;
 
 test "Pattern: eql" {
-    const Pat = AutoStringPatternOfVal(void, usize);
+    const Pat = AutoStringPattern(usize);
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
     var p1 = Pat{};
     var p2 = Pat{
-        .val = 123,
+        .node = 123,
     };
     // Reverse order because patterns are values, not references
     try p2.map.put(
         allocator,
         "p1",
-        Pat{ .val = 123 },
+        Pat{ .node = 123 },
     );
     try p1.map.put(allocator, "Aa", p2);
     // try testing.expect(p1.eql(p2));
@@ -730,7 +677,7 @@ test "Pattern: eql" {
 }
 
 test "should behave like a set when given void" {
-    const Pat = AutoPatternOfVal(usize, void, void);
+    const Pat = AutoPattern(usize, void);
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const al = arena.allocator();
@@ -748,7 +695,7 @@ test "should behave like a set when given void" {
 
     // Empty pattern
     // try testing.expectEqual(@as(?void, {}), pat.match(.{
-    //     .val = {},
+    //     .node = {},
     //     .kind = .{ .map = Pat.KeyMap{} },
     // }));
 }
@@ -765,7 +712,7 @@ test "compile: nested" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const al = arena.allocator();
-    const Pat = AutoPatternOfVal(usize, void, void);
+    const Pat = AutoPattern(usize, void);
     var pat = try Pat.ofLit(al, 123, {});
     _ = try pat.matchExactPrefix(al, &.{});
     // Test nested

@@ -42,8 +42,8 @@ pub fn main() !void {
         }
         const ast = try parse(allocator, &lexer, fbs_reader.reader()) orelse
             // Match the empty apps for just a newline
-            if ((try repl_pat.matchExactPrefix(allocator, &.{})).pat_ptr.val) |val|
-            val.*
+            if ((try repl_pat.matchExactPrefix(allocator, &.{})).pat_ptr.node) |node|
+            node.*
         else
             Ast.ofApps(&.{});
 
@@ -62,7 +62,7 @@ pub fn main() !void {
                         allocator,
                         apps[1].apps,
                     );
-                    result.value_ptr.* = try Ast.createApps(
+                    result.node_ptr.* = try Ast.createApps(
                         allocator,
                         // if (apps.len > 2)
                         apps[2..]
