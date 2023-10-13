@@ -12,6 +12,7 @@ const io = std.io;
 const fs = std.fs;
 const log = std.log.scoped(.sifu_cli);
 const mem = std.mem;
+const print = std.debug.print;
 
 pub fn main() !void {
     // var gpa_alloc = std.heap.GeneralPurposeAllocator(.{}){};
@@ -42,7 +43,7 @@ pub fn main() !void {
         }
         const ast = try parse(allocator, &lexer, fbs_reader.reader()) orelse
             // Match the empty apps for just a newline
-            if ((try repl_pat.matchExactPrefix(allocator, &.{})).pat_ptr.node) |node|
+            if ((repl_pat.matchExactPrefix(&.{})).pat_ptr.node) |node|
             node.*
         else
             Ast.ofApps(&.{});
@@ -71,10 +72,10 @@ pub fn main() !void {
                 else => {},
             }
             // If not inserting, then try to match the expression
-            if (try repl_pat.match(allocator, apps)) |matched| {
+            if (repl_pat.match(apps)) |matched| {
                 try matched.write(buff_stdout);
                 _ = try buff_writer.write("\n");
-            }
+            } else print("No match\n", .{});
         }
 
         try repl_pat.write(buff_stdout);

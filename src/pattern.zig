@@ -354,6 +354,23 @@ pub fn PatternWithContext(
             };
         }
 
+        pub fn delete(pat: Self, allocator: Allocator) void {
+            if (pat.var_pat) |var_pat|
+                var_pat.delete(allocator);
+
+            for (pat.map.values()) |p|
+                p.delete(allocator);
+
+            for (pat.pat_map.values()) |p|
+                p.delete(allocator);
+
+            if (pat.node) |node|
+                node.delete(allocator);
+
+            if (pat.sub_pat) |sub_pat|
+                sub_pat.delete(allocator);
+        }
+
         pub fn hash(self: Self) u32 {
             var hasher = Wyhash.init(0);
             self.hasherUpdate(&hasher);
@@ -369,7 +386,6 @@ pub fn PatternWithContext(
             for (pat.pat_map.keys()) |p|
                 p.hasherUpdate(hasher);
 
-            // TODO: add comptime if for hashing nodes in a pattern
             for (pat.map.values()) |p|
                 p.hasherUpdate(hasher);
             for (pat.pat_map.values()) |p|
@@ -462,9 +478,8 @@ pub fn PatternWithContext(
         /// last pat will be returned.
         pub fn matchExactPrefix(
             pat: *Self,
-            allocator: Allocator,
             apps: Apps,
-        ) Allocator.Error!PrefixResult {
+        ) PrefixResult {
             var current = pat;
             // Follow the longest branch that exists
             const prefix_len = for (apps, 0..) |app, i| {
@@ -483,12 +498,20 @@ pub fn PatternWithContext(
                             break :blk null;
 
                         // Check that the entire sub_apps matched sub_pat
-                        const sub_match =
-                            try sub_pat.match(allocator, sub_apps) orelse
+                        const sub_prefix = sub_pat.matchExactPrefix(sub_apps);
+
+                        // print("Matched sub_prefix {}\n", .{sub_prefix.len == sub_apps.len});
+                        // If there isn't a node for another pattern, this
+                        // match fails
+                        const next_node = sub_prefix.pat_ptr.node orelse
                             break :blk null;
 
-                        // print("Matched sub_pat {*}\n", .{&sub_match.pat});
-                        break :blk &sub_match.pat;
+                        // Match sub_pat, move to its value, which is also
+                        // always a pattern even though it is wrapped in a Node
+                        break :blk if (sub_prefix.len == sub_apps.len)
+                            &next_node.pat
+                        else
+                            null;
                     },
 
                     .pat => |*node_pat| current.pat_map.getPtr(
@@ -509,17 +532,41 @@ pub fn PatternWithContext(
             return .{ .len = prefix_len, .pat_ptr = current };
         }
 
-        /// Creates a new node app containing the subset of `pat` that matches
-        /// the longest matching prefix in 'apps'. Returns a usize describing
-        /// this position in apps.
-        /// The result is a tree of all branches that matched the pattern.
+        /// Follows `pat` for each app matching structure as well as value.
+        /// Does not require allocation because variable branches are not
+        /// explored, but rather followed.
+        pub fn matchExact(
+            pat: *Self,
+            apps: []const Node,
+        ) ?*Node {
+            // var var_map = VarMap{};
+            const prefix = pat.matchExactPrefix(apps);
+            // print("Result: ", .{});
+            // prefix.pat_ptr.node.?.write(stderr) catch unreachable;
+            return if (prefix.len == apps.len)
+                prefix.pat_ptr.node
+            else
+                null;
+        }
+
+        /// Follows `pat` for each app matching by value, or all apps for var
+        /// patterns. Creates a new node app containing the subset of `pat`
+        /// that matches the longest matching prefix in 'apps'. Returns a
+        /// usize describing this position in apps. The result is a tree of all
+        /// branches that matched the pattern. Requires allocations because all
+        /// possible branches are explored separately. If an app has only one
+        /// path, or if the pattern has no variables, then no allocations will
+        /// be needed.
         pub fn match(
             pat: *Self,
             allocator: Allocator,
             apps: []const Node,
-        ) Allocator.Error!?*Node {
+        ) ?*Node {
+            _ = allocator;
             // var var_map = VarMap{};
-            const prefix = try pat.matchExactPrefix(allocator, apps);
+            const prefix = pat.matchExactPrefix(apps);
+            // print("Result: ", .{});
+            // prefix.pat_ptr.node.?.write(stderr) catch unreachable;
             return if (prefix.len == apps.len)
                 prefix.pat_ptr.node
             else
@@ -554,7 +601,7 @@ pub fn PatternWithContext(
             allocator: Allocator,
             apps: Apps,
         ) Allocator.Error!GetOrPutResult {
-            const prefix = try pat.matchExactPrefix(allocator, apps);
+            const prefix = pat.matchExactPrefix(apps);
             var current = prefix.pat_ptr;
             var found_existing = true;
             // print("Prefix len: {}\n", .{prefix.len});
