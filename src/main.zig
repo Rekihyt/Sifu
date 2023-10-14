@@ -72,7 +72,7 @@ pub fn main() !void {
                 else => {},
             }
             // If not inserting, then try to match the expression
-            if (repl_pat.match(apps)) |matched| {
+            if (repl_pat.matchExact(apps)) |matched| {
                 try matched.write(buff_stdout);
                 _ = try buff_writer.write("\n");
             } else print("No match\n", .{});

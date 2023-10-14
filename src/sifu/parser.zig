@@ -109,7 +109,11 @@ fn parseUntil(
                         const asts = nested_apps.items;
                         _ = if (asts.len > 0 and
                             mem.eql(u8, asts[0].key.lit, "->"))
-                            try pat.insert(allocator, asts[1].apps, &asts[2])
+                            try pat.insert(
+                                allocator,
+                                asts[1].apps,
+                                &asts[2],
+                            )
                         else
                             try pat.insert(allocator, asts, null);
                     }
@@ -131,6 +135,7 @@ fn parseUntil(
                 });
                 result = infix_apps;
             },
+            .Str, .I, .F, .U => try result.append(allocator, Ast.ofLit(token)),
             else => try result.append(allocator, Ast.ofLit(token)),
         }
     } else false;
