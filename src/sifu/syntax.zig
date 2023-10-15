@@ -91,8 +91,8 @@ pub fn Token(comptime Context: type) type {
             return self.lit;
         }
 
-        pub fn write(self: Self, writer: anytype) !usize {
-            return writer.write(self.lit);
+        pub fn write(self: Self, writer: anytype) !void {
+            _ = try writer.write(self.lit);
         }
 
         /// Convert this to a term by parsing its literal value.

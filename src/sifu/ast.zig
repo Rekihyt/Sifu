@@ -37,3 +37,19 @@ test "simple ast to pattern" {
     _ = ast;
     // _ = Pattern.ofTokenType(term, ast);
 }
+
+test "Token equality" {
+    const t1 = Token{
+        .type = .Val,
+        .lit = "Asdf",
+        .context = 0,
+    };
+    const t2 = Token{
+        .type = .Val,
+        .lit = "Asdf",
+        .context = 1,
+    };
+
+    try testing.expect(t1.eql(t2));
+    try testing.expectEqual(t1.hash(), t2.hash());
+}

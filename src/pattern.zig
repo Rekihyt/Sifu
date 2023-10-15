@@ -159,20 +159,28 @@ pub fn PatternWithContext(
                 self: VarPat,
                 other: VarPat,
             ) bool {
-                if (self.next) |self_next| {
-                    return if (other.next) |other_next|
-                        self_next.eql(other_next.*)
-                    else
-                        false;
-                } else return other.next == null;
-
-                return VarCtx.eql(
+                _ = VarCtx.eql(
                     undefined,
                     self.@"var",
                     other.@"var",
                     undefined,
-                ) and
-                    self.node.eql(other.node);
+                ) or return false;
+
+                if (self.next) |self_next|
+                    if (other.next) |other_next|
+                        return self_next.*.eql(other_next.*);
+
+                return self.next == null and other.next == null;
+            }
+
+            pub fn writeIndent(
+                self: VarPat,
+                writer: anytype,
+                indent: usize,
+            ) !void {
+                try util.genericWrite(self.@"var", writer);
+                if (self.next) |next|
+                    try next.writeIndent(writer, indent);
             }
         };
 
@@ -227,10 +235,9 @@ pub fn PatternWithContext(
                 return if (@intFromEnum(node) != @intFromEnum(other))
                     false
                 else switch (node) {
-                    .apps => |apps| apps.len == other.apps.len and for (
-                        apps,
-                        other.apps,
-                    ) |app, other_app| {
+                    .apps => |apps| apps.len == other.apps.len and
+                        for (apps, other.apps) |app, other_app|
+                    {
                         if (!app.eql(other_app))
                             break false;
                     } else true,
@@ -309,7 +316,10 @@ pub fn PatternWithContext(
                 _ = apps;
             }
 
-            fn writeSExp(self: Node, writer: anytype) !void {
+            fn writeSExp(
+                self: Node,
+                writer: anytype,
+            ) !void {
                 switch (self) {
                     .apps => |apps| {
                         try writer.writeByte('(');
@@ -319,12 +329,16 @@ pub fn PatternWithContext(
                         }
                         try writer.writeByte(')');
                     },
-                    .@"var" => |v| try writer.writeAll(v),
-                    .key => |key| try writer.writeAll(key.lit),
+                    .@"var" => |@"var"| _ = try util.genericWrite(@"var", writer),
+                    .key => |key| _ = try util.genericWrite(key, writer),
                     .pat => |pat| try pat.write(writer),
                 }
             }
-            pub fn write(self: Node, writer: anytype) !void {
+
+            pub fn write(
+                self: Node,
+                writer: anytype,
+            ) !void {
                 switch (self) {
                     .apps => |apps| for (apps) |app| {
                         try app.writeSExp(writer);
@@ -424,33 +438,42 @@ pub fn PatternWithContext(
                 sub_pat.hasherUpdate(hasher);
         }
 
+        fn keyEql(k1: Key, k2: Key) bool {
+            return KeyCtx.eql(undefined, k1, k2, undefined);
+        }
+
         pub fn eql(self: Self, other: Self) bool {
             _ = if (self.node) |self_node|
                 if (other.node) |other_node|
-                    self_node.eql(other_node.*) or return false
+                    self_node.*.eql(other_node.*) or return false
                 else
                     return false
             else
                 other.node == null or return false;
 
-            for (self.map.keys(), other.map.keys()) |self_node, other_node|
-                _ = KeyCtx.eql(undefined, self_node, other_node, undefined) or
-                    return false;
+            _ = util.sliceEql(self.map.keys(), other.map.keys(), keyEql) or
+                return false;
 
-            for (self.map.values(), other.map.values()) |self_node, other_node|
-                _ = self_node.eql(other_node) or return false;
+            _ = util.sliceEql(self.map.values(), other.map.values(), Self.eql) or
+                return false;
 
-            for (
+            _ = util.sliceEql(
                 self.pat_map.keys(),
                 other.pat_map.keys(),
-            ) |self_pat, other_pat|
-                _ = self_pat.eql(other_pat.*) or return false;
+                struct {
+                    pub fn eq(p1: *Self, p2: *Self) bool {
+                        return p1.*.eql(p2.*);
+                    }
+                }.eq,
+            ) or
+                return false;
 
-            for (
+            _ = util.sliceEql(
                 self.pat_map.values(),
                 other.pat_map.values(),
-            ) |self_pat, other_pat|
-                _ = self_pat.eql(other_pat) or return false;
+                Self.eql,
+            ) or
+                return false;
 
             _ = if (self.var_pat) |self_var_pat|
                 if (other.var_pat) |other_var_pat|
@@ -462,11 +485,11 @@ pub fn PatternWithContext(
 
             _ = if (self.sub_pat) |self_sub_pat|
                 if (other.sub_pat) |other_sub_pat|
-                    self_sub_pat.eql(other_sub_pat.*) or return false
+                    self_sub_pat.*.eql(other_sub_pat.*) or return false
                 else
                     return false
             else
-                return false;
+                other.sub_pat == null or return false;
 
             return true;
         }
@@ -724,32 +747,38 @@ pub fn PatternWithContext(
             if (self.node) |node| {
                 try node.write(writer);
             }
-            try writer.writeByte('|');
-            try writer.print(" {s}\n", .{"{"});
+            try writer.writeAll("| {");
 
             try writeIndentMap(self.map, writer, indent);
+            if (self.var_pat) |var_pat|
+                try var_pat.writeIndent(writer, indent + 4);
+
             if (self.sub_pat) |sub_pat| {
                 for (0..indent + 4) |_|
-                    try writer.print(" ", .{});
+                    try writer.writeByte(' ');
 
                 // print("Subpat: {}\n", .{sub_pat.map.count()});
                 try sub_pat.writeIndent(writer, indent + 4);
             }
-            // TODO: var_pat
             for (0..indent) |_|
-                try writer.print(" ", .{});
+                try writer.writeByte(' ');
 
-            try writer.print("{s}\n", .{"}"});
+            try writer.writeByte('}');
         }
 
-        fn writeIndentMap(map: anytype, writer: anytype, indent: usize) @TypeOf(writer).Error!void {
+        fn writeIndentMap(
+            map: anytype,
+            writer: anytype,
+            indent: usize,
+        ) @TypeOf(writer).Error!void {
             var iter = map.iterator();
             while (iter.next()) |entry| {
                 for (0..indent + 4) |_|
-                    try writer.print(" ", .{});
+                    try writer.writeByte(' ');
 
-                _ = try entry.key_ptr.write(writer);
-                _ = try writer.write(" -> ");
+                const key = entry.key_ptr.*;
+                _ = try util.genericWrite(key, writer);
+                try writer.writeAll(" -> ");
                 try entry.value_ptr.writeIndent(writer, indent + 4);
             }
         }
@@ -787,7 +816,10 @@ test "Pattern: eql" {
         Node{ .key = "Aa" },
         Node{ .key = "Bb" },
     }, val2);
-
+    try p1.write(stderr);
+    try stderr.writeByte('\n');
+    try p_insert.write(stderr);
+    try stderr.writeByte('\n');
     try testing.expect(p1.eql(p_insert));
 }
 

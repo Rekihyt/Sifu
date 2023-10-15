@@ -220,11 +220,11 @@ fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
 
 fn expectEqualApps(expected: Ast, actual: Ast) !void {
     try stderr.writeByte('\n');
-    try stderr.writeAll("expected: ");
+    try stderr.writeAll("Expected: ");
     try expected.write(stderr);
     try stderr.writeByte('\n');
 
-    try stderr.writeAll("actual: ");
+    try stderr.writeAll("Actual: ");
     try actual.write(stderr);
     try stderr.writeByte('\n');
 

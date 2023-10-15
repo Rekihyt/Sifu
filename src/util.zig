@@ -29,65 +29,20 @@ pub fn hasherUpdateFromHash(
     }.hasherUpdate;
 }
 
-// pub fn ArrayToUpdateContext(comptime ArrayCtx: anytype, comptime K: type) type {
-//     return struct {
-//         pub fn hasherUpdate(key: K, hasher: anytype) void {
-//             if (@typeInfo(K) == .Struct or @typeInfo(K) == .Union)
-//                 if (@hasDecl(K, "hasherUpdate")) {
-//                     key.hasherUpdate(hasher);
-//                     return;
-//                 };
-//             hasher.update(&mem.toBytes(ArrayCtx.hash(undefined, key)));
-//         }
-//         pub fn eql(k1: K, k2: K) bool {
-//             return ArrayCtx.eql(undefined, k1, k2, undefined);
-//         }
-//     };
-// }
-
-// pub fn UpdateToArrayContext(comptime Ctx: type, comptime K: type) type {
-//     return struct {
-//         pub fn hash(self: @This(), key: K) u32 {
-//             _ = self;
-//             var hasher = Wyhash.init(0);
-//             hasher.update(&mem.toBytes(Ctx.hash(key)));
-//             return @truncate(hasher.final());
-//         }
-//         pub fn eql(self: @This(), k1: K, k2: K, b_index: usize) bool {
-//             _ = b_index;
-//             _ = self;
-//             return Ctx.eql(k1, k2);
-//         }
-//     };
-// }
-
-// pub fn IntoUpdateContext(comptime Key: type) type {
-//     return struct {
-//         pub fn hasherUpdate(key: Key, hasher: anytype) void {
-//             return key.hasherUpdate(hasher);
-//         }
-
-//         pub fn eql(
-//             key: Key,
-//             other: Key,
-//         ) bool {
-//             return key.eql(other);
-//         }
-//     };
-// }
+pub fn genericWrite(val: anytype, writer: anytype) @TypeOf(writer).Error!void {
+    return switch (@typeInfo(@TypeOf(val))) {
+        .Struct, .Union => val.write(writer),
+        .Pointer => |S| if (S.child == u8)
+            writer.writeAll(val)
+        else
+            writer.print("{any}", .{val}),
+        else => writer.print("{any}", .{val}),
+    };
+}
 
 /// Convert a type with a hash and eql function with typical signatures to a
 /// context compatible with std.array_hash_map.
 pub fn IntoArrayContext(comptime Key: type) type {
-    // const K = switch (@typeInfo(Key)) {
-    //     .Struct, .Union, .Enum, .Opaque => Key,
-    //     .Pointer => |ptr| ptr.child,
-    //     else => @compileError(
-    //         "Key type must be a struct/union or pointer to one",
-    //     ),
-    // };
-    // _ = K;
-
     return struct {
         pub fn hash(self: @This(), key: Key) u32 {
             _ = self;
@@ -144,21 +99,49 @@ pub fn last(comptime T: type, slice: []const T) ?T {
 }
 
 /// Compare two slices whose elements can be compared by the `order` function.
-/// May panic on slices of different length.
-pub fn orderWith(
+/// Panics on slices of different length.
+pub fn sliceOrder(
     lhs: anytype,
     rhs: anytype,
     op: fn (anytype, anytype) Order,
 ) Order {
-    const n = @min(lhs.len, rhs.len);
-    var i: usize = 0;
-    return while (i < n) : (i += 1) {
-        switch (op(lhs[i], rhs[i])) {
+    return for (lhs, rhs) |lhs_val, rhs_val|
+        switch (op(lhs_val, rhs_val)) {
             .eq => continue,
             .lt => break .lt,
             .gt => break .gt,
         }
-    } else math.order(lhs.len, rhs.len);
+    else
+        .eq;
+}
+
+pub fn sliceEql(
+    lhs: anytype,
+    rhs: @TypeOf(lhs),
+    eq: fn (
+        @typeInfo(@TypeOf(lhs)).Pointer.child,
+        @typeInfo(@TypeOf(rhs)).Pointer.child,
+    ) bool,
+) bool {
+    return lhs.len == rhs.len and for (lhs, rhs) |lhs_val, rhs_val| {
+        if (!eq(lhs_val, rhs_val))
+            break false;
+    } else true;
+}
+
+/// Call a function with both values, if they are present, returning null if
+/// not.
+/// Like Haskell's liftM2 but with Zig's optional type as the monad.
+pub fn liftOption(
+    comptime R: type,
+    maybe_lhs: anytype,
+    maybe_rhs: anytype,
+    op: fn (anytype, anytype) R,
+) ?R {
+    if (maybe_lhs) |lhs| if (maybe_rhs) |rhs|
+        return op(lhs, rhs);
+
+    return null;
 }
 
 const testing = std.testing;
@@ -173,7 +156,15 @@ test "expect f64" {
 }
 
 test "slices of different len" {
-    const s1 = &[_]usize{ 1, 2 };
-    const s2 = &[_]usize{ 1, 2, 3 };
-    try testing.expectEqual(@as(Order, .lt), orderWith(s1, s2, math.order));
+    const s1: []const usize = &.{ 1, 2, 3 };
+    const s2: []const usize = &.{ 1, 2, 4 };
+    try testing.expectEqual(Order.lt, sliceOrder(s1, s2, math.order));
+    const s3: []const usize = &.{ 1, 2, 3 };
+    const eq = struct {
+        pub fn eq(a: usize, b: usize) bool {
+            return a == b;
+        }
+    }.eq;
+    try testing.expect(sliceEql(s1, s3, eq));
+    try testing.expect(!sliceEql(s1, s2, eq));
 }
