@@ -366,7 +366,6 @@ pub fn PatternWithContext(
         /// deterministically, as long as they have only had elements inserted
         /// and not removed. This is empty when there are no / nested patterns in
         /// this pattern.
-        // TODO: define a hash function for keys, including patterns.
         pat_map: PatMap = PatMap{},
 
         /// This is for nested apps that this pattern should match. Each layer
@@ -505,6 +504,7 @@ pub fn PatternWithContext(
         // ///    way)
         // /// - A literal Node that matches a literal-var pattern matches the
         // ///    literal part, not the var
+        // TODO: update var map
         // pub fn matchPrefix(
         //     pat: *Self,
         //     allocator: Allocator,
@@ -530,7 +530,6 @@ pub fn PatternWithContext(
                     .key => |key| current.map.getPtr(key),
 
                     // vars with different names are "equal"
-                    // TODO: update var map
                     .@"var" => |_| if (current.var_pat) |var_pat|
                         var_pat.next
                     else
@@ -737,7 +736,6 @@ pub fn PatternWithContext(
             try self.writeIndent(writer, 0);
         }
 
-        // TODO: add all pattern fields
         fn writeIndent(
             self: Self,
             writer: anytype,
@@ -825,20 +823,37 @@ test "Pattern: eql" {
 
 test "should behave like a set when given void" {
     const Pat = AutoPattern(usize, void);
+    const Node = Pat.Node;
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const al = arena.allocator();
 
-    var pat = try Pat.ofVal(al, 123);
-    _ = pat;
-    // TODO: insert some apps here once insert is implemented
-    // var nodes1: [1]Pat = undefined;
-    // var nodes3: [3]Pat = undefined;
-    // for (&nodes1, 0..) |*node, i| {
-    //     node.* = Pat.ofLit(i, {}, {});
+    const nodes1 = &.{ Node{ .key = 123 }, Node{ .key = 456 } };
+    var pat = Pat{};
+    _ = try pat.insertVal(al, nodes1, null);
+
+    // TODO: add to a test for insert
+    // var expected = try Pat{};
+    // {
+    //     var current = &expected;
+    //     for (0..2) |i| {
+    //         current = current.map.Node.ofLit(i);
+    //     }
     // }
-    // try testing.expectEqual(@as(?void, null), pat.match(nodes1));
-    // try testing.expectEqual(@as(?void, null), pat.match(nodes3));
+
+    print("\nSet Pattern:\n", .{});
+    try pat.write(stderr);
+    print("\n", .{});
+    const prefix = pat.matchExactPrefix(nodes1);
+    // Even though there is a match, the node is null because we didn't insert
+    // a value
+    try testing.expectEqual(
+        @as(?*Node, null),
+        prefix.pat_ptr.node,
+    );
+    try testing.expectEqual(@as(usize, 2), prefix.len);
+
+    // try testing.expectEqual(@as(?void, null), pat.matchExact(nodes1[0..1]));
 
     // Empty pattern
     // try testing.expectEqual(@as(?void, {}), pat.match(.{

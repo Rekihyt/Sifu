@@ -68,7 +68,7 @@ test "Pattern: simple vals" {
     var lexer = Lexer.init(allocator);
 
     const ast = (try parse(allocator, &lexer, reader)).?;
-    const key = ast.apps[1];
+    const key = ast.apps[1].apps;
     var node = ast.apps[2];
     var actual = Pat{};
     // TODO: match patterns instead
@@ -108,7 +108,7 @@ test "Pattern: simple vals" {
     try testing.expect(!expected.eql(expected_a));
 
     try testing.expect(!expected.eql(actual));
-    _ = try actual.insert(allocator, key.apps, &node);
+    _ = try actual.insert(allocator, key, &node);
     try testing.expect(expected.eql(actual));
 
     // TODO: match patterns instead
@@ -125,22 +125,19 @@ test "Pattern: simple vals" {
     fbs = io.fixedBufferStream("Aa Bb2 \n\n 456");
     var lexer2 = Lexer.init(allocator);
     reader = fbs.reader();
-    const key2 = (try parse(allocator, &lexer2, reader)).?;
+    const key2 = (try parse(allocator, &lexer2, reader)).?.apps;
     var node2 = (try parse(allocator, &lexer2, reader)).?;
     try expected.map.getPtr(token_aa).?
         .map.put(allocator, token_bb2, Pat{ .node = &node2 });
 
     try testing.expect(!expected.eql(actual));
-    _ = try actual.insert(allocator, key2.apps, &node2);
+    _ = try actual.insert(allocator, key2, &node2);
 
     try testing.expect(expected.eql(actual));
-    // TODO: convert matchPrefix to match
-    // try testing.expectEqual(
-    // node2,
-    // try actual.matchPrefix(allocator, key2),
-    // );
-    try stderr.print(" \n", .{});
-
+    try testing.expectEqual(@as(?*Pat.Node, &node), actual.matchExact(key));
+    try testing.expectEqual(@as(?*Pat.Node, &node2), actual.matchExact(key2));
+    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchExact(key[0..1]));
+    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchExact(key2[0..1]));
     try expected.write(stderr);
     try actual.write(stderr);
 }
