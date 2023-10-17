@@ -403,24 +403,21 @@ pub fn PatternWithContext(
         /// Frees all memory recursively, leaving the Pattern in an undefined state.
         /// The `self` pointer must have been allocated with `allocator`.
         pub fn delete(self: *Self, allocator: Allocator) void {
-            self.deleteRec(allocator);
+            self.deleteChildren(allocator);
             allocator.destroy(self);
         }
 
-        pub fn deleteRec(self: *Self, allocator: Allocator) void {
+        pub fn deleteChildren(self: *Self, allocator: Allocator) void {
             if (self.var_pat) |*var_pat|
                 var_pat.delete(allocator);
 
             for (self.map.values()) |*p|
-                p.deleteRec(allocator);
+                p.deleteChildren(allocator);
 
             self.map.deinit(allocator);
 
             for (self.pat_map.keys()) |*p|
-                p.*.delete(allocator);
-
-            for (self.pat_map.values()) |*p|
-                p.delete(allocator);
+                p.*.deleteChildren(allocator);
 
             self.pat_map.deinit(allocator);
 
@@ -896,7 +893,7 @@ test "insert multiple lits" {
     const Pat = AutoPattern(usize, void);
     const Node = Pat.Node;
     var pat = Pat{};
-    defer pat.deleteRec(testing.allocator);
+    defer pat.deleteChildren(testing.allocator);
 
     _ = try pat.insert(
         testing.allocator,
@@ -923,7 +920,7 @@ test "compile: nested" {
 test "Memory: simple" {
     const Pat = AutoPattern(usize, void);
     var pat = try Pat.ofVal(testing.allocator, 123);
-    defer pat.deleteRec(testing.allocator);
+    defer pat.deleteChildren(testing.allocator);
 }
 
 test "Memory: nesting" {
@@ -931,12 +928,10 @@ test "Memory: nesting" {
     const Node = Pat.Node;
     var nested_pat = try Pat.create(testing.allocator);
     defer nested_pat.delete(testing.allocator);
-
     nested_pat.sub_pat = try Pat.create(testing.allocator);
 
-    // defer nested_pat.sub_pat.?.delete(testing.allocator);
-
     var val = try Node.createKey(testing.allocator, "beautiful");
+
     _ = try nested_pat.sub_pat.?.insertKeys(
         testing.allocator,
         &.{ "cherry", "blossom", "tree" },
@@ -947,5 +942,29 @@ test "Memory: nesting" {
 test "Memory: idempotency" {
     const Pat = AutoPattern(usize, void);
     var pat = Pat{};
-    defer pat.deleteRec(testing.allocator);
+    defer pat.deleteChildren(testing.allocator);
+}
+
+test "Memory: nested pattern" {
+    const Pat = AutoStringPattern(void);
+    const Node = Pat.Node;
+    _ = Node;
+    // defer val_pat.delete(testing.allocator);
+    var pat = try Pat.create(testing.allocator);
+    defer pat.delete(testing.allocator);
+    var val_pat = try Pat.ofVal(testing.allocator, "Val");
+    // Values won't be deleted recursively in `pat.delete`, so we need to delete
+    // this too
+    defer val_pat.deleteChildren(testing.allocator);
+
+    // No need to free this, because key pointers are deleted
+    var nested_pat = try Pat.ofVal(testing.allocator, "Asdf");
+
+    try pat.pat_map.put(testing.allocator, &nested_pat, val_pat);
+
+    _ = try val_pat.insertKeys(
+        testing.allocator,
+        &.{ "cherry", "blossom", "tree" },
+        null,
+    );
 }
