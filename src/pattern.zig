@@ -19,6 +19,11 @@ pub fn AutoPattern(
     comptime Key: type,
     comptime Var: type,
 ) type {
+    if (Key == []const u8)
+        @compileError(
+            \\Cannot make a pattern automatically from []const u8,
+            \\please use AutoStringPattern instead.
+        );
     return PatternWithContext(Key, Var, AutoContext(Key), AutoContext(Var));
 }
 
@@ -81,9 +86,6 @@ pub fn PatternWithContext(
     return struct {
         pub const Self = @This();
 
-        /// The type of apps
-        pub const Apps = []const Node;
-
         const NodeCtx = struct {
             pub fn hash(self: @This(), node: *Node) u32 {
                 _ = self;
@@ -144,9 +146,11 @@ pub fn PatternWithContext(
 
             pub const hash = util.hashFromHasherUpdate(VarPat);
 
-            pub fn delete(self: VarPat, allocator: Allocator) void {
+            pub fn delete(self: *VarPat, allocator: Allocator) void {
                 if (self.next) |next|
                     next.delete(allocator);
+
+                allocator.destroy(self);
             }
 
             pub fn hasherUpdate(self: VarPat, hasher: anytype) void {
@@ -194,7 +198,7 @@ pub fn PatternWithContext(
         pub const Node = union(enum) {
             key: Key,
             @"var": Var,
-            apps: Apps,
+            apps: []const Node,
             pat: Self,
 
             pub const VarRewriteMap = std.ArrayHashMapUnmanaged(
@@ -204,14 +208,14 @@ pub fn PatternWithContext(
                 true,
             );
 
-            pub fn delete(self: Node, allocator: Allocator) void {
-                switch (self) {
-                    .apps => |apps| for (apps) |app|
-                        app.delete(allocator),
-                    .@"var" => |v| v.delete(allocator),
-                    .key => {},
-                    .pat => |p| p.delete(allocator),
+            pub fn delete(self: *Node, allocator: Allocator) void {
+                switch (self.*) {
+                    .key, .@"var" => {},
+                    .pat => |*p| p.delete(allocator),
+                    .apps => |apps| for (apps) |*app|
+                        @constCast(app).delete(allocator),
                 }
+                allocator.destroy(self);
             }
 
             pub const hash = util.hashFromHasherUpdate(Node);
@@ -257,7 +261,7 @@ pub fn PatternWithContext(
                 return .{ .key = key };
             }
 
-            pub fn ofApps(apps: Apps) Node {
+            pub fn ofApps(apps: []const Node) Node {
                 return .{ .apps = apps };
             }
 
@@ -307,10 +311,10 @@ pub fn PatternWithContext(
             }
 
             fn rewrite(
-                apps: Apps,
+                apps: []const Node,
                 allocator: Allocator,
                 var_map: VarRewriteMap,
-            ) Allocator.Error!Apps {
+            ) Allocator.Error![]Node {
                 _ = var_map;
                 _ = allocator;
                 _ = apps;
@@ -384,29 +388,46 @@ pub fn PatternWithContext(
             return Self{};
         }
 
-        pub fn ofVal(allocator: Allocator, maybe_val: ?Key) Allocator.Error!Self {
+        pub fn ofVal(
+            allocator: Allocator,
+            optional_val: ?Key,
+        ) Allocator.Error!Self {
             return Self{
-                .node = if (maybe_val) |val|
+                .node = if (optional_val) |val|
                     try Node.createKey(allocator, val)
                 else
                     null,
             };
         }
 
-        pub fn delete(pat: Self, allocator: Allocator) void {
-            if (pat.var_pat) |var_pat|
+        /// Frees all memory recursively, leaving the Pattern in an undefined state.
+        /// The `self` pointer must have been allocated with `allocator`.
+        pub fn delete(self: *Self, allocator: Allocator) void {
+            self.deleteRec(allocator);
+            allocator.destroy(self);
+        }
+
+        pub fn deleteRec(self: *Self, allocator: Allocator) void {
+            if (self.var_pat) |*var_pat|
                 var_pat.delete(allocator);
 
-            for (pat.map.values()) |p|
+            for (self.map.values()) |*p|
+                p.deleteRec(allocator);
+
+            self.map.deinit(allocator);
+
+            for (self.pat_map.keys()) |*p|
+                p.*.delete(allocator);
+
+            for (self.pat_map.values()) |*p|
                 p.delete(allocator);
 
-            for (pat.pat_map.values()) |p|
-                p.delete(allocator);
+            self.pat_map.deinit(allocator);
 
-            if (pat.node) |node|
+            if (self.node) |node|
                 node.delete(allocator);
 
-            if (pat.sub_pat) |sub_pat|
+            if (self.sub_pat) |sub_pat|
                 sub_pat.delete(allocator);
         }
 
@@ -416,24 +437,24 @@ pub fn PatternWithContext(
             return @truncate(hasher.final());
         }
 
-        pub fn hasherUpdate(pat: Self, hasher: anytype) void {
-            if (pat.var_pat) |var_pat|
+        pub fn hasherUpdate(self: Self, hasher: anytype) void {
+            if (self.var_pat) |var_pat|
                 var_pat.hasherUpdate(hasher);
 
-            for (pat.map.keys()) |key|
+            for (self.map.keys()) |key|
                 hasher.update(&mem.toBytes(KeyCtx.hash(undefined, key)));
-            for (pat.pat_map.keys()) |p|
+            for (self.pat_map.keys()) |p|
                 p.hasherUpdate(hasher);
 
-            for (pat.map.values()) |p|
+            for (self.map.values()) |p|
                 p.hasherUpdate(hasher);
-            for (pat.pat_map.values()) |p|
+            for (self.pat_map.values()) |p|
                 p.hasherUpdate(hasher);
 
-            if (pat.node) |node|
+            if (self.node) |node|
                 hasher.update(&mem.toBytes(node.hash()));
 
-            if (pat.sub_pat) |sub_pat|
+            if (self.sub_pat) |sub_pat|
                 sub_pat.hasherUpdate(hasher);
         }
 
@@ -508,7 +529,7 @@ pub fn PatternWithContext(
         // pub fn matchPrefix(
         //     pat: *Self,
         //     allocator: Allocator,
-        //     apps: Apps,
+        //     apps: []const Node,
         // ) Allocator.Error!PrefixResult {
         // }
 
@@ -521,7 +542,7 @@ pub fn PatternWithContext(
         /// last pat will be returned.
         pub fn matchExactPrefix(
             pat: *Self,
-            apps: Apps,
+            apps: []const Node,
         ) PrefixResult {
             var current = pat;
             // Follow the longest branch that exists
@@ -615,29 +636,35 @@ pub fn PatternWithContext(
                 null;
         }
 
-        pub fn insert(
+        pub fn insertKeys(
             self: *Self,
             allocator: Allocator,
-            apps: Apps,
-            node: ?*Node,
+            keys: []const Key,
+            optional_node: ?*Node,
         ) Allocator.Error!*Self {
-            var result = try self.getOrPut(allocator, apps);
-            result.node_ptr.* = node;
-            return result.pat_ptr;
-        }
+            const apps = try allocator.alloc(Node, keys.len);
+            defer allocator.free(apps);
+            for (apps, 0..) |*node, i|
+                node.* = Node.ofLit(keys[i]);
 
-        /// Convenience method, wraps the value in a Node.
-        pub fn insertVal(
-            self: *Self,
-            allocator: Allocator,
-            apps: Apps,
-            maybe_val: ?Key,
-        ) Allocator.Error!*Self {
             return self.insert(
                 allocator,
                 apps,
-                if (maybe_val) |val| try Node.createKey(allocator, val) else null,
+                optional_node,
             );
+        }
+
+        pub fn insert(
+            self: *Self,
+            allocator: Allocator,
+            apps: []const Node,
+            optional_node: ?*Node,
+        ) Allocator.Error!*Self {
+            var result = try self.getOrPut(allocator, apps);
+            if (optional_node) |node|
+                result.node_ptr.* = node;
+
+            return result.pat_ptr;
         }
 
         /// Similar to ArrayHashMap's type, but the index is specific to the
@@ -655,7 +682,7 @@ pub fn PatternWithContext(
         pub fn getOrPut(
             pat: *Self,
             allocator: Allocator,
-            apps: Apps,
+            apps: []const Node,
         ) Allocator.Error!GetOrPutResult {
             const prefix = pat.matchExactPrefix(apps);
             var current = prefix.pat_ptr;
@@ -804,16 +831,16 @@ test "Pattern: eql" {
     var p2 = Pat{};
 
     var val = Node{ .key = "123" };
-    var val2 = "123";
+    var val2 = Node{ .key = "123" };
     // Reverse order because patterns are values, not references
     try p2.map.put(allocator, "Bb", Pat{ .node = &val });
     try p1.map.put(allocator, "Aa", p2);
 
     var p_insert = Pat{};
-    _ = try p_insert.insertVal(allocator, &.{
+    _ = try p_insert.insert(allocator, &.{
         Node{ .key = "Aa" },
         Node{ .key = "Bb" },
-    }, val2);
+    }, &val2);
     try p1.write(stderr);
     try stderr.writeByte('\n');
     try p_insert.write(stderr);
@@ -830,7 +857,7 @@ test "should behave like a set when given void" {
 
     const nodes1 = &.{ Node{ .key = 123 }, Node{ .key = 456 } };
     var pat = Pat{};
-    _ = try pat.insertVal(al, nodes1, null);
+    _ = try pat.insert(al, nodes1, null);
 
     // TODO: add to a test for insert
     // var expected = try Pat{};
@@ -866,8 +893,17 @@ test "insert single lit" {}
 
 test "insert multiple lits" {
     // Multiple keys
-    // try pat.insert(&.{ 1, 2, 3 }, {}, al);
-    // try testing.expect(pat.kind.map.contains(1));
+    const Pat = AutoPattern(usize, void);
+    const Node = Pat.Node;
+    var pat = Pat{};
+    defer pat.deleteRec(testing.allocator);
+
+    _ = try pat.insert(
+        testing.allocator,
+        &.{ Node{ .key = 1 }, Node{ .key = 2 }, Node{ .key = 3 } },
+        null,
+    );
+    try testing.expect(pat.map.contains(1));
 }
 
 test "compile: nested" {
@@ -882,4 +918,34 @@ test "compile: nested" {
     // const Pat2 = Pat{};
     // Pat2.pat_map.put( &pat, 456 };
     // _ = Pat2;
+}
+
+test "Memory: simple" {
+    const Pat = AutoPattern(usize, void);
+    var pat = try Pat.ofVal(testing.allocator, 123);
+    defer pat.deleteRec(testing.allocator);
+}
+
+test "Memory: nesting" {
+    const Pat = AutoStringPattern(void);
+    const Node = Pat.Node;
+    var nested_pat = try Pat.create(testing.allocator);
+    defer nested_pat.delete(testing.allocator);
+
+    nested_pat.sub_pat = try Pat.create(testing.allocator);
+
+    // defer nested_pat.sub_pat.?.delete(testing.allocator);
+
+    var val = try Node.createKey(testing.allocator, "beautiful");
+    _ = try nested_pat.sub_pat.?.insertKeys(
+        testing.allocator,
+        &.{ "cherry", "blossom", "tree" },
+        val,
+    );
+}
+
+test "Memory: idempotency" {
+    const Pat = AutoPattern(usize, void);
+    var pat = Pat{};
+    defer pat.deleteRec(testing.allocator);
 }
