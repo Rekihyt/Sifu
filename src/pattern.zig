@@ -87,14 +87,14 @@ pub fn PatternWithContext(
         pub const Self = @This();
 
         const NodeCtx = struct {
-            pub fn hash(self: @This(), node: *Node) u32 {
+            pub fn hash(self: @This(), node: *const Node) u32 {
                 _ = self;
                 return node.*.hash();
             }
             pub fn eql(
                 self: @This(),
-                node: *Self,
-                other: *Self,
+                node: *const Self,
+                other: *const Self,
                 b_index: usize,
             ) bool {
                 _ = b_index;
@@ -149,14 +149,12 @@ pub fn PatternWithContext(
             pub fn delete(self: *VarPat, allocator: Allocator) void {
                 if (self.next) |next|
                     next.delete(allocator);
-
-                allocator.destroy(self);
             }
 
             pub fn hasherUpdate(self: VarPat, hasher: anytype) void {
                 hasher.update(&mem.toBytes(VarCtx.hash(undefined, self.@"var")));
                 if (self.next) |next|
-                    next.hasherUpdate(hasher);
+                    next.*.hasherUpdate(hasher);
             }
 
             pub fn eql(
@@ -180,11 +178,15 @@ pub fn PatternWithContext(
             pub fn writeIndent(
                 self: VarPat,
                 writer: anytype,
-                indent: usize,
+                optional_indent: ?usize,
             ) !void {
+                for (0..optional_indent orelse 0) |_|
+                    try writer.writeByte(' ');
+
                 try util.genericWrite(self.@"var", writer);
+
                 if (self.next) |next|
-                    try next.writeIndent(writer, indent);
+                    try next.writeIndent(writer, optional_indent);
             }
         };
 
@@ -209,13 +211,21 @@ pub fn PatternWithContext(
             );
 
             pub fn delete(self: *Node, allocator: Allocator) void {
+                self.deleteChildren(allocator);
+                allocator.destroy(self);
+            }
+
+            pub fn deleteChildren(self: *Node, allocator: Allocator) void {
                 switch (self.*) {
                     .key, .@"var" => {},
-                    .pat => |*p| p.delete(allocator),
-                    .apps => |apps| for (apps) |*app|
-                        @constCast(app).delete(allocator),
+                    .pat => |*p| p.deleteChildren(allocator),
+                    .apps => |apps| {
+                        for (apps) |*app|
+                            @constCast(app).deleteChildren(allocator);
+
+                        allocator.free(apps);
+                    },
                 }
-                allocator.destroy(self);
             }
 
             pub const hash = util.hashFromHasherUpdate(Node);
@@ -274,6 +284,7 @@ pub fn PatternWithContext(
                 return node;
             }
 
+            /// Lifetime of `apps` must be longer than this Node.
             pub fn createApps(
                 allocator: Allocator,
                 apps: []const Node,
@@ -323,19 +334,22 @@ pub fn PatternWithContext(
             fn writeSExp(
                 self: Node,
                 writer: anytype,
+                optional_indent: ?usize,
             ) !void {
+                if (optional_indent) |indent| for (0..indent) |_|
+                    try writer.writeByte(' ');
                 switch (self) {
                     .apps => |apps| {
                         try writer.writeByte('(');
                         for (apps) |app| {
-                            try app.writeSExp(writer);
+                            try app.writeSExp(writer, optional_indent);
                             try writer.writeByte(' ');
                         }
                         try writer.writeByte(')');
                     },
                     .@"var" => |@"var"| _ = try util.genericWrite(@"var", writer),
                     .key => |key| _ = try util.genericWrite(key, writer),
-                    .pat => |pat| try pat.write(writer),
+                    .pat => |pat| try pat.writeIndent(writer, optional_indent),
                 }
             }
 
@@ -343,17 +357,33 @@ pub fn PatternWithContext(
                 self: Node,
                 writer: anytype,
             ) !void {
+                return self.writeIndent(writer, 0);
+            }
+
+            pub fn writeIndent(
+                self: Node,
+                writer: anytype,
+                optional_indent: ?usize,
+            ) !void {
                 switch (self) {
                     .apps => |apps| for (apps) |app| {
-                        try app.writeSExp(writer);
+                        try app.writeSExp(writer, optional_indent);
                         try writer.writeByte(' ');
                     },
-                    else => try self.writeSExp(writer),
+                    else => try self.writeSExp(writer, optional_indent),
                 }
             }
         };
 
+        /// The results of matching a pattern exactly (vars are matched literally
+        /// instead of by building up a tree of their possible values)
         pub const PrefixResult = struct {
+            len: usize,
+            pat_ptr: *Self,
+        };
+
+        /// The result of matching a pattern, where vars match all possible values. The result is a new
+        pub const MatchResult = struct {
             len: usize,
             pat_ptr: *Self,
         };
@@ -383,10 +413,6 @@ pub fn PatternWithContext(
         /// A null node represents an undefined pattern, for example in `Foo
         /// Bar -> 123`, the node at `Foo` would be null.
         node: ?*Node = null,
-
-        pub fn empty() Self {
-            return Self{};
-        }
 
         pub fn ofVal(
             allocator: Allocator,
@@ -513,22 +539,25 @@ pub fn PatternWithContext(
 
         pub fn create(allocator: Allocator) !*Self {
             const result = try allocator.create(Self);
-            result.* = Self.empty();
+            result.* = Self{};
             return result;
         }
 
-        // /// - Any Node matches a var pattern including a var
-        // /// - A var Node doesn't match a non-var pattern (var matching is one
-        // ///    way)
-        // /// - A literal Node that matches a literal-var pattern matches the
-        // ///    literal part, not the var
+        /// - Any Node matches a var pattern including a var
+        /// - A var Node doesn't match a non-var pattern (var matching is one
+        ///    way)
+        /// - A literal Node that matches a literal-var pattern matches the
+        ///    literal part, not the var
         // TODO: update var map
-        // pub fn matchPrefix(
-        //     pat: *Self,
-        //     allocator: Allocator,
-        //     apps: []const Node,
-        // ) Allocator.Error!PrefixResult {
-        // }
+        pub fn matchPrefix(
+            pat: *Self,
+            allocator: Allocator,
+            apps: []const Node,
+        ) Allocator.Error!PrefixResult {
+            _ = apps;
+            _ = allocator;
+            _ = pat;
+        }
 
         /// Return a pointer to the last pattern in `pat` after the longest path
         /// matching `apps`. This is an exact match, so variables only match
@@ -637,7 +666,7 @@ pub fn PatternWithContext(
             self: *Self,
             allocator: Allocator,
             keys: []const Key,
-            optional_node: ?*Node,
+            optional_node: ?Node,
         ) Allocator.Error!*Self {
             const apps = try allocator.alloc(Node, keys.len);
             defer allocator.free(apps);
@@ -655,12 +684,14 @@ pub fn PatternWithContext(
             self: *Self,
             allocator: Allocator,
             apps: []const Node,
-            optional_node: ?*Node,
+            optional_node: ?Node,
         ) Allocator.Error!*Self {
             var result = try self.getOrPut(allocator, apps);
-            if (optional_node) |node|
-                result.node_ptr.* = node;
-
+            if (optional_node) |node| {
+                const node_ptr = try allocator.create(Node);
+                node_ptr.* = node;
+                result.node_ptr.* = node_ptr;
+            }
             return result.pat_ptr;
         }
 
@@ -696,17 +727,21 @@ pub fn PatternWithContext(
                     current = put_result.value_ptr;
                     if (!put_result.found_existing) {
                         found_existing = false;
-                        current.* = Self.empty();
+                        current.* = Self{};
                     }
                 },
                 .@"var" => |v| {
                     // TODO: fix overwriting an old var_pat's next
                     // pattern, and instead insert into it if it exists
-                    const next = try Self.create(allocator);
-                    current.var_pat = .{
-                        .@"var" = v,
-                        .next = next,
+                    var var_pat = current.var_pat orelse
+                        VarPat{ .@"var" = v };
+                    const next = var_pat.next orelse blk: {
+                        found_existing = false;
+                        var_pat.next = try Self.create(allocator);
+                        break :blk current.sub_pat.?;
                     };
+                    var_pat.next = next;
+                    current.var_pat = var_pat;
                     current = next;
                 },
                 .apps => |sub_apps| {
@@ -727,7 +762,7 @@ pub fn PatternWithContext(
                     // here instead of a *Pat, so subapps wraps everything into
                     // a `Node.pat`.
                     const next_pat: *Node = put_result.node_ptr.* orelse
-                        try Node.createPat(allocator, Self.empty());
+                        try Node.createPat(allocator, Self{});
 
                     // next_pat.write(stderr) catch unreachable;
 
@@ -743,7 +778,7 @@ pub fn PatternWithContext(
                     // Initialize it if not already
                     if (!put_result.found_existing) {
                         found_existing = false;
-                        current.* = Self.empty();
+                        current.* = Self{};
                     }
                 },
             };
@@ -756,52 +791,97 @@ pub fn PatternWithContext(
         }
 
         /// Pretty print a pattern
-        pub fn write(self: Self, writer: anytype) !void {
+        pub fn pretty(self: Self, writer: anytype) !void {
             try self.writeIndent(writer, 0);
         }
 
-        fn writeIndent(
-            self: Self,
-            writer: anytype,
-            indent: usize,
-        ) @TypeOf(writer).Error!void {
+        pub fn write(self: Self, writer: anytype) !void {
             try writer.writeByte('|');
             if (self.node) |node| {
-                try node.write(writer);
+                try node.writeIndent(writer, null);
             }
             try writer.writeAll("| {");
 
-            try writeIndentMap(self.map, writer, indent);
+            try writeMap(self.map, writer, null);
             if (self.var_pat) |var_pat|
-                try var_pat.writeIndent(writer, indent + 4);
+                try var_pat.writeIndent(writer, null);
 
             if (self.sub_pat) |sub_pat| {
-                for (0..indent + 4) |_|
+
+                // print("Subpat: {}\n", .{sub_pat.map.count()});
+                try sub_pat.write(writer);
+            }
+            try writer.writeAll("}");
+        }
+
+        pub const indent_increment = 2;
+        fn writeIndent(
+            self: Self,
+            writer: anytype,
+            optional_indent: ?usize,
+        ) @TypeOf(writer).Error!void {
+            if (self.node) |node| {
+                try writer.writeAll("| ");
+                try node.writeIndent(writer, null);
+                try writer.writeAll("| ");
+            }
+
+            try writer.writeByte('{');
+            try writer.writeAll(
+                if (optional_indent) |_|
+                    if (self.map.count() > 0)
+                        "\n"
+                    else
+                        ""
+                else
+                    " ",
+            );
+
+            const optional_indent_inc = if (optional_indent) |indent|
+                indent + indent_increment
+            else
+                null;
+
+            try writeMap(self.map, writer, optional_indent_inc);
+            if (self.var_pat) |var_pat| {
+                for (0..optional_indent orelse 0) |_|
+                    try writer.writeByte(' ');
+                try var_pat.writeIndent(writer, optional_indent_inc);
+            }
+            if (self.sub_pat) |sub_pat| {
+                for (0..optional_indent_inc orelse 0) |_|
                     try writer.writeByte(' ');
 
                 // print("Subpat: {}\n", .{sub_pat.map.count()});
-                try sub_pat.writeIndent(writer, indent + 4);
+                try sub_pat.writeIndent(writer, optional_indent_inc);
             }
-            for (0..indent) |_|
+            for (0..optional_indent orelse 1) |_|
                 try writer.writeByte(' ');
 
             try writer.writeByte('}');
+            try writer.writeByte(if (optional_indent) |_| '\n' else ' ');
         }
 
-        fn writeIndentMap(
+        fn writeMap(
             map: anytype,
             writer: anytype,
-            indent: usize,
+            optional_indent: ?usize,
         ) @TypeOf(writer).Error!void {
             var iter = map.iterator();
             while (iter.next()) |entry| {
-                for (0..indent + 4) |_|
+                for (0..optional_indent orelse 0) |_|
                     try writer.writeByte(' ');
 
                 const key = entry.key_ptr.*;
                 _ = try util.genericWrite(key, writer);
                 try writer.writeAll(" -> ");
-                try entry.value_ptr.writeIndent(writer, indent + 4);
+                try entry.value_ptr.writeIndent(
+                    writer,
+                    if (optional_indent) |indent|
+                        indent + indent_increment
+                    else
+                        null,
+                );
             }
         }
     };
@@ -837,7 +917,7 @@ test "Pattern: eql" {
     _ = try p_insert.insert(allocator, &.{
         Node{ .key = "Aa" },
         Node{ .key = "Bb" },
-    }, &val2);
+    }, val2);
     try p1.write(stderr);
     try stderr.writeByte('\n');
     try p_insert.write(stderr);
@@ -930,12 +1010,10 @@ test "Memory: nesting" {
     defer nested_pat.delete(testing.allocator);
     nested_pat.sub_pat = try Pat.create(testing.allocator);
 
-    var val = try Node.createKey(testing.allocator, "beautiful");
-
     _ = try nested_pat.sub_pat.?.insertKeys(
         testing.allocator,
         &.{ "cherry", "blossom", "tree" },
-        val,
+        Node.ofLit("beautiful"),
     );
 }
 

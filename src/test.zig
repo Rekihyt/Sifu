@@ -108,7 +108,7 @@ test "Pattern: simple vals" {
     try testing.expect(!expected.eql(expected_a));
 
     try testing.expect(!expected.eql(actual));
-    _ = try actual.insert(allocator, key, &node);
+    _ = try actual.insert(allocator, key, node);
     try testing.expect(expected.eql(actual));
 
     // TODO: match patterns instead
@@ -131,7 +131,7 @@ test "Pattern: simple vals" {
         .map.put(allocator, token_bb2, Pat{ .node = &node2 });
 
     try testing.expect(!expected.eql(actual));
-    _ = try actual.insert(allocator, key2, &node2);
+    _ = try actual.insert(allocator, key2, node2);
 
     try testing.expect(expected.eql(actual));
     try testing.expectEqual(@as(?*Pat.Node, &node), actual.matchExact(key));

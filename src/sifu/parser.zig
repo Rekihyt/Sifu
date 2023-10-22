@@ -48,14 +48,15 @@ pub fn parse(allocator: Allocator, lexer: *Lexer, reader: anytype) !?Ast {
     var result = try parseUntil(allocator, lexer, reader, &found_sep, null) orelse
         return null;
 
-    return Ast{ .apps = try result.toOwnedSlice(allocator) };
+    const apps = try result.toOwnedSlice(allocator);
+    try stderr.print("New app ptr: {*}, len: {}\n", .{ apps.ptr, apps.len });
+    return Ast{ .apps = apps };
 }
 
-/// Parse until sep is encountered, or a newline. The `lexer` should be a
-/// mutable instance of `Lexer()`.
+/// Parse until sep is encountered, or a newline.
 ///
 /// Memory can be freed by using an arena allocator, or walking the tree and
-/// freeing each app.
+/// freeing each app. Does not allocate on error/null.
 /// Returns:
 /// - true if sep was found
 /// - false if sep wasn't found, but something was parsed
@@ -106,14 +107,18 @@ fn parseUntil(
 
                     // TODO: fix parsing nested patterns with comma seperators
                     if (nested) |*nested_apps| {
+                        try stderr.print("Nested Pat: {?}\n", .{matched});
+                        for (nested_apps.items) |na| {
+                            try stderr.writeAll("Children: ");
+                            try na.write(stderr);
+                        }
                         const asts = nested_apps.items;
-                        _ = if (asts.len > 0 and
+                        _ = if (asts.len > 0 and asts[0] == .key and
                             mem.eql(u8, asts[0].key.lit, "->"))
-                            try pat.insert(allocator, asts[1].apps, &asts[2])
+                            try pat.insert(allocator, asts[1].apps, asts[2])
                         else
                             try pat.insert(allocator, asts, null);
                     }
-                    try stderr.print("Nested Pat: {?}\n", .{matched});
                     try result.append(
                         allocator,
                         Ast{ .pat = pat },
@@ -528,14 +533,25 @@ test "App: simple newlines" {
     , expecteds);
 }
 
-test "Apps: pattern" {
+test "Apps: pattern eql hash" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var lexer = Lexer.init(allocator);
-    var fbs = io.fixedBufferStream("{1,2,3}");
+    var lexer1 = Lexer.init(allocator);
+    var lexer2 = Lexer.init(allocator);
+    var lexer3 = Lexer.init(allocator);
+    var fbs1 = io.fixedBufferStream("{1,{2},3  -> A}");
+    var fbs2 = io.fixedBufferStream("{1, {2}, 3 -> A}");
+    var fbs3 = io.fixedBufferStream("{1, {2}, 3 -> B}");
 
-    const ast = try parse(allocator, &lexer, fbs.reader());
-    _ = ast;
+    const ast1 = (try parse(allocator, &lexer1, fbs1.reader())).?;
+    const ast2 = (try parse(allocator, &lexer2, fbs2.reader())).?;
+    const ast3 = (try parse(allocator, &lexer3, fbs3.reader())).?;
     // try testing.expectEqualStrings(ast.?.apps[0].pat, "Asdf");
+    try testing.expect(ast1.eql(ast2));
+    try testing.expectEqual(ast1.hash(), ast2.hash());
+    try testing.expect(!ast1.eql(ast3));
+    try testing.expect(!ast2.eql(ast3));
+    try testing.expect(ast1.hash() != ast3.hash());
+    try testing.expect(ast2.hash() != ast3.hash());
 }

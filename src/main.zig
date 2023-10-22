@@ -18,12 +18,21 @@ pub fn main() !void {
     // var gpa_alloc = std.heap.GeneralPurposeAllocator(.{}){};
     // defer _ = gpa_alloc.deinit();
     // const gpa = gpa_alloc.allocator();
-    var arena = ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    var token_arena = ArenaAllocator.init(std.heap.page_allocator);
+    defer token_arena.deinit();
+    var gpa =
+        std.heap.GeneralPurposeAllocator(
+        .{ .safety = true, .verbose_log = true },
+    ){};
+    // var arena = ArenaAllocator.init(gpa.allocator());
+    // defer arena.deinit();
+    // const allocator = arena.allocator();
+    const allocator = gpa.allocator();
+    defer _ = gpa.deinit();
 
     const stdin = io.getStdIn().reader();
     const stdout = io.getStdOut().writer();
+    const stderr = io.getStdErr().writer();
     var buff_writer = io.bufferedWriter(stdout);
     const buff_stdout = buff_writer.writer();
     const buff_size = 4096;
@@ -33,23 +42,30 @@ pub fn main() !void {
     // TODO: Fix repl specific behavior
     //    - restart parsing after 2 newlines
     //    - exit on EOF
-    var lexer = Lexer.init(allocator);
+    var lexer = Lexer.init(token_arena.allocator());
     var repl_pat = Pat{};
+    defer repl_pat.deleteChildren(allocator);
     while (stdin.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
         var fbs_reader = io.fixedBufferStream(fbs.getWritten());
         for (fbs_reader.getWritten()) |char| {
             // escape (from pressing alt+enter in most terminals)
             if (char == 0x1b) {}
         }
-        const ast = try parse(allocator, &lexer, fbs_reader.reader()) orelse
+        var parsed_ast = try parse(allocator, &lexer, fbs_reader.reader());
+        defer _ = gpa.detectLeaks();
+        defer if (parsed_ast) |*ast| {
+            ast.deleteChildren(allocator);
+        };
+        try stderr.writeAll("Parsed.\n");
+        const ast = parsed_ast orelse
             // Match the empty apps for just a newline
             if ((repl_pat.matchExactPrefix(&.{})).pat_ptr.node) |node|
             node.*
         else
             Ast.ofApps(&.{});
 
-        // try ast.write(buff_stdout);
-        // _ = try buff_writer.write("\n");
+        try ast.write(buff_stdout);
+        _ = try buff_writer.write("\n");
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
 
@@ -62,7 +78,7 @@ pub fn main() !void {
                     const result = try repl_pat.insert(
                         allocator,
                         apps[1].apps,
-                        try Ast.createApps(allocator, apps[2..]),
+                        Ast{ .apps = apps[2..] },
                     );
                     _ = result;
 
@@ -73,12 +89,12 @@ pub fn main() !void {
             }
             // If not inserting, then try to match the expression
             if (repl_pat.matchExact(apps)) |matched| {
-                try matched.write(buff_stdout);
+                try matched.writeIndent(buff_stdout, 0);
                 _ = try buff_writer.write("\n");
             } else print("No match\n", .{});
         }
 
-        try repl_pat.write(buff_stdout);
+        try repl_pat.pretty(buff_stdout);
         try buff_writer.flush();
         fbs.reset();
     } else |e| switch (e) {
