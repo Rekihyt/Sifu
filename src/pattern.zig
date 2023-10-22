@@ -444,11 +444,16 @@ pub fn PatternWithContext(
 
             for (self.pat_map.keys()) |*p|
                 p.*.deleteChildren(allocator);
+            // Pattern/Node values must be deleted because they are allocated
+            // recursively
+            for (self.pat_map.values()) |*p|
+                p.*.deleteChildren(allocator);
 
             self.pat_map.deinit(allocator);
 
             if (self.node) |node|
-                node.delete(allocator);
+                // Value nodes are not allocated recursively
+                allocator.destroy(node);
 
             if (self.sub_pat) |sub_pat|
                 sub_pat.delete(allocator);
@@ -687,10 +692,15 @@ pub fn PatternWithContext(
             optional_node: ?Node,
         ) Allocator.Error!*Self {
             var result = try self.getOrPut(allocator, apps);
+            // Always delete previous node
+            if (result.pat_ptr.node) |prev_node|
+                prev_node.delete(allocator);
+
             if (optional_node) |node| {
-                const node_ptr = try allocator.create(Node);
-                node_ptr.* = node;
-                result.node_ptr.* = node_ptr;
+                // TODO: check found existing
+                result.pat_ptr.node = try node.copy(allocator);
+                stderr.print("Node ptr: {*}\n", .{result.pat_ptr.node}) catch
+                    unreachable;
             }
             return result.pat_ptr;
         }
@@ -699,7 +709,6 @@ pub fn PatternWithContext(
         /// last hashmap.
         pub const GetOrPutResult = struct {
             pat_ptr: *Self,
-            node_ptr: *?*Node,
             found_existing: bool,
             index: usize,
         };
@@ -761,12 +770,12 @@ pub fn PatternWithContext(
                     // Because of the recursive type, we need to use a *Node
                     // here instead of a *Pat, so subapps wraps everything into
                     // a `Node.pat`.
-                    const next_pat: *Node = put_result.node_ptr.* orelse
+                    const next_pat: *Node = put_result.pat_ptr.node orelse
                         try Node.createPat(allocator, Self{});
 
                     // next_pat.write(stderr) catch unreachable;
 
-                    put_result.node_ptr.* = next_pat;
+                    put_result.pat_ptr.node = next_pat;
                     current = &next_pat.pat;
                 },
                 .pat => |*p| {
@@ -784,7 +793,6 @@ pub fn PatternWithContext(
             };
             return GetOrPutResult{
                 .pat_ptr = current,
-                .node_ptr = &current.node,
                 .found_existing = found_existing,
                 .index = 0, // TODO
             };
