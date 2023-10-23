@@ -15,6 +15,9 @@ const mem = std.mem;
 const print = std.debug.print;
 
 pub fn main() !void {
+    // @compileLog(@sizeOf(Pat));
+    // @compileLog(@sizeOf(Pat.Node));
+
     var token_arena = ArenaAllocator.init(std.heap.page_allocator);
     defer token_arena.deinit();
     const token_allocator = token_arena.allocator();
@@ -28,11 +31,10 @@ pub fn main() !void {
 
     var parser_gpa =
         std.heap.GeneralPurposeAllocator(
-        .{ .safety = true, .verbose_log = true },
+        .{ .safety = true, .verbose_log = false },
     ){};
     defer _ = parser_gpa.deinit();
     const parser_allocator = parser_gpa.allocator();
-    _ = parser_allocator;
 
     const stdin = io.getStdIn().reader();
     const stdout = io.getStdOut().writer();
@@ -49,7 +51,7 @@ pub fn main() !void {
     var lexer = Lexer.init(token_allocator);
     var repl_pat = Pat{};
     defer repl_pat.deleteChildren(allocator);
-    try stderr.print("Repl Pat Address: {*}", .{&repl_pat});
+    // try stderr.print("Repl Pat Address: {*}", .{&repl_pat});
 
     while (stdin.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
         var fbs_reader = io.fixedBufferStream(fbs.getWritten());
@@ -57,12 +59,10 @@ pub fn main() !void {
             // escape (from pressing alt+enter in most terminals)
             if (char == 0x1b) {}
         }
-        try stderr.print("Allocated: {}\n", .{gpa.total_requested_bytes});
-        var parsed_ast = try parse(token_allocator, &lexer, fbs_reader.reader());
+        var parsed_ast = try parse(parser_allocator, &lexer, fbs_reader.reader());
         // defer _ = parser_gpa.detectLeaks();
         defer if (parsed_ast) |*ast| {
-            _ = ast;
-            // ast.deleteChildren(token_allocator);
+            ast.deleteChildren(parser_allocator);
         };
         try stderr.writeAll("Parsed.\n");
         const ast = parsed_ast orelse
@@ -77,7 +77,6 @@ pub fn main() !void {
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
 
-        @compileLog(@sizeOf(Pat));
         const apps = ast.apps;
         if (ast.apps.len > 0) blk: {
             switch (apps[0]) {
@@ -87,7 +86,8 @@ pub fn main() !void {
                         apps[1].apps,
                         Ast{ .apps = apps[2..] },
                     );
-                    try stderr.print("New pat ptr: {*}\n", .{result});
+                    _ = result;
+                    // try stderr.print("New pat ptr: {*}\n", .{result});
                     break :blk;
                 },
                 else => {},

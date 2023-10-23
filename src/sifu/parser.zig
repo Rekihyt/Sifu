@@ -49,7 +49,7 @@ pub fn parse(allocator: Allocator, lexer: *Lexer, reader: anytype) !?Ast {
         return null;
 
     const apps = try result.toOwnedSlice(allocator);
-    try stderr.print("New app ptr: {*}, len: {}\n", .{ apps.ptr, apps.len });
+    // try stderr.print("New app ptr: {*}, len: {}\n", .{ apps.ptr, apps.len });
     return Ast{ .apps = apps };
 }
 
@@ -107,6 +107,7 @@ fn parseUntil(
 
                     // TODO: fix parsing nested patterns with comma seperators
                     if (nested) |*nested_apps| {
+                        defer nested_apps.deinit(allocator);
                         try stderr.print("Nested Pat: {?}\n", .{matched});
                         for (nested_apps.items) |na| {
                             try stderr.writeAll("Children: ");
@@ -119,10 +120,7 @@ fn parseUntil(
                         else
                             try pat.insert(allocator, asts, null);
                     }
-                    try result.append(
-                        allocator,
-                        Ast{ .pat = pat },
-                    );
+                    try result.append(allocator, try Ast.ofPat(allocator, pat));
                 },
                 else => try result.append(allocator, Ast.ofLit(token)),
             },
