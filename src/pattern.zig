@@ -11,9 +11,7 @@ const AutoContext = std.array_hash_map.AutoContext;
 const StringContext = std.array_hash_map.StringContext;
 const print = std.debug.print;
 
-// - refactor node/pat creation api to use pat instead of node
-// - convert hasherUpdate to hash and match the array_hash_map Context api
-// - add hash or hasherUpdate and eql / eql + b_index option
+// TODO - add regex-like variables for apps, such as zero-many, one-or-more, optional, etc.
 
 pub fn AutoPattern(
     comptime Key: type,
@@ -146,6 +144,17 @@ pub fn PatternWithContext(
 
             pub const hash = util.hashFromHasherUpdate(VarPat);
 
+            pub fn copy(self: VarPat, allocator: Allocator) !VarPat {
+                return VarPat{
+                    .@"var" = self.@"var",
+                    .next = if (self.next) |next| blk: {
+                        const next_ptr = try allocator.create(Self);
+                        next_ptr.* = try next.copy(allocator);
+                        break :blk next_ptr;
+                    } else null,
+                };
+            }
+
             pub fn delete(self: *VarPat, allocator: Allocator) void {
                 if (self.next) |next|
                     next.delete(allocator);
@@ -192,8 +201,8 @@ pub fn PatternWithContext(
 
         /// An Node is a single value or tree. Together, multiple Nodes are
         /// encoded in a pattern. In Sifu, it is also the structure given
-        /// to a source code entry (a `Node(Token)`). It infix, nesting, and
-        /// separator operators but does not differentiate between builtins.
+        /// to a source code entry (a `Node(Token)`). It encodes sequences, nesting, and
+        /// patterns.
         /// The `Key` is a custom type to allow storing of metainfo such as a
         /// position, and must implement `toString()` for pattern conversion. It
         /// could also be a simple type for optimization purposes.
@@ -201,7 +210,7 @@ pub fn PatternWithContext(
             key: Key,
             @"var": Var,
             apps: []const Node,
-            pat: Self,
+            pat: *Self,
 
             pub const VarRewriteMap = std.ArrayHashMapUnmanaged(
                 Var,
@@ -209,6 +218,23 @@ pub fn PatternWithContext(
                 VarCtx,
                 true,
             );
+
+            /// Performs a deep copy, resulting in a Node the same size as the
+            /// original.
+            /// The copy should be freed with `deleteChildren`.
+            pub fn copy(self: Node, allocator: Allocator) Allocator.Error!Node {
+                return switch (self) {
+                    .key, .@"var" => self,
+                    .pat => |p| Node{ .pat = try p.copy(allocator) },
+                    .apps => |apps| blk: {
+                        var apps_copy = try allocator.alloc(Node, apps.len);
+                        for (apps, apps_copy) |app, *app_copy|
+                            app_copy.* = try app.copy(allocator);
+
+                        break :blk Node.ofApps(apps_copy);
+                    },
+                };
+            }
 
             pub fn delete(self: *Node, allocator: Allocator) void {
                 self.deleteChildren(allocator);
@@ -412,7 +438,7 @@ pub fn PatternWithContext(
 
         /// A null node represents an undefined pattern, for example in `Foo
         /// Bar -> 123`, the node at `Foo` would be null.
-        node: ?*Node = null,
+        node: ?Node = null,
 
         pub fn ofVal(
             allocator: Allocator,
@@ -424,6 +450,40 @@ pub fn PatternWithContext(
                 else
                     null,
             };
+        }
+        pub fn copy(self: Self, allocator: Allocator) Allocator.Error!Self {
+            var result = Self{};
+            var map_iter = self.map.iterator();
+            while (map_iter.next()) |entry|
+                try result.map.putNoClobber(
+                    allocator,
+                    entry.key_ptr.*,
+                    try entry.value_ptr.copy(allocator),
+                );
+
+            var pat_map_iter = self.pat_map.iterator();
+            while (pat_map_iter.next()) |entry| {
+                const new_key_ptr = try allocator.create(Self);
+                new_key_ptr.* = try entry.key_ptr.*.copy(allocator);
+
+                try result.pat_map.putNoClobber(
+                    allocator,
+                    new_key_ptr,
+                    try entry.value_ptr.*.copy(allocator),
+                );
+            }
+            if (self.node) |node| {
+                result.node = try allocator.create(Node);
+                result.node.?.* = try node.copy(allocator);
+            }
+            if (self.sub_pat) |sub_pat| {
+                result.sub_pat = try allocator.create(Self);
+                result.sub_pat.?.* = try sub_pat.copy(allocator);
+            }
+            if (self.var_pat) |var_pat|
+                result.var_pat = try var_pat.copy(allocator);
+
+            return result;
         }
 
         /// Frees all memory recursively, leaving the Pattern in an undefined state.
@@ -442,18 +502,18 @@ pub fn PatternWithContext(
 
             self.map.deinit(allocator);
 
-            for (self.pat_map.keys()) |*p|
-                p.*.deleteChildren(allocator);
+            for (self.pat_map.keys()) |*pat|
+                pat.*.deleteChildren(allocator);
             // Pattern/Node values must be deleted because they are allocated
             // recursively
-            for (self.pat_map.values()) |*p|
-                p.*.deleteChildren(allocator);
+            for (self.pat_map.values()) |*pat|
+                pat.*.deleteChildren(allocator);
 
             self.pat_map.deinit(allocator);
 
             if (self.node) |node|
-                // Value nodes are not allocated recursively
-                allocator.destroy(node);
+                // Value nodes are allocated recursively
+                node.delete(allocator);
 
             if (self.sub_pat) |sub_pat|
                 sub_pat.delete(allocator);
@@ -667,6 +727,13 @@ pub fn PatternWithContext(
                 null;
         }
 
+        /// Add a node to the pattern by following `keys`, wrapping them into an
+        /// App of Nodes.
+        /// Allocations:
+        /// - The path followed by apps is allocated and copied recursively
+        /// - The node, if given, is allocated and copied recursively
+        /// Freeing should be done with `delete` or `deleteChildren`, depending
+        /// on how `self` was allocated
         pub fn insertKeys(
             self: *Self,
             allocator: Allocator,
@@ -685,6 +752,12 @@ pub fn PatternWithContext(
             );
         }
 
+        /// Add a node to the pattern by following `apps`.
+        /// Allocations:
+        /// - The path followed by apps is allocated and copied recursively
+        /// - The node, if given, is allocated and copied recursively
+        /// Freeing should be done with `delete` or `deleteChildren`, depending
+        /// on how `self` was allocated
         pub fn insert(
             self: *Self,
             allocator: Allocator,
@@ -692,16 +765,18 @@ pub fn PatternWithContext(
             optional_node: ?Node,
         ) Allocator.Error!*Self {
             var result = try self.getOrPut(allocator, apps);
-            // Always delete previous node
-            if (result.pat_ptr.node) |prev_node|
+            if (result.pat_ptr.node) |prev_node| {
                 prev_node.delete(allocator);
+            }
 
-            if (optional_node) |node| {
+            result.pat_ptr.node = if (optional_node) |node| blk: {
+                const new_node = try allocator.create(Node);
                 // TODO: check found existing
-                result.pat_ptr.node = try node.copy(allocator);
+                new_node.* = try node.copy(allocator);
                 stderr.print("Node ptr: {*}\n", .{result.pat_ptr.node}) catch
                     unreachable;
-            }
+                break :blk new_node;
+            } else null;
             return result.pat_ptr;
         }
 

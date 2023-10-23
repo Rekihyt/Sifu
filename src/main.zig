@@ -15,9 +15,6 @@ const mem = std.mem;
 const print = std.debug.print;
 
 pub fn main() !void {
-    // var gpa_alloc = std.heap.GeneralPurposeAllocator(.{}){};
-    // defer _ = gpa_alloc.deinit();
-    // const gpa = gpa_alloc.allocator();
     var token_arena = ArenaAllocator.init(std.heap.page_allocator);
     defer token_arena.deinit();
     const token_allocator = token_arena.allocator();
@@ -80,6 +77,7 @@ pub fn main() !void {
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
 
+        @compileLog(@sizeOf(Pat));
         const apps = ast.apps;
         if (ast.apps.len > 0) blk: {
             switch (apps[0]) {
@@ -87,7 +85,7 @@ pub fn main() !void {
                     const result = try repl_pat.insert(
                         allocator,
                         apps[1].apps,
-                        Ast{ .apps = allocator.dupe(apps[2..]) },
+                        Ast{ .apps = apps[2..] },
                     );
                     try stderr.print("New pat ptr: {*}\n", .{result});
                     break :blk;
