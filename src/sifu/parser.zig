@@ -48,9 +48,8 @@ pub fn parse(allocator: Allocator, lexer: *Lexer, reader: anytype) !?Ast {
     var result = try parseUntil(allocator, lexer, reader, &found_sep, null) orelse
         return null;
 
-    const apps = try result.toOwnedSlice(allocator);
     // try stderr.print("New app ptr: {*}, len: {}\n", .{ apps.ptr, apps.len });
-    return Ast{ .apps = apps };
+    return result;
 }
 
 /// Parse until sep is encountered, or a newline.
@@ -67,7 +66,7 @@ fn parseUntil(
     reader: anytype,
     found_sep: *bool,
     sep: ?u8, // must be a greedily parsed, single char sep
-) !?ArrayListUnmanaged(Ast) {
+) !?Ast {
     _ = try lexer.peek(reader) orelse
         return null;
 
@@ -91,10 +90,8 @@ fn parseUntil(
                     try stderr.print("Nested App: {?}\n", .{matched});
                     // if (!matched) // TODO: copy and free nested to result
                     // else
-                    if (nested) |*nested_apps|
-                        try result.append(allocator, Ast{
-                            .apps = try nested_apps.toOwnedSlice(allocator),
-                        });
+                    if (nested) |nested_apps|
+                        try result.append(allocator, nested_apps);
                 },
                 '{' => {
                     var pat = Pat{};
@@ -107,13 +104,13 @@ fn parseUntil(
 
                     // TODO: fix parsing nested patterns with comma seperators
                     if (nested) |*nested_apps| {
-                        defer nested_apps.deinit(allocator);
+                        defer nested_apps.deleteChildren(allocator);
                         try stderr.print("Nested Pat: {?}\n", .{matched});
-                        for (nested_apps.items) |na| {
+                        const asts = nested_apps.apps;
+                        for (asts) |na| {
                             try stderr.writeAll("Children: ");
                             try na.write(stderr);
                         }
-                        const asts = nested_apps.items;
                         _ = if (asts.len > 0 and asts[0] == .key and
                             mem.eql(u8, asts[0].key.lit, "->"))
                             try pat.insert(allocator, asts[1].apps, asts[2])
@@ -138,7 +135,7 @@ fn parseUntil(
             else => try result.append(allocator, Ast.ofLit(token)),
         }
     } else false;
-    return result;
+    return Ast{ .apps = try result.toOwnedSlice(allocator) };
 }
 
 // This function is the responsibility of the Parser, because it is the dual

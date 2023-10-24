@@ -806,8 +806,10 @@ pub fn PatternWithContext(
                     current = next_pat.pat;
                 },
                 .pat => |p| {
+                    const pat_copy_ptr = try allocator.create(Self);
+                    pat_copy_ptr.* = try p.copy(allocator);
                     const put_result =
-                        try current.pat_map.getOrPut(allocator, p);
+                        try current.pat_map.getOrPut(allocator, pat_copy_ptr);
                     // Move to the next pattern
                     current = put_result.value_ptr;
 
