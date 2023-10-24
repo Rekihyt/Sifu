@@ -15,9 +15,9 @@ const StringContext = std.array_hash_map.StringContext;
 pub const Ast = Pat.Node;
 pub const Pat = @import("../pattern.zig").PatternWithContext(
     Token,
-    []const u8,
+    Token,
     util.IntoArrayContext(Token),
-    StringContext,
+    util.IntoArrayContext(Token),
 );
 
 test "simple ast to pattern" {

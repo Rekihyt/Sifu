@@ -132,6 +132,7 @@ fn parseUntil(
                 result = infix_apps;
             },
             .Str, .I, .F, .U => try result.append(allocator, Ast.ofLit(token)),
+            .Var => try result.append(allocator, Ast.ofVar(token)),
             else => try result.append(allocator, Ast.ofLit(token)),
         }
     } else false;

@@ -231,6 +231,9 @@ pub fn PatternWithContext(
             pub fn ofLit(key: Key) Node {
                 return .{ .key = key };
             }
+            pub fn ofVar(@"var": Var) Node {
+                return .{ .@"var" = @"var" };
+            }
 
             pub fn ofApps(apps: []const Node) Node {
                 return .{ .apps = apps };
@@ -628,7 +631,7 @@ pub fn PatternWithContext(
 
                     .pat => |node_pat| current.pat_map.getPtr(node_pat),
                 };
-                if (next) |next_pat|
+                if (next orelse current.var_next) |next_pat|
                     current = next_pat
                 else
                     break i;
