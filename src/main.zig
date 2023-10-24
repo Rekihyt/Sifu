@@ -60,7 +60,7 @@ pub fn main() !void {
             if (char == 0x1b) {}
         }
         var parsed_ast = try parse(parser_allocator, &lexer, fbs_reader.reader());
-        // defer _ = parser_gpa.detectLeaks();
+        defer _ = parser_gpa.detectLeaks();
         defer if (parsed_ast) |*ast| {
             ast.deleteChildren(parser_allocator);
         };

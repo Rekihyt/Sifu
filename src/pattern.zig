@@ -82,39 +82,6 @@ pub fn PatternWithContext(
     return struct {
         pub const Self = @This();
 
-        const NodeCtx = struct {
-            pub fn hash(self: @This(), node: *const Node) u32 {
-                _ = self;
-                return node.*.hash();
-            }
-            pub fn eql(
-                self: @This(),
-                node: *const Self,
-                other: *const Self,
-                b_index: usize,
-            ) bool {
-                _ = b_index;
-                _ = self;
-                return node.*.eql(other.*);
-            }
-        };
-
-        const PatCtx = struct {
-            pub fn hash(self: @This(), pat: *Self) u32 {
-                _ = self;
-                return pat.*.hash();
-            }
-            pub fn eql(
-                self: @This(),
-                pat: *Self,
-                other: *Self,
-                b_index: usize,
-            ) bool {
-                _ = b_index;
-                _ = self;
-                return pat.*.eql(other.*);
-            }
-        };
         pub const KeyMap = std.ArrayHashMapUnmanaged(
             Key,
             Self,
@@ -128,9 +95,9 @@ pub fn PatternWithContext(
             true,
         );
         pub const PatMap = std.ArrayHashMapUnmanaged(
-            *Self,
             Self,
-            PatCtx,
+            Self,
+            util.IntoArrayContext(Self),
             true,
         );
 
@@ -413,12 +380,12 @@ pub fn PatternWithContext(
 
             var pat_map_iter = self.pat_map.iterator();
             while (pat_map_iter.next()) |entry| {
-                const new_key_ptr = try allocator.create(Self);
-                new_key_ptr.* = try entry.key_ptr.*.copy(allocator);
+                // const new_key_ptr = try allocator.create(Self);
+                // new_key_ptr.* = try entry.key_ptr.*.copy(allocator);
 
                 try result.pat_map.putNoClobber(
                     allocator,
-                    new_key_ptr,
+                    try entry.key_ptr.*.copy(allocator),
                     try entry.value_ptr.*.copy(allocator),
                 );
             }
@@ -451,8 +418,8 @@ pub fn PatternWithContext(
 
             self.map.deinit(allocator);
 
-            for (self.pat_map.keys()) |pat|
-                pat.delete(allocator);
+            for (self.pat_map.keys()) |*pat|
+                pat.deleteChildren(allocator);
             // Pattern/Node values must be deleted because they are allocated
             // recursively
             for (self.pat_map.values()) |*pat|
@@ -549,8 +516,8 @@ pub fn PatternWithContext(
                 self.pat_map.keys(),
                 other.pat_map.keys(),
                 struct {
-                    pub fn eq(p1: *Self, p2: *Self) bool {
-                        return p1.*.eql(p2.*);
+                    pub fn eq(p1: Self, p2: Self) bool {
+                        return p1.eql(p2);
                     }
                 }.eq,
             ) or
@@ -629,9 +596,9 @@ pub fn PatternWithContext(
                             null;
                     },
 
-                    .pat => |node_pat| current.pat_map.getPtr(node_pat),
+                    .pat => |node_pat| current.pat_map.getPtr(node_pat.*),
                 };
-                if (next orelse current.var_next) |next_pat|
+                if (next) |next_pat|
                     current = next_pat
                 else
                     break i;
@@ -809,10 +776,10 @@ pub fn PatternWithContext(
                     current = next_pat.pat;
                 },
                 .pat => |p| {
-                    const pat_copy_ptr = try allocator.create(Self);
-                    pat_copy_ptr.* = try p.copy(allocator);
-                    const put_result =
-                        try current.pat_map.getOrPut(allocator, pat_copy_ptr);
+                    const put_result = try current.pat_map.getOrPut(
+                        allocator,
+                        try p.copy(allocator),
+                    );
                     // Move to the next pattern
                     current = put_result.value_ptr;
 
