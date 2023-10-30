@@ -29,269 +29,273 @@ const math = std.math;
 const assert = std.debug.assert;
 const debug = std.debug;
 
-pub const Self = @This();
+pub fn Lexer(comptime Reader: type) type {
+    return struct {
+        /// A element buffer to hold chars for the current token
+        buff: ArrayListUnmanaged(u8) = .{},
+        /// The position in the stream used as context
+        pos: usize = 0,
+        /// Current line in the source
+        line: usize = 0,
+        /// Current column in the source
+        col: usize = 1,
+        /// Current token being parsed in the source
+        token: ?Token = null,
+        /// A single element buffer to hold a char for `peekChar`
+        char: ?u8 = null,
+        /// The allocator used for tokenizing
+        allocator: Allocator,
+        /// The reader providing input
+        reader: Reader,
 
-/// A element buffer to hold chars for the current token
-buff: ArrayListUnmanaged(u8) = .{},
-/// The position in the stream used as context
-pos: usize = 0,
-/// Current line in the source
-line: usize = 0,
-/// Current column in the source
-col: usize = 1,
-/// Current token being parsed in the source
-token: ?Token = null,
-/// A single element buffer to hold a char for `peekChar`
-char: ?u8 = null,
-/// The allocator used for tokenizing
-allocator: Allocator,
+        pub const Self = @This();
 
-/// Creates a new lexer using the given allocator
-pub fn init(allocator: Allocator) Self {
-    return .{ .allocator = allocator };
-}
+        /// Creates a new lexer using the given allocator
+        pub fn init(allocator: Allocator, reader: Reader) Self {
+            return .{ .allocator = allocator, .reader = reader };
+        }
 
-pub fn peek(
-    self: *Self,
-    reader: anytype,
-) !?Token {
-    if (self.token == null)
-        self.token = try self.next(reader);
+        pub fn peek(
+            self: *Self,
+        ) !?Token {
+            if (self.token == null)
+                self.token = try self.next();
 
-    return self.token;
-}
+            return self.token;
+        }
 
-pub fn next(
-    self: *Self,
-    reader: anytype,
-) !?Token {
-    // Return the current token, if it exists
-    if (self.token) |token| {
-        defer self.token = null;
-        return token;
-    }
-    try self.skipSpace(reader);
-    const char = try self.peekChar(reader) orelse
-        return null;
+        pub fn next(
+            self: *Self,
+        ) !?Token {
+            // Return the current token, if it exists
+            if (self.token) |token| {
+                defer self.token = null;
+                return token;
+            }
+            try self.skipSpace();
+            const char = try self.peekChar() orelse
+                return null;
 
-    const pos = self.pos;
-    try self.consume(reader); // tokens always have at least 1 char
-    // Parse separators greedily. These can be vals or infixes, it
-    // doesn't matter.
-    const token_type: Type = switch (char) {
-        '\n' => .NewLine,
-        // ',' => .NewLine, // Treat Escape as "continue on newline"
-        '+', '-' => if (try self.peekChar(reader)) |next_char|
-            if (isDigit(next_char))
-                try self.integer(reader)
+            const pos = self.pos;
+            try self.consume(); // tokens always have at least 1 char
+            // Parse separators greedily. These can be vals or infixes, it
+            // doesn't matter.
+            const token_type: Type = switch (char) {
+                '\n' => .NewLine,
+                // ',' => .NewLine, // Treat Escape as "continue on newline"
+                '+', '-' => if (try self.peekChar()) |next_char|
+                    if (isDigit(next_char))
+                        try self.integer()
+                    else
+                        try self.infix()
+                else
+                    .Infix,
+                '#' => try self.comment(),
+                else => if (isSep(char))
+                    .Val
+                else if (isInfix(char))
+                    try self.infix()
+                else if (isUpper(char) or char == '@')
+                    try self.value()
+                else if (isLower(char) or char == '_' or char == '$')
+                    try self.variable()
+                else if (isDigit(char))
+                    try self.integer()
+                else
+                    // This is a debug error only, as we shouldn't encounter an error
+                    // during lexing
+                    panic(
+                        \\Lexer Bug: Unknown character '{c}' (0x{X}) at line {}, col {}.
+                        \\Note: Unicode not supported yet.
+                    , .{ char, char, self.line, self.col }),
+            };
+            // defer self.buff = .{};
+            return Token{
+                .type = token_type,
+                .lit = try self.buff.toOwnedSlice(self.allocator),
+                .context = pos,
+            };
+        }
+
+        /// Returns the next character but does not increase the Lexer's position, or
+        /// returns null if there are no more characters left.
+        fn peekChar(self: *Self) !?u8 {
+            if (self.char == null)
+                self.char = self.reader.readByte() catch |e| switch (e) {
+                    error.EndOfStream => return null,
+                    else => return e,
+                };
+
+            return self.char;
+        }
+
+        /// Advances one character, reading it into the current token list buff.
+        fn consume(self: *Self) !void {
+            const char = try self.nextChar();
+            try self.buff.append(self.allocator, char);
+        }
+
+        /// Advances one character, or panics (should only be called after `peekChar`)
+        fn nextChar(self: *Self) !u8 {
+            const char = if (self.char) |char|
+                char
             else
-                try self.infix(reader)
-        else
-            .Infix,
-        '#' => try self.comment(reader),
-        else => if (isSep(char))
-            .Val
-        else if (isInfix(char))
-            try self.infix(reader)
-        else if (isUpper(char) or char == '@')
-            try self.value(reader)
-        else if (isLower(char) or char == '_' or char == '$')
-            try self.variable(reader)
-        else if (isDigit(char))
-            try self.integer(reader)
-        else
-            // This is a debug error only, as we shouldn't encounter an error
-            // during lexing
-            panic(
-                \\Lexer Bug: Unknown character '{c}' (0x{X}) at line {}, col {}.
-                \\Note: Unicode not supported yet.
-            , .{ char, char, self.line, self.col }),
-    };
-    // defer self.buff = .{};
-    return Token{
-        .type = token_type,
-        .lit = try self.buff.toOwnedSlice(self.allocator),
-        .context = pos,
-    };
-}
+                try self.peekChar() orelse panic(
+                    "Lexer Bug: Attempted to advance to next AST but EOF reached.",
+                    .{},
+                );
+            self.char = null; // clear peek buffer
+            self.pos += 1;
+            if (char == '\n') {
+                self.col = 1;
+                self.line += 1;
+            } else self.col += 1;
 
-/// Returns the next character but does not increase the Lexer's position, or
-/// returns null if there are no more characters left.
-fn peekChar(self: *Self, reader: anytype) !?u8 {
-    if (self.char == null)
-        self.char = reader.readByte() catch |e| switch (e) {
-            error.EndOfStream => return null,
-            else => return e,
-        };
+            return char;
+        }
 
-    return self.char;
-}
+        /// Skips whitespace except for newlines until a non-whitespace character is
+        /// found. Not guaranteed to skip anything. Newlines are separators, and thus
+        /// treated as tokens.
+        fn skipSpace(self: *Self) !void {
+            while (try self.peekChar()) |char|
+                switch (char) {
+                    ' ', '\t', '\r' => _ = try self.nextChar(),
+                    else => break,
+                };
+        }
 
-/// Advances one character, reading it into the current token list buff.
-fn consume(self: *Self, reader: anytype) !void {
-    const char = try self.nextChar(reader);
-    try self.buff.append(self.allocator, char);
-}
+        fn nextIdent(self: *Self) !void {
+            while (try self.peekChar()) |next_char|
+                if (isIdent(next_char))
+                    try self.consume()
+                else
+                    break;
+        }
 
-/// Advances one character, or panics (should only be called after `peekChar`)
-fn nextChar(self: *Self, reader: anytype) !u8 {
-    const char = if (self.char) |char|
-        char
-    else
-        try self.peekChar(reader) orelse panic(
-            "Lexer Bug: Attempted to advance to next AST but EOF reached.",
-            .{},
-        );
-    self.char = null; // clear peek buffer
-    self.pos += 1;
-    if (char == '\n') {
-        self.col = 1;
-        self.line += 1;
-    } else self.col += 1;
+        fn value(self: *Self) !Type {
+            try self.nextIdent();
+            return .Val;
+        }
 
-    return char;
-}
+        fn variable(self: *Self) !Type {
+            try self.nextIdent();
+            return .Var;
+        }
 
-/// Skips whitespace except for newlines until a non-whitespace character is
-/// found. Not guaranteed to skip anything. Newlines are separators, and thus
-/// treated as tokens.
-fn skipSpace(self: *Self, reader: anytype) !void {
-    while (try self.peekChar(reader)) |char|
-        switch (char) {
-            ' ', '\t', '\r' => _ = try self.nextChar(reader),
-            else => break,
-        };
-}
+        /// Reads the next infix characters
+        fn infix(self: *Self) !Type {
+            while (try self.peekChar()) |next_char|
+                if (isInfix(next_char))
+                    try self.consume()
+                else
+                    break;
 
-fn nextIdent(self: *Self, reader: anytype) !void {
-    while (try self.peekChar(reader)) |next_char|
-        if (isIdent(next_char))
-            try self.consume(reader)
-        else
-            break;
-}
+            return .Infix;
+        }
 
-fn value(self: *Self, reader: anytype) !Type {
-    try self.nextIdent(reader);
-    return .Val;
-}
+        /// Reads the next digits and/or any underscores
+        fn integer(self: *Self) !Type {
+            while (try self.peekChar()) |next_char|
+                if (isDigit(next_char) or next_char == '_')
+                    try self.consume()
+                else
+                    break;
 
-fn variable(self: *Self, reader: anytype) !Type {
-    try self.nextIdent(reader);
-    return .Var;
-}
+            return .I;
+        }
 
-/// Reads the next infix characters
-fn infix(self: *Self, reader: anytype) !Type {
-    while (try self.peekChar(reader)) |next_char|
-        if (isInfix(next_char))
-            try self.consume(reader)
-        else
-            break;
+        /// Reads the next characters as number. `parseFloat` only throws
+        /// `InvalidCharacter`, so this function cannot fail.
+        fn float(self: *Self) !Type {
+            self.int();
+            if (try self.peekChar() == '.') {
+                try self.consume();
+                self.int();
+            }
 
-    return .Infix;
-}
+            return .F;
+        }
 
-/// Reads the next digits and/or any underscores
-fn integer(self: *Self, reader: anytype) !Type {
-    while (try self.peekChar(reader)) |next_char|
-        if (isDigit(next_char) or next_char == '_')
-            try self.consume(reader)
-        else
-            break;
+        /// Reads a value wrapped in double-quotes from the current character. If no
+        /// matching quote is found, reads until EOF.
+        fn string(self: *Self) !Type {
+            while (try self.peekChar() != '"')
+                try self.consume();
 
-    return .I;
-}
+            return .Str;
+        }
 
-/// Reads the next characters as number. `parseFloat` only throws
-/// `InvalidCharacter`, so this function cannot fail.
-fn float(self: *Self, reader: anytype) !Type {
-    self.int();
-    if (try self.peekChar(reader) == '.') {
-        try self.consume(reader);
-        self.int();
-    }
+        /// Reads until the end of the line or EOF
+        fn comment(self: *Self) !Type {
+            while (try self.peekChar()) |next_char|
+                if (next_char != '\n')
+                    try self.consume()
+                else
+                    // Newlines that terminate comments are also terms, so no
+                    // `consume` here
+                    break;
 
-    return .F;
-}
+            return .Comment;
+        }
 
-/// Reads a value wrapped in double-quotes from the current character. If no
-/// matching quote is found, reads until EOF.
-fn string(self: *Self, reader: anytype) !Type {
-    while (try self.peekChar(reader) != '"')
-        try self.consume(reader);
+        /// Returns true if the given character is a digit. Does not include
+        /// underscores.
+        fn isDigit(char: u8) bool {
+            return switch (char) {
+                '0'...'9' => true,
+                else => false,
+            };
+        }
 
-    return .Str;
-}
+        fn isUpper(char: u8) bool {
+            return switch (char) {
+                'A'...'Z' => true,
+                else => false,
+            };
+        }
 
-/// Reads until the end of the line or EOF
-fn comment(self: *Self, reader: anytype) !Type {
-    while (try self.peekChar(reader)) |next_char|
-        if (next_char != '\n')
-            try self.consume(reader)
-        else
-            // Newlines that terminate comments are also terms, so no
-            // `consume` here
-            break;
+        fn isLower(char: u8) bool {
+            return switch (char) {
+                'a'...'z' => true,
+                else => false,
+            };
+        }
 
-    return .Comment;
-}
-
-/// Returns true if the given character is a digit. Does not include
-/// underscores.
-fn isDigit(char: u8) bool {
-    return switch (char) {
-        '0'...'9' => true,
-        else => false,
-    };
-}
-
-fn isUpper(char: u8) bool {
-    return switch (char) {
-        'A'...'Z' => true,
-        else => false,
-    };
-}
-
-fn isLower(char: u8) bool {
-    return switch (char) {
-        'a'...'z' => true,
-        else => false,
-    };
-}
-
-fn isSep(char: u8) bool {
-    return switch (char) {
-        // zig fmt: off
+        fn isSep(char: u8) bool {
+            return switch (char) {
+                // zig fmt: off
         ',', ';', '(', ')',
         '[', ']', '{', '}',
         '"', '\'', '`', 
         // zig fmt: on
-        => true,
-        else => false,
-    };
-}
+                => true,
+                else => false,
+            };
+        }
 
-fn isInfix(char: u8) bool {
-    return switch (char) {
-        // zig fmt: off
+        fn isInfix(char: u8) bool {
+            return switch (char) {
+                // zig fmt: off
         '.', ':', '-', '+', '=', '<', '>', '%',
         '^', '*', '&', '|', '/', '\\', '@', '!',
         '?', '~',
         // zig fmt: on
-        => true,
-        else => false,
+                => true,
+                else => false,
+            };
+        }
+
+        fn isSpace(char: u8) bool {
+            return char == ' ' or
+                char == '\t' or
+                char == '\n';
+        }
+
+        fn isIdent(char: u8) bool {
+            return !(isSpace(char) or isSep(char));
+        }
     };
-}
-
-fn isSpace(char: u8) bool {
-    return char == ' ' or
-        char == '\t' or
-        char == '\n';
-}
-
-fn isIdent(char: u8) bool {
-    return !(isSpace(char) or isSep(char));
 }
 
 const testing = std.testing;
@@ -314,11 +318,11 @@ fn expectEqualTokens(
     defer arena.deinit();
 
     var fbs = io.fixedBufferStream(input);
-    var lex = Self.init(arena.allocator());
     const reader = fbs.reader();
+    var lex = Lexer(@TypeOf(reader)).init(arena.allocator(), reader);
 
     for (expecteds) |expected| {
-        const next_token = (try lex.next(reader)).?;
+        const next_token = (try lex.next()).?;
         try stderr.print("{s}\n", .{next_token.lit});
         try testing.expectEqualStrings(
             expected,

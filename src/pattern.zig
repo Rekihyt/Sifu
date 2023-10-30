@@ -319,15 +319,22 @@ pub fn PatternWithContext(
 
         /// The results of matching a pattern exactly (vars are matched literally
         /// instead of by building up a tree of their possible values)
-        pub const PrefixResult = struct {
+        pub const ExactPrefixResult = struct {
             len: usize,
             pat_ptr: *Self,
         };
 
-        /// The result of matching a pattern, where vars match all possible values. The result is a new
-        pub const MatchResult = struct {
+        pub const PrefixResult = struct {
             len: usize,
             pat_ptr: *Self,
+            var_map: VarMap,
+        };
+
+        /// The result of matching a pattern, where vars match all possible
+        /// values.
+        pub const MatchResult = struct {
+            value_ptr: *Node,
+            var_map: VarMap,
         };
 
         /// A Var matches and stores a locally-unique key. During rewriting,
@@ -544,15 +551,71 @@ pub fn PatternWithContext(
         ///    way)
         /// - A literal Node that matches a literal-var pattern matches the
         ///    literal part, not the var
-        // TODO: update var map
         pub fn matchPrefix(
             pat: *Self,
             allocator: Allocator,
             apps: []const Node,
         ) Allocator.Error!PrefixResult {
-            _ = apps;
-            _ = allocator;
-            _ = pat;
+            var var_map = VarMap{};
+            var current = pat;
+            // Follow the longest branch that exists
+            const prefix_len = for (apps, 0..) |app, i| {
+                current = current.matchExactNode(app) orelse blk: {
+                    // If nothing matched, default to current's var, if any
+                    if (current.option_var) |v|
+                        if (current.var_next) |var_next| {
+                            const result = try var_map.getOrPut(allocator, v);
+                            // If a previous var was bound, check that the
+                            // current key matches it
+                            if (result.found_existing)
+                                break :blk var_next;
+                        };
+                    break i;
+                };
+            } else apps.len;
+
+            // print("Matched prefix:\n", .{});
+            // const prefix = Node{ .apps = apps[0..prefix_len] };
+            // prefix.write(stderr) catch unreachable;
+            // print("\n", .{});
+
+            return .{
+                .len = prefix_len,
+                .pat_ptr = current,
+                .var_map = var_map,
+            };
+        }
+
+        /// Like matchExactPrefix but matches only a single node exactly.
+        pub fn matchExactNode(pat: *Self, node: Node) ?*Self {
+            return switch (node) {
+                .key => |key| pat.map.getPtr(key),
+
+                // vars with different names are "equal"
+                .@"var" => pat.var_next,
+
+                .apps => |sub_apps| blk: {
+                    const sub_pat = pat.sub_pat orelse
+                        break :blk null;
+
+                    // Check that the entire sub_apps matched sub_pat
+                    const sub_prefix = sub_pat.matchExactPrefix(sub_apps);
+
+                    // print("Matched sub_prefix {}\n", .{sub_prefix.len == sub_apps.len});
+                    // If there isn't a node for another pattern, this
+                    // match fails
+                    const next_node = sub_prefix.pat_ptr.node orelse
+                        break :blk null;
+
+                    // Match sub_pat, move to its value, which is also
+                    // always a pattern even though it is wrapped in a Node
+                    break :blk if (sub_prefix.len == sub_apps.len)
+                        next_node.pat
+                    else
+                        null;
+                },
+                .pat => |node_pat| pat.pat_map.getPtr(node_pat.*),
+            };
         }
 
         /// Return a pointer to the last pattern in `pat` after the longest path
@@ -562,45 +625,16 @@ pub fn PatternWithContext(
         /// If there is no last pattern (no apps matched) the same `pat` pointer
         /// will be returned. If the entire `apps` is a prefix, a pointer to the
         /// last pat will be returned.
+        /// Although `pat` isn't modified, the node (if any) returned from it
+        /// is modifiable by the caller
         pub fn matchExactPrefix(
             pat: *Self,
             apps: []const Node,
-        ) PrefixResult {
+        ) ExactPrefixResult {
             var current = pat;
             // Follow the longest branch that exists
             const prefix_len = for (apps, 0..) |app, i| {
-                const next = switch (app) {
-                    .key => |key| current.map.getPtr(key),
-
-                    // vars with different names are "equal"
-                    .@"var" => current.var_next,
-
-                    .apps => |sub_apps| blk: {
-                        const sub_pat = current.sub_pat orelse
-                            break :blk null;
-
-                        // Check that the entire sub_apps matched sub_pat
-                        const sub_prefix = sub_pat.matchExactPrefix(sub_apps);
-
-                        // print("Matched sub_prefix {}\n", .{sub_prefix.len == sub_apps.len});
-                        // If there isn't a node for another pattern, this
-                        // match fails
-                        const next_node = sub_prefix.pat_ptr.node orelse
-                            break :blk null;
-
-                        // Match sub_pat, move to its value, which is also
-                        // always a pattern even though it is wrapped in a Node
-                        break :blk if (sub_prefix.len == sub_apps.len)
-                            next_node.pat
-                        else
-                            null;
-                    },
-
-                    .pat => |node_pat| current.pat_map.getPtr(node_pat.*),
-                };
-                if (next) |next_pat|
-                    current = next_pat
-                else
+                current = current.matchExactNode(app) orelse
                     break i;
             } else apps.len;
 
@@ -641,11 +675,9 @@ pub fn PatternWithContext(
             pat: *Self,
             allocator: Allocator,
             apps: []const Node,
-        ) ?*Node {
-            _ = allocator;
-            // var var_map = VarMap{};
-            const prefix = pat.matchExactPrefix(apps);
-            // print("Result: ", .{});
+        ) !?*Node {
+            var prefix = try pat.matchPrefix(allocator, apps);
+            defer prefix.var_map.deinit(allocator);
             // prefix.pat_ptr.node.?.write(stderr) catch unreachable;
             return if (prefix.len == apps.len)
                 prefix.pat_ptr.node
@@ -1040,18 +1072,14 @@ test "Memory: nested pattern" {
     const Pat = AutoStringPattern(void);
     const Node = Pat.Node;
     _ = Node;
-    // defer val_pat.delete(testing.allocator);
     var pat = try Pat.create(testing.allocator);
     defer pat.delete(testing.allocator);
     var val_pat = try Pat.ofVal(testing.allocator, "Val");
-    // Values won't be deleted recursively in `pat.delete`, so we need to delete
-    // this too
-    defer val_pat.deleteChildren(testing.allocator);
 
     // No need to free this, because key pointers are deleted
     var nested_pat = try Pat.ofVal(testing.allocator, "Asdf");
 
-    try pat.pat_map.put(testing.allocator, &nested_pat, val_pat);
+    try pat.pat_map.put(testing.allocator, nested_pat, val_pat);
 
     _ = try val_pat.insertKeys(
         testing.allocator,

@@ -134,8 +134,9 @@ test "Pattern: simple vals" {
     _ = try actual.insert(allocator, key2, node2);
 
     try testing.expect(expected.eql(actual));
-    try testing.expectEqual(@as(?*Pat.Node, &node), actual.matchExact(key));
-    try testing.expectEqual(@as(?*Pat.Node, &node2), actual.matchExact(key2));
+
+    try testing.expect(node.eql(actual.matchExact(key).?.*));
+    try testing.expect(node2.eql(actual.matchExact(key2).?.*));
     try testing.expectEqual(@as(?*Pat.Node, null), actual.matchExact(key[0..1]));
     try testing.expectEqual(@as(?*Pat.Node, null), actual.matchExact(key2[0..1]));
     try expected.write(stderr);

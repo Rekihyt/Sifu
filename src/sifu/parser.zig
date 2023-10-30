@@ -43,16 +43,23 @@ fn consumeNewLines(lexer: anytype, reader: anytype) !bool {
 }
 
 /// Parse a nonempty App if possible, returning null otherwise.
-pub fn parse(allocator: Allocator, lexer: *Lexer, reader: anytype) !?Ast {
+pub fn parse(allocator: Allocator, pattern: *Pat, lexer: anytype) !?[]Ast {
     var found_sep: bool = undefined;
-    var result = try parseUntil(allocator, lexer, reader, &found_sep, null) orelse
+    var result = try parseUntil(
+        allocator,
+        pattern,
+        lexer,
+        &found_sep,
+        null,
+    ) orelse
         return null;
 
     // try stderr.print("New app ptr: {*}, len: {}\n", .{ apps.ptr, apps.len });
     return result;
 }
 
-/// Parse until sep is encountered, or a newline.
+/// Parse until sep is encountered, or a newline. Each entry is inserted into
+/// the provided pattern.
 ///
 /// Memory can be freed by using an arena allocator, or walking the tree and
 /// freeing each app. Does not allocate on error/null.
@@ -62,60 +69,81 @@ pub fn parse(allocator: Allocator, lexer: *Lexer, reader: anytype) !?Ast {
 /// - null if no tokens were parsed
 fn parseUntil(
     allocator: Allocator,
-    lexer: *Lexer,
-    reader: anytype,
+    pattern: *Pat,
+    lexer: anytype,
     found_sep: *bool,
     sep: ?u8, // must be a greedily parsed, single char sep
-) !?Ast {
-    _ = try lexer.peek(reader) orelse
+) !?[]Ast {
+    _ = try lexer.peek() orelse
         return null;
 
-    var result = ArrayListUnmanaged(Ast){};
-    found_sep.* = while (try lexer.next(reader)) |token| {
+    // Many patterns will be leaves, so it makes sense to assume an app
+    // of size 1. ArrayList's `append` function will allocate space for
+    // an extra 10, which this avoids
+    var result = try ArrayListUnmanaged(Ast).initCapacity(allocator, 1);
+    found_sep.* = while (try lexer.next()) |token| {
         const lit = token.lit;
         switch (token.type) {
             .NewLine => break '\n' == sep,
             // Vals always have at least one char
             .Val => if (lit[0] == sep)
-                break true // ignore sep
-            else switch (lit[0]) {
+                break true, // ignore sep
+            else => {},
+        }
+        switch (token.type) {
+            .Val => switch (lit[0]) {
                 // Separators are parsed greedily, so its impossible to
                 // encounter any with more than one char (like "{}")
                 '(' => {
                     var matched: bool = undefined;
                     // Try to parse a nested app
                     var nested =
-                        try parseUntil(allocator, lexer, reader, &matched, ')');
+                        try parseUntil(allocator, pattern, lexer, &matched, ')');
 
                     try stderr.print("Nested App: {?}\n", .{matched});
                     // if (!matched) // TODO: copy and free nested to result
                     // else
-                    if (nested) |nested_apps|
-                        try result.append(allocator, nested_apps);
+                    if (nested) |nested_apps| for (nested_apps) |app|
+                        try result.append(allocator, app);
                 },
                 '{' => {
+                    // TODO: make a new pattern here
                     var pat = Pat{};
                     var matched: bool = undefined;
                     // Try to parse a nested app
                     var nested =
-                        try parseUntil(allocator, lexer, reader, &matched, '}');
+                        try parseUntil(allocator, pattern, lexer, &matched, '}');
 
                     // if (!matched) // TODO: check if matched brace was found
 
                     // TODO: fix parsing nested patterns with comma seperators
-                    if (nested) |*nested_apps| {
-                        defer nested_apps.deleteChildren(allocator);
-                        try stderr.print("Nested Pat: {?}\n", .{matched});
-                        const asts = nested_apps.apps;
-                        for (asts) |na| {
-                            try stderr.writeAll("Children: ");
-                            try na.write(stderr);
+                    // TODO: optimize by removing the delete
+                    if (nested) |apps| {
+                        defer {
+                            for (apps) |*app| app.deleteChildren(allocator);
+                            allocator.free(apps);
                         }
-                        _ = if (asts.len > 0 and asts[0] == .key and
-                            mem.eql(u8, asts[0].key.lit, "->"))
-                            try pat.insert(allocator, asts[1].apps, asts[2])
+                        try stderr.print("Nested Pat: {?}\n", .{matched});
+                        // for (asts) |na| {
+                        // try stderr.writeAll("Children: \n");
+                        // try na.write(stderr);
+                        // }
+                        _ = if (apps.len > 0 and apps[0] == .key and
+                            mem.eql(u8, apps[0].key.lit, "->"))
+                            try pat.insert(
+                                allocator,
+                                // Infix ops always have an apps appended
+                                apps[1].apps,
+                                // Preserve semantic difference between a
+                                // non-match and a match with an empty app as
+                                // value.
+                                if (apps.len >= 2)
+                                    Ast{ .apps = apps[2..] }
+                                else
+                                    null,
+                            )
                         else
-                            try pat.insert(allocator, asts, null);
+                            try pat.insert(allocator, apps, null);
                     }
                     try result.append(allocator, try Ast.ofPat(allocator, pat));
                 },
@@ -123,20 +151,27 @@ fn parseUntil(
             },
             // The current list becomes the first argument to the infix, then we
             // add any following asts to that
-            .Infix => {
-                var infix_apps = ArrayListUnmanaged(Ast){};
-                try infix_apps.append(allocator, Ast.ofLit(token));
-                try infix_apps.append(allocator, Ast{
-                    .apps = try result.toOwnedSlice(allocator),
-                });
-                result = infix_apps;
+            // TODO: special case commas for lists to use arrays under the hood
+            .Infix => switch (lit[0]) {
+                // ',' => {
+
+                // },
+                else => {
+                    var infix_apps = try ArrayListUnmanaged(Ast)
+                        .initCapacity(allocator, 2);
+                    infix_apps.appendSliceAssumeCapacity(&.{
+                        Ast.ofLit(token),
+                        Ast{ .apps = try result.toOwnedSlice(allocator) },
+                    });
+                    result = infix_apps;
+                },
             },
-            .Str, .I, .F, .U => try result.append(allocator, Ast.ofLit(token)),
             .Var => try result.append(allocator, Ast.ofVar(token)),
-            else => try result.append(allocator, Ast.ofLit(token)),
+            .Str, .I, .F, .U => try result.append(allocator, Ast.ofLit(token)),
+            .Comment, .NewLine => try result.append(allocator, Ast.ofLit(token)),
         }
     } else false;
-    return Ast{ .apps = try result.toOwnedSlice(allocator) };
+    return try result.toOwnedSlice(allocator);
 }
 
 // This function is the responsibility of the Parser, because it is the dual
@@ -243,12 +278,9 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
                         actual_elem.key.lit,
                     );
                 },
-                .@"var" => |v| try expectEqualStrings(v, actual_elem.@"var"),
+                .@"var" => |v| try testing.expect(v.eql(actual_elem.@"var")),
                 .apps => try expectEqualApps(expected_elem, actual_elem),
-                .pat => |pat| try testing.expectEqual(
-                    pat,
-                    actual_elem.pat,
-                ),
+                .pat => |pat| try testing.expect(pat.eql(actual_elem.pat.*)),
             }
         } else {
             try stderr.writeAll("Asts of different types not equal");
