@@ -60,35 +60,40 @@ pub fn main() !void {
     // try stderr.print("Repl Pat Address: {*}", .{&repl_pat});
 
     while (stdin.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
-        var fbs_reader = fbs.reader();
-        var lexer = Lexer(@TypeOf(fbs_reader)).init(token_allocator, fbs_reader);
-        for (fbs.getWritten()) |char| {
-            // escape (from pressing alt+enter in most terminals)
-            if (char == 0x1b) {}
-        }
-        var parsed_ast = try parse(
+        var fbs_written = io.fixedBufferStream(fbs.getWritten());
+        var fbs_written_reader = fbs_written.reader();
+        var lexer = Lexer(@TypeOf(fbs_written_reader))
+            .init(token_allocator, fbs_written_reader);
+        // for (fbs.getWritten()) |char| {
+        // escape (from pressing alt+enter in most terminals)
+        // if (char == 0x1b) {}
+        // }
+        var parsed_apps = try parse(
             parser_allocator,
             &repl_pat,
             &lexer,
         );
         defer _ = parser_gpa.detectLeaks();
-        defer if (parsed_ast) |*ast| {
-            ast.deleteChildren(parser_allocator);
+        defer if (parsed_apps) |apps| {
+            for (apps) |*app| {
+                app.deleteChildren(parser_allocator);
+            }
+            parser_allocator.free(apps);
         };
         try stderr.writeAll("Parsed.\n");
-        const ast = parsed_ast orelse
+        const apps = parsed_apps orelse
             // Match the empty apps for just a newline
             if ((repl_pat.matchExactPrefix(&.{})).pat_ptr.node) |node|
-            node.*
+            &.{node.*}
         else
-            Ast.ofApps(&.{});
+            &.{};
 
+        const ast = Ast.ofApps(apps);
         try ast.write(buff_stdout);
         _ = try buff_writer.write("\n");
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
 
-        const apps = ast.apps;
         if (apps.len > 0) blk: {
             switch (apps[0]) {
                 .key => |key| if (mem.eql(u8, key.lit, "->")) {

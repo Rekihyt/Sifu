@@ -94,6 +94,7 @@ fn parseUntil(
             .Val => switch (lit[0]) {
                 // Separators are parsed greedily, so its impossible to
                 // encounter any with more than one char (like "{}")
+                // TODO: make a new subpattern
                 '(' => {
                     var matched: bool = undefined;
                     // Try to parse a nested app

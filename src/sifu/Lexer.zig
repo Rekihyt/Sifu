@@ -101,6 +101,8 @@ pub fn Lexer(comptime Reader: type) type {
                     try self.variable()
                 else if (isDigit(char))
                     try self.integer()
+                else if (char == 0xAA)
+                    panic("Buffer Overflow debug char (0xAA) consumed\n", .{})
                 else
                     // This is a debug error only, as we shouldn't encounter an error
                     // during lexing
