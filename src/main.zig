@@ -70,7 +70,6 @@ pub fn main() !void {
         // }
         var parsed_apps = try parse(
             parser_allocator,
-            &repl_pat,
             &lexer,
         );
         defer _ = parser_gpa.detectLeaks();
@@ -89,8 +88,9 @@ pub fn main() !void {
             &.{};
 
         const ast = Ast.ofApps(apps);
-        try ast.write(buff_stdout);
-        _ = try buff_writer.write("\n");
+        _ = ast;
+        // try ast.write(buff_stdout);
+        // _ = try buff_writer.write("\n");
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
 

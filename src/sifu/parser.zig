@@ -43,11 +43,10 @@ fn consumeNewLines(lexer: anytype, reader: anytype) !bool {
 }
 
 /// Parse a nonempty App if possible, returning null otherwise.
-pub fn parse(allocator: Allocator, pattern: *Pat, lexer: anytype) !?[]Ast {
+pub fn parse(allocator: Allocator, lexer: anytype) !?[]Ast {
     var found_sep: bool = undefined;
     var result = try parseUntil(
         allocator,
-        pattern,
         lexer,
         &found_sep,
         null,
@@ -58,8 +57,7 @@ pub fn parse(allocator: Allocator, pattern: *Pat, lexer: anytype) !?[]Ast {
     return result;
 }
 
-/// Parse until sep is encountered, or a newline. Each entry is inserted into
-/// the provided pattern.
+/// Parse until sep is encountered, or a newline.
 ///
 /// Memory can be freed by using an arena allocator, or walking the tree and
 /// freeing each app. Does not allocate on error/null.
@@ -69,7 +67,6 @@ pub fn parse(allocator: Allocator, pattern: *Pat, lexer: anytype) !?[]Ast {
 /// - null if no tokens were parsed
 fn parseUntil(
     allocator: Allocator,
-    pattern: *Pat,
     lexer: anytype,
     found_sep: *bool,
     sep: ?u8, // must be a greedily parsed, single char sep
@@ -94,12 +91,11 @@ fn parseUntil(
             .Val => switch (lit[0]) {
                 // Separators are parsed greedily, so its impossible to
                 // encounter any with more than one char (like "{}")
-                // TODO: make a new subpattern
                 '(' => {
                     var matched: bool = undefined;
                     // Try to parse a nested app
                     var nested =
-                        try parseUntil(allocator, pattern, lexer, &matched, ')');
+                        try parseUntil(allocator, lexer, &matched, ')');
 
                     try stderr.print("Nested App: {?}\n", .{matched});
                     // if (!matched) // TODO: copy and free nested to result
@@ -108,12 +104,11 @@ fn parseUntil(
                         try result.append(allocator, app);
                 },
                 '{' => {
-                    // TODO: make a new pattern here
                     var pat = Pat{};
                     var matched: bool = undefined;
                     // Try to parse a nested app
                     var nested =
-                        try parseUntil(allocator, pattern, lexer, &matched, '}');
+                        try parseUntil(allocator, lexer, &matched, '}');
 
                     // if (!matched) // TODO: check if matched brace was found
 
@@ -172,7 +167,9 @@ fn parseUntil(
             .Comment, .NewLine => try result.append(allocator, Ast.ofLit(token)),
         }
     } else false;
-    return try result.toOwnedSlice(allocator);
+    const result_slice = try result.toOwnedSlice(allocator);
+    // _ = try pattern.insert(allocator, result_slice, null);
+    return result_slice;
 }
 
 // This function is the responsibility of the Parser, because it is the dual

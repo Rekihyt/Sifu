@@ -5,6 +5,25 @@ const meta = std.meta;
 const mem = std.mem;
 const Strategy = std.hash.Strategy;
 const Wyhash = std.hash.Wyhash;
+const Allocator = std.mem.Allocator;
+
+/// Get a reference to a nullable field in `struct_ptr`, creating one if it
+/// doesn't already exist.
+pub fn getOrInit(
+    comptime field: anytype,
+    struct_ptr: anytype,
+    allocator: Allocator,
+) !*@typeInfo(@TypeOf(struct_ptr)).Pointer.child {
+    const T = @typeInfo(@TypeOf(struct_ptr)).Pointer.child;
+    // @compileLog(@tagName(field));
+    // const FieldType = switch (@typeInfo(T)) {
+    //     .Struct => |S| S.
+    // };
+    // _ = FieldType;
+    const sub_pat = @field(struct_ptr, @tagName(field)) orelse try T.create(allocator);
+    struct_ptr.sub_pat = sub_pat;
+    return sub_pat;
+}
 
 pub fn hashFromHasherUpdate(
     comptime K: type,

@@ -738,6 +738,20 @@ pub fn PatternWithContext(
             return result.pat_ptr;
         }
 
+        /// Get a reference to this pattern's `node`, creating one if it
+        /// doesn't already exist.
+        ///
+        /// Because of the recursive type, we need to use a *Node
+        /// here instead of a *Pat, so any pattern gets wrapped into
+        /// a `Node.pat`.
+        pub fn get_node(self: *Self, allocator: Allocator) !*Node {
+            const node: *Node = self.node orelse
+                try Node.createPat(allocator, Self{});
+
+            self.node = node;
+            return node;
+        }
+
         /// Similar to ArrayHashMap's type, but the index is specific to the
         /// last hashmap.
         pub const GetOrPutResult = struct {
@@ -774,37 +788,24 @@ pub fn PatternWithContext(
                 },
                 .@"var" => |v| {
                     current.option_var = v;
-                    const var_next = current.var_next orelse blk: {
+                    if (current.var_next == null)
                         found_existing = false;
-                        const var_next = try Self.create(allocator);
-                        break :blk var_next;
-                    };
-                    current.var_next = var_next;
-                    current = var_next;
+                    current = try util.getOrInit(.var_next, current, allocator);
                 },
                 .apps => |sub_apps| {
-                    const sub_pat = current.sub_pat orelse blk: {
+                    if (current.sub_pat == null)
                         found_existing = false;
-                        current.sub_pat = try Self.create(allocator);
-                        break :blk current.sub_pat.?;
-                    };
+                    const sub_pat = try util.getOrInit(.sub_pat, current, allocator);
                     const put_result = try sub_pat.getOrPut(
                         allocator,
                         sub_apps,
                     );
-
                     if (!put_result.found_existing)
                         found_existing = false;
 
-                    // Because of the recursive type, we need to use a *Node
-                    // here instead of a *Pat, so subapps wraps everything into
-                    // a `Node.pat`.
-                    const next_pat: *Node = put_result.pat_ptr.node orelse
-                        try Node.createPat(allocator, Self{});
-
+                    const next_pat = try put_result.pat_ptr.get_node(allocator);
                     // next_pat.write(stderr) catch unreachable;
 
-                    put_result.pat_ptr.node = next_pat;
                     current = next_pat.pat;
                 },
                 .pat => |p| {
