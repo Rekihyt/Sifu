@@ -60,6 +60,9 @@ pub fn main() !void {
     // try stderr.print("Repl Pat Address: {*}", .{&repl_pat});
 
     while (stdin.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
+        try repl_pat.pretty(buff_stdout);
+        try stderr.print("Allocated: {}\n", .{gpa.total_requested_bytes});
+
         var fbs_written = io.fixedBufferStream(fbs.getWritten());
         var fbs_written_reader = fbs_written.reader();
         var lexer = Lexer(@TypeOf(fbs_written_reader))
@@ -88,9 +91,8 @@ pub fn main() !void {
             &.{};
 
         const ast = Ast.ofApps(apps);
-        _ = ast;
-        // try ast.write(buff_stdout);
-        // _ = try buff_writer.write("\n");
+        try ast.write(buff_stdout);
+        _ = try buff_writer.write("\n");
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
 
@@ -113,14 +115,13 @@ pub fn main() !void {
             }
             // If not inserting, then try to match the expression
             if (try repl_pat.match(allocator, apps)) |matched| {
+                print("Match: ", .{});
                 try matched.writeIndent(buff_stdout, 0);
                 _ = try buff_writer.write("\n");
                 // TODO: matched.delete(allocator);
             } else print("No match\n", .{});
         }
 
-        try repl_pat.pretty(buff_stdout);
-        try stderr.print("Allocated: {}\n", .{gpa.total_requested_bytes});
         try buff_writer.flush();
         fbs.reset();
     } else |e| switch (e) {

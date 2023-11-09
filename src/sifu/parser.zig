@@ -50,8 +50,7 @@ pub fn parse(allocator: Allocator, lexer: anytype) !?[]Ast {
         lexer,
         &found_sep,
         null,
-    ) orelse
-        return null;
+    );
 
     // try stderr.print("New app ptr: {*}, len: {}\n", .{ apps.ptr, apps.len });
     return result;
@@ -70,9 +69,9 @@ fn parseUntil(
     lexer: anytype,
     found_sep: *bool,
     sep: ?u8, // must be a greedily parsed, single char sep
-) !?[]Ast {
+) ![]Ast {
     _ = try lexer.peek() orelse
-        return null;
+        return &.{};
 
     // Many patterns will be leaves, so it makes sense to assume an app
     // of size 1. ArrayList's `append` function will allocate space for
@@ -100,8 +99,15 @@ fn parseUntil(
                     try stderr.print("Nested App: {?}\n", .{matched});
                     // if (!matched) // TODO: copy and free nested to result
                     // else
-                    if (nested) |nested_apps| for (nested_apps) |app|
-                        try result.append(allocator, app);
+                    try result.append(
+                        allocator,
+                        if (matched)
+                            Ast.ofApps(nested)
+                        else
+                            // If null, no matching paren was found so parse '('
+                            // as a literal
+                            Ast.ofLit(token),
+                    );
                 },
                 '{' => {
                     var pat = Pat{};
@@ -114,33 +120,31 @@ fn parseUntil(
 
                     // TODO: fix parsing nested patterns with comma seperators
                     // TODO: optimize by removing the delete
-                    if (nested) |apps| {
-                        defer {
-                            for (apps) |*app| app.deleteChildren(allocator);
-                            allocator.free(apps);
-                        }
-                        try stderr.print("Nested Pat: {?}\n", .{matched});
-                        // for (asts) |na| {
-                        // try stderr.writeAll("Children: \n");
-                        // try na.write(stderr);
-                        // }
-                        _ = if (apps.len > 0 and apps[0] == .key and
-                            mem.eql(u8, apps[0].key.lit, "->"))
-                            try pat.insert(
-                                allocator,
-                                // Infix ops always have an apps appended
-                                apps[1].apps,
-                                // Preserve semantic difference between a
-                                // non-match and a match with an empty app as
-                                // value.
-                                if (apps.len >= 2)
-                                    Ast{ .apps = apps[2..] }
-                                else
-                                    null,
-                            )
-                        else
-                            try pat.insert(allocator, apps, null);
+                    defer {
+                        for (nested) |*app| app.deleteChildren(allocator);
+                        allocator.free(nested);
                     }
+                    try stderr.print("Nested Pat: {?}\n", .{matched});
+                    // for (asts) |na| {
+                    // try stderr.writeAll("Children: \n");
+                    // try na.write(stderr);
+                    // }
+                    _ = if (nested.len > 0 and nested[0] == .key and
+                        mem.eql(u8, nested[0].key.lit, "->"))
+                        try pat.insert(
+                            allocator,
+                            // Infix ops always have an apps appended
+                            nested[1].apps,
+                            // Preserve semantic difference between a
+                            // non-match and a match with an empty app as
+                            // value.
+                            if (nested.len >= 2)
+                                Ast{ .apps = nested[2..] }
+                            else
+                                null,
+                        )
+                    else
+                        try pat.insert(allocator, nested, null);
                     try result.append(allocator, try Ast.ofPat(allocator, pat));
                 },
                 else => try result.append(allocator, Ast.ofLit(token)),
@@ -167,9 +171,7 @@ fn parseUntil(
             .Comment, .NewLine => try result.append(allocator, Ast.ofLit(token)),
         }
     } else false;
-    const result_slice = try result.toOwnedSlice(allocator);
-    // _ = try pattern.insert(allocator, result_slice, null);
-    return result_slice;
+    return try result.toOwnedSlice(allocator);
 }
 
 // This function is the responsibility of the Parser, because it is the dual
