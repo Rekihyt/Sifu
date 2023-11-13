@@ -10,7 +10,7 @@ const Allocator = std.mem.Allocator;
 /// Get a reference to a nullable field in `struct_ptr`, creating one if it
 /// doesn't already exist.
 pub fn getOrInit(
-    comptime field: anytype,
+    comptime Field: anytype,
     struct_ptr: anytype,
     allocator: Allocator,
 ) !*@typeInfo(@TypeOf(struct_ptr)).Pointer.child {
@@ -20,9 +20,10 @@ pub fn getOrInit(
     //     .Struct => |S| S.
     // };
     // _ = FieldType;
-    const sub_pat = @field(struct_ptr, @tagName(field)) orelse try T.create(allocator);
-    struct_ptr.sub_pat = sub_pat;
-    return sub_pat;
+    const field = @field(struct_ptr, @tagName(Field)) orelse
+        try T.create(allocator);
+    @field(struct_ptr, @tagName(Field)) = field;
+    return field;
 }
 
 pub fn hashFromHasherUpdate(

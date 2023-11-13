@@ -54,8 +54,6 @@ const meta = std.meta;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const t = @import("test.zig");
 
-// TODO: don't ignore contexts functions
-
 ///
 /// A trie-like type based on the given term type. Each pattern contains zero or
 /// more children.
@@ -90,7 +88,7 @@ pub fn PatternWithContext(
         );
         pub const VarMap = std.ArrayHashMapUnmanaged(
             Var,
-            Self,
+            Node,
             VarCtx,
             true,
         );
@@ -546,46 +544,6 @@ pub fn PatternWithContext(
             return result;
         }
 
-        /// - Any Node matches a var pattern including a var
-        /// - A var Node doesn't match a non-var pattern (var matching is one
-        ///    way)
-        /// - A literal Node that matches a literal-var pattern matches the
-        ///    literal part, not the var
-        pub fn matchPrefix(
-            pat: *Self,
-            allocator: Allocator,
-            apps: []const Node,
-        ) Allocator.Error!PrefixResult {
-            var var_map = VarMap{};
-            var current = pat;
-            // Follow the longest branch that exists
-            const prefix_len = for (apps, 0..) |app, i| {
-                current = current.matchExactNode(app) orelse blk: {
-                    // If nothing matched, default to current's var, if any
-                    if (current.option_var) |v|
-                        if (current.var_next) |var_next| {
-                            const result = try var_map.getOrPut(allocator, v);
-                            // If a previous var was bound, check that the
-                            // current key matches it
-                            if (result.found_existing)
-                                break :blk var_next;
-                        };
-                    break i;
-                };
-            } else apps.len;
-
-            // print("Matched prefix:\n", .{});
-            // const prefix = Node{ .apps = apps[0..prefix_len] };
-            // prefix.write(stderr) catch unreachable;
-            // print("\n", .{});
-
-            return .{
-                .len = prefix_len,
-                .pat_ptr = current,
-                .var_map = var_map,
-            };
-        }
-
         /// Like matchExactPrefix but matches only a single node exactly.
         pub fn matchExactNode(pat: *Self, node: Node) ?*Self {
             return switch (node) {
@@ -663,6 +621,51 @@ pub fn PatternWithContext(
                 null;
         }
 
+        /// - Any Node matches a var pattern including a var
+        /// - A var Node doesn't match a non-var pattern (var matching is one
+        ///    way)
+        /// - A literal Node that matches a literal-var pattern matches the
+        ///    literal part, not the var
+        pub fn matchPrefix(
+            pat: *Self,
+            allocator: Allocator,
+            apps: []const Node,
+        ) Allocator.Error!PrefixResult {
+            var var_map = VarMap{};
+            var current = pat;
+            // Follow the longest branch that exists
+            const prefix_len = for (apps, 0..) |app, i| {
+                current = current.matchExactNode(app) orelse blk: {
+                    // If nothing matched, default to current's var, if any
+                    if (current.option_var) |v| {
+                        const result = try var_map.getOrPut(allocator, v);
+                        // If a previous var was bound, check that the
+                        // current key matches it
+                        if (result.found_existing) {
+                            if (!result.value_ptr.*.eql(app))
+                                break i;
+                        } else result.value_ptr.* = app;
+
+                        if (current.var_next) |var_next|
+                            break :blk var_next
+                        else
+                            break i + 1;
+                    } else break i;
+                };
+            } else apps.len;
+
+            // print("Matched prefix:\n", .{});
+            // const prefix = Node{ .apps = apps[0..prefix_len] };
+            // prefix.write(stderr) catch unreachable;
+            // print("\n", .{});
+
+            return .{
+                .len = prefix_len,
+                .pat_ptr = current,
+                .var_map = var_map,
+            };
+        }
+
         /// Follows `pat` for each app matching by value, or all apps for var
         /// patterns. Creates a new node app containing the subset of `pat`
         /// that matches the longest matching prefix in 'apps'. Returns a
@@ -677,6 +680,16 @@ pub fn PatternWithContext(
             apps: []const Node,
         ) !?*Node {
             var prefix = try pat.matchPrefix(allocator, apps);
+            var iter = prefix.var_map.iterator();
+            print("VarMap: {c}\n", .{'{'});
+            while (iter.next()) |entry| {
+                print("  ", .{});
+                entry.key_ptr.*.write(stderr) catch unreachable;
+                print(" -> ", .{});
+                entry.value_ptr.*.write(stderr) catch unreachable;
+                print("\n", .{});
+            }
+            print("{c}\n", .{'}'});
             defer prefix.var_map.deinit(allocator);
             // prefix.pat_ptr.node.?.write(stderr) catch unreachable;
             return if (prefix.len == apps.len)
@@ -723,18 +736,20 @@ pub fn PatternWithContext(
             optional_node: ?Node,
         ) Allocator.Error!*Self {
             var result = try self.getOrPut(allocator, apps);
+            // Clear existing value node
             if (result.pat_ptr.node) |prev_node| {
                 prev_node.delete(allocator);
+                result.pat_ptr.node = null;
             }
-
-            result.pat_ptr.node = if (optional_node) |node| blk: {
+            // Add new value node
+            if (optional_node) |node| {
                 const new_node = try allocator.create(Node);
                 // TODO: check found existing
                 new_node.* = try node.copy(allocator);
                 // stderr.print("Node ptr: {*}\n", .{result.pat_ptr.node}) catch
                 // unreachable;
-                break :blk new_node;
-            } else null;
+                result.pat_ptr.node = new_node;
+            }
             return result.pat_ptr;
         }
 
@@ -776,10 +791,7 @@ pub fn PatternWithContext(
             // Create the rest of the branches
             for (apps[prefix.len..]) |app| switch (app) {
                 .key => |key| {
-                    const put_result = try current.map.getOrPut(
-                        allocator,
-                        key,
-                    );
+                    const put_result = try current.map.getOrPut(allocator, key);
                     current = put_result.value_ptr;
                     if (!put_result.found_existing) {
                         found_existing = false;
@@ -795,11 +807,9 @@ pub fn PatternWithContext(
                 .apps => |sub_apps| {
                     if (current.sub_pat == null)
                         found_existing = false;
-                    const sub_pat = try util.getOrInit(.sub_pat, current, allocator);
-                    const put_result = try sub_pat.getOrPut(
-                        allocator,
-                        sub_apps,
-                    );
+                    const sub_pat =
+                        try util.getOrInit(.sub_pat, current, allocator);
+                    const put_result = try sub_pat.getOrPut(allocator, sub_apps);
                     if (!put_result.found_existing)
                         found_existing = false;
 
@@ -892,7 +902,7 @@ pub fn PatternWithContext(
                 try util.genericWrite(v, writer);
             }
             if (self.var_next) |var_next|
-                try var_next.writeIndent(writer, optional_indent);
+                try var_next.writeIndent(writer, optional_indent_inc);
 
             if (self.sub_pat) |sub_pat| {
                 for (0..optional_indent_inc orelse 0) |_|
