@@ -82,17 +82,17 @@ pub fn main() !void {
             }
             parser_allocator.free(apps);
         };
-        try stderr.writeAll("Parsed.\n");
         const apps = parsed_apps orelse
             // Match the empty apps for just a newline
-            if ((repl_pat.matchExactPrefix(&.{})).pat_ptr.node) |node|
+            if ((repl_pat.matchExactPrefix(&.{})).end_ptr.val) |node|
             &.{node.*}
         else
             &.{};
 
         const ast = Ast.ofApps(apps);
-        try ast.write(buff_stdout);
-        _ = try buff_writer.write("\n");
+        try stderr.writeAll("Parsed: ");
+        try ast.write(stderr);
+        _ = try stderr.write("\n");
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
 
@@ -113,12 +113,23 @@ pub fn main() !void {
                 },
                 else => {},
             }
+            // const matches = repl_pat.matchExact(apps);
+            // if (matches) |m|
+            //     try m.write(buff_stdout);
+            const matches = try repl_pat.match(allocator, apps);
             // If not inserting, then try to match the expression
-            if (try repl_pat.match(allocator, apps)) |matched| {
-                print("Match: ", .{});
-                try matched.writeIndent(buff_stdout, 0);
-                _ = try buff_writer.write("\n");
-                // TODO: matched.delete(allocator);
+            if (matches.len > 0) {
+                for (matches) |matched| {
+                    print("Match: ", .{});
+                    if (matched) |m| {
+                        try m.write(buff_stdout);
+                        m.delete(allocator);
+                    } else
+                    // A successful match but null value is different from
+                    // a non-match
+                    _ = try buff_writer.write("None");
+                    _ = try buff_writer.write("\n");
+                }
             } else print("No match\n", .{});
         }
 
