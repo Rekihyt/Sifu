@@ -7,6 +7,15 @@ const Strategy = std.hash.Strategy;
 const Wyhash = std.hash.Wyhash;
 const Allocator = std.mem.Allocator;
 
+/// Shorthand for printing to stderr or null writer and asserting no errors.
+pub fn print(comptime fmt: []const u8, args: anytype) void {
+    const stderr = if (@import("build_options").verbose_tests)
+        std.io.getStdErr().writer()
+    else
+        std.io.null_writer;
+    stderr.print(fmt, args) catch unreachable;
+}
+
 /// Get a reference to a nullable field in `struct_ptr`, creating one if it
 /// doesn't already exist.
 pub fn getOrInit(

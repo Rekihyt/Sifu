@@ -9,7 +9,7 @@ const Wyhash = std.hash.Wyhash;
 const array_hash_map = std.array_hash_map;
 const AutoContext = std.array_hash_map.AutoContext;
 const StringContext = std.array_hash_map.StringContext;
-const print = std.debug.print;
+const print = util.print;
 
 pub fn AutoPattern(
     comptime Key: type,
@@ -542,7 +542,7 @@ pub fn PatternWithContext(
         pub fn matchExactNode(pat: *const Self, node: Node) ?*Self {
             // switch (node) {
             //     .key => |key| if (pat.map.getPtr(key)) |lit_match|
-            //         lit_match.write(stderr) catch unreachable,
+            //         lit_match.write(err_stream) catch unreachable,
             //     else => {},
             // }
             return switch (node) {
@@ -597,7 +597,7 @@ pub fn PatternWithContext(
 
             // print("Matched prefix:\n", .{});
             // const prefix = Node{ .apps = apps[0..prefix_len] };
-            // prefix.write(stderr) catch unreachable;
+            // prefix.write(err_stream) catch unreachable;
             // print("\n", .{});
 
             return .{ .len = prefix_len, .end_ptr = @constCast(current) };
@@ -613,7 +613,7 @@ pub fn PatternWithContext(
             // var var_map = VarMap{};
             const prefix = pat.matchExactPrefix(apps);
             // print("Result: ", .{});
-            // prefix.end_ptr.val.?.write(stderr) catch unreachable;
+            // prefix.end_ptr.val.?.write(err_stream) catch unreachable;
             return if (prefix.len == apps.len)
                 prefix.end_ptr.val
             else
@@ -696,7 +696,6 @@ pub fn PatternWithContext(
                 },
             } else apps.len;
 
-            // print("Matched prefix:\n", .{});
             const prefix = PrefixResult{ .end_ptr = current, .len = prefix_len };
             try prefixes.append(allocator, prefix);
             print("Prefix len: {}\n", .{prefix_len});
@@ -709,27 +708,26 @@ pub fn PatternWithContext(
         /// that matches the longest matching prefix in 'apps'. Returns a usize
         /// describing this position in apps. The result is an array of all
         /// matches.
+        /// Caller should free the array with `allocator.free`.
         pub fn match(
             pat: *Self,
             allocator: Allocator,
             apps: []const Node,
-        ) ![]?*Node {
+        ) ![]*Node {
             var prefixes = try pat.matchPrefixes(allocator, apps);
-            var matches = std.ArrayListUnmanaged(?*Node){};
-            // prefix.end_ptr.val.?.write(stderr) catch unreachable;
+            defer allocator.free(prefixes);
+            // A filtered list of complete matches
+            var matches = std.ArrayListUnmanaged(*Node){};
             print("Prefixes : {}\n", .{prefixes.len});
             for (prefixes) |prefix| {
-                try stderr.print("\tPrefix len: {}, Apps len: {}\n", .{ prefix.len, apps.len });
+                print("\tPrefix len: {}, Apps len: {}\n", .{ prefix.len, apps.len });
                 print("\tEnd pointer value: ", .{});
-                if (prefix.end_ptr.val) |val| val.write(stderr) catch
+                if (prefix.end_ptr.val) |val| val.write(err_stream) catch
                     unreachable else print("null", .{});
                 print("\n", .{});
-                if (prefix.len == apps.len)
+                if (prefix.len == apps.len) if (prefix.end_ptr.val) |val|
                     // Unwrap the val as pat, because it is always inserted as such
-                    try matches.append(allocator, if (prefix.end_ptr.val) |val|
-                        val
-                    else
-                        null);
+                    try matches.append(allocator, val);
             }
 
             return try matches.toOwnedSlice(allocator);
@@ -985,9 +983,8 @@ pub fn PatternWithContext(
 const testing = std.testing;
 
 // for debugging with zig test --test-filter, comment this import
-const verbose_tests = @import("build_options").verbose_tests;
 // const stderr = if (true)
-const stderr = if (verbose_tests)
+const err_stream = if (@import("build_options").verbose_tests)
     std.io.getStdErr().writer()
 else
     std.io.null_writer;
@@ -1013,10 +1010,10 @@ test "Pattern: eql" {
         Node{ .key = "Aa" },
         Node{ .key = "Bb" },
     }, val2);
-    try p1.write(stderr);
-    try stderr.writeByte('\n');
-    try p_insert.write(stderr);
-    try stderr.writeByte('\n');
+    try p1.write(err_stream);
+    try err_stream.writeByte('\n');
+    try p_insert.write(err_stream);
+    try err_stream.writeByte('\n');
     try testing.expect(p1.eql(p_insert));
 }
 
@@ -1041,7 +1038,7 @@ test "should behave like a set when given void" {
     // }
 
     print("\nSet Pattern:\n", .{});
-    try pat.write(stderr);
+    try pat.write(err_stream);
     print("\n", .{});
     const prefix = pat.matchExactPrefix(nodes1);
     // Even though there is a match, the val is null because we didn't insert

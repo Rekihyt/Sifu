@@ -117,17 +117,13 @@ pub fn main() !void {
             // if (matches) |m|
             //     try m.write(buff_stdout);
             const matches = try repl_pat.match(allocator, apps);
+            defer allocator.free(matches);
             // If not inserting, then try to match the expression
             if (matches.len > 0) {
                 for (matches) |matched| {
                     print("Match: ", .{});
-                    if (matched) |m| {
-                        try m.write(buff_stdout);
-                        m.delete(allocator);
-                    } else
-                    // A successful match but null value is different from
-                    // a non-match
-                    _ = try buff_writer.write("None");
+                    try matched.write(buff_stdout);
+                    // matched.deleteChildren(allocator);
                     _ = try buff_writer.write("\n");
                 }
             } else print("No match\n", .{});
