@@ -113,9 +113,6 @@ pub fn main() !void {
                 },
                 else => {},
             }
-            // const matches = repl_pat.matchExact(apps);
-            // if (matches) |m|
-            //     try m.write(buff_stdout);
             const matches = try repl_pat.match(allocator, apps);
             defer allocator.free(matches);
             // If not inserting, then try to match the expression
