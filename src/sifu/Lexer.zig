@@ -266,12 +266,7 @@ pub fn Lexer(comptime Reader: type) type {
 
         fn isSep(char: u8) bool {
             return switch (char) {
-                // zig fmt: off
-        ',', ';', '(', ')',
-        '[', ']', '{', '}',
-        '"', '\'', '`', 
-        // zig fmt: on
-                => true,
+                ',', ';', '(', ')', '[', ']', '{', '}', '"', '\'', '`' => true,
                 else => false,
             };
         }
@@ -279,10 +274,9 @@ pub fn Lexer(comptime Reader: type) type {
         fn isInfix(char: u8) bool {
             return switch (char) {
                 // zig fmt: off
-        '.', ':', '-', '+', '=', '<', '>', '%',
-        '^', '*', '&', '|', '/', '\\', '@', '!',
-        '?', '~',
-        // zig fmt: on
+                '.', ':', '-', '+', '=', '<', '>', '%', '^',
+                '*', '&', '|', '/', '\\', '@', '!', '?', '~',
+                // zig fmt: on
                 => true,
                 else => false,
             };

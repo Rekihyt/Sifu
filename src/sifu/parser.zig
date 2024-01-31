@@ -56,23 +56,26 @@ pub fn parse(allocator: Allocator, lexer: anytype) !?[]Ast {
     return result;
 }
 
-/// Parse until sep is encountered, or a newline.
+/// Parse until terminal is encountered, or a newline. A null terminal will
+/// parse until eof.
 ///
 /// Memory can be freed by using an arena allocator, or walking the tree and
-/// freeing each app. Does not allocate on error/null.
+/// freeing each app. Does not allocate on errors or empty parses.
 /// Returns:
-/// - true if sep was found
-/// - false if sep wasn't found, but something was parsed
+/// - true if terminal was found
+/// - false if terminal wasn't found, but something was parsed
 /// - null if no tokens were parsed
 fn parseUntil(
     allocator: Allocator,
     lexer: anytype,
     found_sep: *bool,
-    sep: ?u8, // must be a greedily parsed, single char sep
+    terminal: ?u8, // must be a greedily parsed, single char terminal
 ) ![]Ast {
     _ = try lexer.peek() orelse
         return &.{};
 
+    // Track the last comma, kind of like an open bracket
+    var comma_index: usize = 0;
     // Many patterns will be leaves, so it makes sense to assume an app
     // of size 1. ArrayList's `append` function will allocate space for
     // an extra 10, which this avoids
@@ -80,15 +83,15 @@ fn parseUntil(
     found_sep.* = while (try lexer.next()) |token| {
         const lit = token.lit;
         switch (token.type) {
-            .NewLine => break '\n' == sep,
+            .NewLine => break '\n' == terminal,
             // Vals always have at least one char
-            .Val => if (lit[0] == sep)
-                break true, // ignore sep
+            .Val => if (lit[0] == terminal)
+                break true, // ignore terminal
             else => {},
         }
         switch (token.type) {
             .Val => switch (lit[0]) {
-                // Separators are parsed greedily, so its impossible to
+                // Terminals are parsed greedily, so its impossible to
                 // encounter any with more than one char (like "{}")
                 '(' => {
                     var matched: bool = undefined;
@@ -125,46 +128,77 @@ fn parseUntil(
                         allocator.free(nested);
                     }
                     try stderr.print("Nested Pat: {?}\n", .{matched});
-                    // for (asts) |na| {
-                    // try stderr.writeAll("Children: \n");
-                    // try na.write(stderr);
-                    // }
-                    _ = if (nested.len > 0 and nested[0] == .key and
-                        mem.eql(u8, nested[0].key.lit, "->"))
-                        try pat.insert(
-                            allocator,
-                            // Infix ops always have an apps appended
-                            nested[1].apps,
-                            // Preserve semantic difference between a
-                            // non-match and a match with an empty app as
-                            // value.
-                            if (nested.len >= 2)
-                                Ast{ .apps = nested[2..] }
-                            else
-                                null,
-                        )
-                    else
-                        try pat.insert(allocator, nested, null);
-                    try result.append(allocator, try Ast.ofPat(allocator, pat));
+                    // _ = if (nested.len > 0 and nested[0] == .key) {
+                    // Parse match expr
+                    // if (mem.eql(u8, nested[0].key.lit, ":"))
+                    //     try pat.insert(
+                    //         allocator,
+                    //         // Infix ops always have an apps appended
+                    //         nested[1].apps,
+                    //         // Preserve semantic difference between a
+                    //         // non-match and a match with an empty app as
+                    //         // value.
+                    //         if (nested.len >= 2)
+                    //             Ast{ .apps = nested[2..] }
+                    //         else
+                    //             null,
+                    //     )
+                    // else // Parse rewrite expr
+                    // if (mem.eql(u8, nested[0].key.lit, "->"))
+                    //     try pat.insert(
+                    //         allocator,
+                    //         // Infix ops always have an apps appended
+                    //         nested[1].apps,
+                    //         // Preserve semantic difference between a
+                    //         // non-match and a match with an empty app as
+                    //         // value.
+                    //         if (nested.len >= 2)
+                    //             Ast{ .apps = nested[2..] }
+                    //         else
+                    //             null,
+                    //     );
+                    _ = try pat.insert(allocator, nested, null);
+                    try result.append(allocator, try Ast.ofPattern(allocator, pat));
+                },
+                ',' => {
+                    var left_args = ArrayListUnmanaged(Ast){};
+                    // Copy the previous apps starting from the last comma until
+                    // this one and add them as a single app to result.
+                    for (result.items[comma_index..]) |app| {
+                        try left_args.append(allocator, app);
+                    }
+                    result.shrinkRetainingCapacity(comma_index);
+                    comma_index += 1;
+                    try result.append(allocator, Ast{
+                        .apps = try left_args.toOwnedSlice(allocator),
+                    });
                 },
                 else => try result.append(allocator, Ast.ofLit(token)),
             },
             // The current list becomes the first argument to the infix, then we
             // add any following asts to that
             // TODO: special case commas for lists to use arrays under the hood
-            .Infix => switch (lit[0]) {
-                // ',' => {
-
-                // },
-                else => {
-                    var infix_apps = try ArrayListUnmanaged(Ast)
-                        .initCapacity(allocator, 2);
-                    infix_apps.appendSliceAssumeCapacity(&.{
-                        Ast.ofLit(token),
-                        Ast{ .apps = try result.toOwnedSlice(allocator) },
+            .Infix => {
+                var left_args = ArrayListUnmanaged(Ast){};
+                for (result.items[comma_index..]) |app| {
+                    try left_args.append(allocator, app);
+                }
+                result.shrinkRetainingCapacity(comma_index);
+                const left_args_slice = try left_args.toOwnedSlice(allocator);
+                if (mem.eql(u8, lit, ":")) {
+                    try result.append(allocator, Ast{
+                        .match = left_args_slice,
                     });
-                    result = infix_apps;
-                },
+                } else if (mem.eql(u8, lit, "->")) {
+                    try result.append(allocator, Ast{
+                        .arrow = left_args_slice,
+                    });
+                } else {
+                    try result.appendSlice(allocator, &.{
+                        Ast.ofLit(token),
+                        Ast{ .apps = left_args_slice },
+                    });
+                }
             },
             .Var => try result.append(allocator, Ast.ofVar(token)),
             .Str, .I, .F, .U => try result.append(allocator, Ast.ofLit(token)),
@@ -207,7 +241,7 @@ fn parseUntil(
 //             try writer.writeAll(")");
 //         } else try writer.writeAll("()"),
 //         .key => |key| try writer.print("{s}", .{key.lit}),
-//         .@"var" => |v| try writer.print("{s}", .{v}),
+//         .variable => |v| try writer.print("{s}", .{v}),
 //         .pat => |pat| try pat.print(writer),
 //     }
 // }
@@ -278,7 +312,7 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
                         actual_elem.key.lit,
                     );
                 },
-                .@"var" => |v| try testing.expect(v.eql(actual_elem.@"var")),
+                .variable => |v| try testing.expect(v.eql(actual_elem.variable)),
                 .apps => try expectEqualApps(expected_elem, actual_elem),
                 .pat => |pat| try testing.expect(pat.eql(actual_elem.pat.*)),
             }

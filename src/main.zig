@@ -113,7 +113,7 @@ pub fn main() !void {
                 },
                 else => {},
             }
-            const matches = try repl_pat.match(allocator, apps);
+            const matches = try repl_pat.matchRef(allocator, apps);
             defer allocator.free(matches);
             // If not inserting, then try to match the expression
             if (matches.len > 0) {
