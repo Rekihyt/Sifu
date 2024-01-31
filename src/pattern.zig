@@ -282,12 +282,9 @@ pub fn PatternWithContext(
                 switch (self) {
                     .key => |key| _ = try util.genericWrite(key, writer),
                     .variable => |variable| _ = try util.genericWrite(variable, writer),
-                    .apps => |apps| {
+                    .apps => {
                         try writer.writeByte('(');
-                        for (apps) |app| {
-                            try app.writeSExp(writer, optional_indent);
-                            try writer.writeByte(' ');
-                        }
+                        try self.writeComma(writer, optional_indent);
                         try writer.writeByte(')');
                     },
                     .match => |apps| {
@@ -306,6 +303,14 @@ pub fn PatternWithContext(
                 self: Node,
                 writer: anytype,
             ) !void {
+                return self.writeComma(writer, 0);
+            }
+
+            pub fn writeComma(
+                self: Node,
+                writer: anytype,
+                optional_indent: ?usize,
+            ) @TypeOf(writer).Error!void {
                 switch (self) {
                     .apps => |apps| {
                         var all_apps = true;
@@ -316,12 +321,12 @@ pub fn PatternWithContext(
                             };
                         if (all_apps) {
                             for (apps) |app| {
-                                try app.writeIndent(writer, 0);
+                                try app.writeIndent(writer, optional_indent);
                                 try writer.writeAll(", ");
                             }
-                        } else try self.writeIndent(writer, 0);
+                        } else try self.writeIndent(writer, optional_indent);
                     },
-                    else => try self.writeIndent(writer, 0),
+                    else => try self.writeIndent(writer, optional_indent),
                 }
             }
 
