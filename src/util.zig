@@ -16,21 +16,27 @@ pub fn print(comptime fmt: []const u8, args: anytype) void {
     stderr.print(fmt, args) catch unreachable;
 }
 
+pub fn mapOption(option: anytype, function: anytype) @TypeOf(function(option)) {
+    return if (option) |value|
+        function(value)
+    else
+        null;
+}
+
 /// Get a reference to a nullable field in `struct_ptr`, creating one if it
 /// doesn't already exist.
 pub fn getOrInit(
     comptime Field: anytype,
     struct_ptr: anytype,
     allocator: Allocator,
-) !*@typeInfo(@TypeOf(struct_ptr)).Pointer.child {
-    const T = @typeInfo(@TypeOf(struct_ptr)).Pointer.child;
-    // @compileLog(@tagName(field));
-    // const FieldType = switch (@typeInfo(T)) {
-    //     .Struct => |S| S.
-    // };
-    // _ = FieldType;
-    const field = @field(struct_ptr, @tagName(Field)) orelse
-        try T.create(allocator);
+) !@typeInfo(@TypeOf(@field(struct_ptr, @tagName(Field)))).Optional.child {
+    const field_option = @field(struct_ptr, @tagName(Field));
+    const FieldPtrType = @typeInfo(@TypeOf(field_option)).Optional.child;
+    const FieldType = @typeInfo(FieldPtrType).Pointer.child;
+    const field = field_option orelse
+        try allocator.create(FieldType);
+    // @compileLog(@TypeOf(field));
+    field.* = FieldType{};
     @field(struct_ptr, @tagName(Field)) = field;
     return field;
 }

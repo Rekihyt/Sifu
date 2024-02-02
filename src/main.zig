@@ -38,7 +38,7 @@ pub fn main() !void {
 
     var match_gpa =
         std.heap.GeneralPurposeAllocator(
-        .{ .safety = true, .verbose_log = true },
+        .{ .safety = true, .verbose_log = false },
     ){};
     defer _ = match_gpa.deinit();
     const match_allocator = match_gpa.allocator();
@@ -96,12 +96,13 @@ pub fn main() !void {
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
 
+        // TODO: fix
         if (apps.len > 0) blk: {
             switch (apps[0]) {
-                .key => |key| if (mem.eql(u8, key.lit, "->")) {
+                .arrow => |arrow_apps| {
                     const result = try repl_pat.insert(
                         allocator,
-                        apps[1].apps,
+                        arrow_apps,
                         if (apps.len >= 2)
                             Ast{ .apps = apps[2..] }
                         else

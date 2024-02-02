@@ -84,19 +84,19 @@ fn parseUntil(
         const lit = token.lit;
         switch (token.type) {
             .NewLine => break '\n' == terminal,
-            // Vals always have at least one char
-            .Val => if (lit[0] == terminal)
+            // Names always have at least one char
+            .Name => if (lit[0] == terminal)
                 break true, // ignore terminal
             else => {},
         }
         switch (token.type) {
-            .Val => switch (lit[0]) {
+            .Name => switch (lit[0]) {
                 // Terminals are parsed greedily, so its impossible to
                 // encounter any with more than one char (like "{}")
                 '(' => {
                     var matched: bool = undefined;
                     // Try to parse a nested app
-                    var nested =
+                    const nested =
                         try parseUntil(allocator, lexer, &matched, ')');
 
                     try stderr.print("Nested App: {?}\n", .{matched});
@@ -128,35 +128,6 @@ fn parseUntil(
                         allocator.free(nested);
                     }
                     try stderr.print("Nested Pat: {?}\n", .{matched});
-                    // _ = if (nested.len > 0 and nested[0] == .key) {
-                    // Parse match expr
-                    // if (mem.eql(u8, nested[0].key.lit, ":"))
-                    //     try pat.insert(
-                    //         allocator,
-                    //         // Infix ops always have an apps appended
-                    //         nested[1].apps,
-                    //         // Preserve semantic difference between a
-                    //         // non-match and a match with an empty app as
-                    //         // value.
-                    //         if (nested.len >= 2)
-                    //             Ast{ .apps = nested[2..] }
-                    //         else
-                    //             null,
-                    //     )
-                    // else // Parse rewrite expr
-                    // if (mem.eql(u8, nested[0].key.lit, "->"))
-                    //     try pat.insert(
-                    //         allocator,
-                    //         // Infix ops always have an apps appended
-                    //         nested[1].apps,
-                    //         // Preserve semantic difference between a
-                    //         // non-match and a match with an empty app as
-                    //         // value.
-                    //         if (nested.len >= 2)
-                    //             Ast{ .apps = nested[2..] }
-                    //         else
-                    //             null,
-                    //     );
                     _ = try pat.insert(allocator, nested, null);
                     try result.append(allocator, try Ast.ofPattern(allocator, pat));
                 },
@@ -175,32 +146,26 @@ fn parseUntil(
                 },
                 else => try result.append(allocator, Ast.ofLit(token)),
             },
-            // The current list becomes the first argument to the infix, then we
-            // add any following asts to that
-            // TODO: special case commas for lists to use arrays under the hood
+            // TODO: precedence: arrow < commas < match <=? infix
             .Infix => {
+                // Gather right args starting from the previous comma
                 var left_args = ArrayListUnmanaged(Ast){};
                 for (result.items[comma_index..]) |app| {
                     try left_args.append(allocator, app);
                 }
-                result.shrinkRetainingCapacity(comma_index);
                 const left_args_slice = try left_args.toOwnedSlice(allocator);
-                if (mem.eql(u8, lit, ":")) {
-                    try result.append(allocator, Ast{
-                        .match = left_args_slice,
-                    });
-                } else if (mem.eql(u8, lit, "->")) {
-                    try result.append(allocator, Ast{
-                        .arrow = left_args_slice,
-                    });
-                } else {
-                    try result.appendSlice(allocator, &.{
-                        Ast.ofLit(token),
-                        Ast{ .apps = left_args_slice },
-                    });
-                }
+                result.shrinkRetainingCapacity(comma_index);
+                if (mem.eql(u8, lit, ":"))
+                    try result.append(allocator, Ast{ .match = left_args_slice })
+                else if (mem.eql(u8, lit, "->"))
+                    try result.append(allocator, Ast{ .arrow = left_args_slice })
+                else
+                    try result.appendSlice(
+                        allocator,
+                        &.{ Ast.ofLit(token), Ast{ .apps = left_args_slice } },
+                    );
             },
-            .Var => try result.append(allocator, Ast.ofVar(token)),
+            .Var => try result.append(allocator, Ast.ofVar(token.lit)),
             .Str, .I, .F, .U => try result.append(allocator, Ast.ofLit(token)),
             .Comment, .NewLine => try result.append(allocator, Ast.ofLit(token)),
         }
@@ -333,7 +298,7 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
 
 test "All Asts" {
     const input =
-        \\Val1,5;
+        \\Name1,5;
         \\var1.
         \\Infix -->
         \\5 < 10.V
@@ -352,12 +317,12 @@ test "All Asts" {
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             .{ .key = .{
-                .type = .Val,
-                .lit = "Val1",
+                .type = .Name,
+                .lit = "Name1",
                 .context = 0,
             } },
             .{ .key = .{
-                .type = .Val,
+                .type = .Name,
                 .lit = ",",
                 .context = 4,
             } },
@@ -367,7 +332,7 @@ test "All Asts" {
                 .context = 5,
             } },
             .{ .key = .{
-                .type = .Val,
+                .type = .Name,
                 .lit = ";",
                 .context = 6,
             } },
@@ -381,17 +346,17 @@ test "App: simple vals" {
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             Ast{ .key = .{
-                .type = .Val,
+                .type = .Name,
                 .lit = "Aa",
                 .context = 0,
             } },
             Ast{ .key = .{
-                .type = .Val,
+                .type = .Name,
                 .lit = "Bb",
                 .context = 3,
             } },
             Ast{ .key = .{
-                .type = .Val,
+                .type = .Name,
                 .lit = "Cc",
                 .context = 6,
             } },
@@ -576,14 +541,14 @@ test "App: simple newlines" {
     const expecteds = &[_]Ast{
         Ast{ .apps = &.{
             Ast{ .key = .{
-                .type = .Val,
+                .type = .Name,
                 .lit = "Foo",
                 .context = 0,
             } },
         } },
         Ast{ .apps = &.{
             Ast{ .key = .{
-                .type = .Val,
+                .type = .Name,
                 .lit = "Bar",
                 .context = 0,
             } },

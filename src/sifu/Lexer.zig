@@ -92,7 +92,7 @@ pub fn Lexer(comptime Reader: type) type {
                     .Infix,
                 '#' => try self.comment(),
                 else => if (isSep(char))
-                    .Val
+                    .Name
                 else if (isInfix(char))
                     try self.infix()
                 else if (isUpper(char) or char == '@')
@@ -177,7 +177,7 @@ pub fn Lexer(comptime Reader: type) type {
 
         fn value(self: *Self) !Type {
             try self.nextIdent();
-            return .Val;
+            return .Name;
         }
 
         fn variable(self: *Self) !Type {
@@ -327,7 +327,7 @@ fn expectEqualTokens(
     }
 }
 
-test "Term: Vals" {
+test "Term: Names" {
     const input =
         \\A B C
         \\Word-43
@@ -343,7 +343,7 @@ test "Term: Vals" {
     try expectEqualTokens(input, expecteds);
 }
 
-test "Term: Val and Infix splitting" {
+test "Term: Name and Infix splitting" {
     const input = "\t\n\n\t\r\r\t\t  -Sd+-\t\n\t  +>-VB-NM+\t\n";
     const expecteds = &.{
         "\n", "\n",  "-",      "Sd+-",

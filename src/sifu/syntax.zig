@@ -12,10 +12,12 @@ const Lexer = @import("Lexer.zig");
 const Wyhash = std.hash.Wyhash;
 
 /// Builtin Sifu types, values here correspond exactly to a type name in Sifu.
+/// They don't make up part of Nodes directly because Nodes are intended as a
+/// standalone datastructure and not an Ast.
 pub const Type = enum {
-    Val,
-    Str,
+    Name,
     Var,
+    Str,
     Infix,
     // Ints/UInts are be applied to a number which signifies their size
     I, // signed

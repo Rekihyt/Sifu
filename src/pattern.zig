@@ -107,6 +107,8 @@ pub fn PatternWithContext(
         /// position, and must implement `toString()` for pattern conversion. It
         /// could also be a simple type for optimization purposes.
         /// Sifu maps the syntax described below to this data structure, but that syntax is otherwise irrelevant.
+        /// Any infix operator that isn't a builtin (match, arrow or comma) is
+        /// parsed into an app.
         pub const Node = union(enum) {
             /// An upper case term.
             key: Key,
@@ -122,6 +124,7 @@ pub fn PatternWithContext(
             /// An arrow expression denoting a rewrite, i.e. `A B C -> 123`.
             /// Same parsing as `match`.
             arrow: []const Node,
+            // The pointer here saves space depending on the size of `Key`
             /// An expression in braces.
             pattern: *Self,
 
@@ -284,16 +287,18 @@ pub fn PatternWithContext(
                     .variable => |variable| _ = try util.genericWrite(variable, writer),
                     .apps => {
                         try writer.writeByte('(');
-                        try self.writeComma(writer, optional_indent);
+                        try self.writeSemicolon(writer, optional_indent);
                         try writer.writeByte(')');
                     },
                     .match => |apps| {
-                        try writer.writeAll(": ");
-                        try Node.ofApps(apps).writeSExp(writer, optional_indent);
+                        try Node.ofApps(apps)
+                            .writeSemicolon(writer, optional_indent);
+                        try writer.writeAll(" : ");
                     },
                     .arrow => |apps| {
-                        try writer.writeAll("-> ");
-                        try Node.ofApps(apps).writeSExp(writer, optional_indent);
+                        try Node.ofApps(apps)
+                            .writeSemicolon(writer, optional_indent);
+                        try writer.writeAll(" -> ");
                     },
                     .pattern => |pattern| try pattern.writeIndent(writer, optional_indent),
                 }
@@ -303,10 +308,10 @@ pub fn PatternWithContext(
                 self: Node,
                 writer: anytype,
             ) !void {
-                return self.writeComma(writer, 0);
+                return self.writeSemicolon(writer, 0);
             }
 
-            pub fn writeComma(
+            pub fn writeSemicolon(
                 self: Node,
                 writer: anytype,
                 optional_indent: ?usize,
@@ -363,6 +368,12 @@ pub fn PatternWithContext(
             end_ptr: *const Self,
         };
 
+        /// This encodes match expressions used as a pattern, i.e. `x: Int -> 2`
+        pub const Match = struct {
+            query: []const Node,
+            subpat: *const Self, // always an immutable reference
+        };
+
         /// A Var matches and stores a locally-unique key. During rewriting,
         /// whenever the key is encountered again, it is rewritten to this
         /// pattern's val. A Var pattern matches anything, including nested
@@ -376,11 +387,16 @@ pub fn PatternWithContext(
         /// deterministically, as long as they have only had elements inserted
         /// and not removed. This is empty when there are no / nested patterns in
         /// this pattern.
-        pat_map: PatMap = PatMap{},
+        pat_map: ?*PatMap = null,
 
         /// This is for nested apps that this pattern should match. Each layer
         /// of pointer redirection encodes a level of app nesting (parens).
         sub_apps: ?*Self = null,
+
+        match: ?*Match = null,
+
+        /// This encodes arrow expressions used as a pattern.
+        arrow: ?*Self = null,
 
         /// Maps literal terms to the next pattern, if there is one. These form
         /// the branches of the trie.
@@ -411,16 +427,20 @@ pub fn PatternWithContext(
                     try entry.value_ptr.copy(allocator),
                 );
 
-            var pat_map_iter = self.pat_map.iterator();
-            while (pat_map_iter.next()) |entry| {
-                // const new_key_ptr = try allocator.create(Self);
-                // new_key_ptr.* = try entry.key_ptr.*.copy(allocator);
+            if (self.pat_map) |pat_map| {
+                var pat_map_iter = pat_map.iterator();
+                result.pat_map = try allocator.create(PatMap);
+                result.pat_map.?.* = PatMap{};
+                while (pat_map_iter.next()) |entry| {
+                    // const new_key_ptr = try allocator.create(Self);
+                    // new_key_ptr.* = try entry.key_ptr.*.copy(allocator);
 
-                try result.pat_map.putNoClobber(
-                    allocator,
-                    try entry.key_ptr.*.copy(allocator),
-                    try entry.value_ptr.*.copy(allocator),
-                );
+                    try result.pat_map.?.putNoClobber(
+                        allocator,
+                        try entry.key_ptr.*.copy(allocator),
+                        try entry.value_ptr.*.copy(allocator),
+                    );
+                }
             }
             if (self.val) |val| {
                 result.val = try allocator.create(Node);
@@ -451,15 +471,17 @@ pub fn PatternWithContext(
 
             self.map.deinit(allocator);
 
-            for (self.pat_map.keys()) |*pattern|
-                pattern.deleteChildren(allocator);
-            // Pattern/Node values must be deleted because they are allocated
-            // recursively
-            for (self.pat_map.values()) |*pattern|
-                pattern.deleteChildren(allocator);
+            if (self.pat_map) |pat_map| {
+                for (pat_map.keys()) |*pattern|
+                    pattern.deleteChildren(allocator);
+                // Pattern/Node values must be deleted because they are allocated
+                // recursively
+                for (pat_map.values()) |*pattern|
+                    pattern.deleteChildren(allocator);
 
-            self.pat_map.deinit(allocator);
-
+                pat_map.deinit(allocator);
+                allocator.destroy(pat_map);
+            }
             if (self.var_next) |var_next|
                 var_next.delete(allocator);
 
@@ -480,13 +502,15 @@ pub fn PatternWithContext(
         pub fn hasherUpdate(self: Self, hasher: anytype) void {
             for (self.map.keys()) |key|
                 hasher.update(&mem.toBytes(KeyCtx.hash(undefined, key)));
-            for (self.pat_map.keys()) |p|
-                p.hasherUpdate(hasher);
-
             for (self.map.values()) |p|
                 p.hasherUpdate(hasher);
-            for (self.pat_map.values()) |p|
-                p.hasherUpdate(hasher);
+
+            if (self.pat_map) |pat_map| {
+                for (pat_map.keys()) |p|
+                    p.hasherUpdate(hasher);
+                for (pat_map.values()) |p|
+                    p.hasherUpdate(hasher);
+            }
 
             if (self.option_var) |v|
                 hasher.update(&mem.toBytes(VarCtx.hash(undefined, v)));
@@ -535,7 +559,7 @@ pub fn PatternWithContext(
 
             const sub_apps_eql = if (self.sub_apps) |self_sub_apps|
                 if (other.sub_apps) |other_sub_apps|
-                    self_sub_apps.*.eql(other_sub_apps.*)
+                    self_sub_apps.eql(other_sub_apps.*)
                 else
                     false
             else
@@ -551,17 +575,18 @@ pub fn PatternWithContext(
                 Self.eql,
             ) or return false;
 
-            _ = util.sliceEql(
-                self.pat_map.keys(),
-                other.pat_map.keys(),
-                Self.eql,
-            ) or return false;
-
-            _ = util.sliceEql(
-                self.pat_map.values(),
-                other.pat_map.values(),
-                Self.eql,
-            ) or return false;
+            const pat_maps_eql = if (self.pat_map) |self_pat_map|
+                if (other.pat_map) |other_pat_map|
+                    util.sliceEql(
+                        self_pat_map.keys(),
+                        other_pat_map.keys(),
+                        Self.eql,
+                    )
+                else
+                    false
+            else
+                other.pat_map == null;
+            if (!pat_maps_eql) return false;
 
             return true;
         }
@@ -574,11 +599,6 @@ pub fn PatternWithContext(
 
         /// Like matchExactPrefix but matches only a single node exactly.
         pub fn matchExactNode(pattern: *const Self, node: Node) ?*Self {
-            // switch (node) {
-            //     .key => |key| if (pattern.map.getPtr(key)) |lit_match|
-            //         lit_match.write(err_stream) catch unreachable,
-            //     else => {},
-            // }
             return switch (node) {
                 .key => |key| pattern.map.getPtr(key),
 
@@ -605,9 +625,17 @@ pub fn PatternWithContext(
                     else
                         null;
                 },
+                // A match expression represents a subquery and subpattern that
+                // should be matched. For each result of this submatch, the main
+                // match continues.
                 .match => |_| @panic("unimplemented"),
+                // An arrow expression, when matching, represents a query that
+                // has a value. The values must be equal to match.
                 .arrow => |_| @panic("unimplemented"),
-                .pattern => |node_pattern| pattern.pat_map.getPtr(node_pattern.*),
+                .pattern => |node_pattern| if (pattern.pat_map) |pat_map|
+                    pat_map.getPtr(node_pattern.*)
+                else
+                    null,
             };
         }
 
@@ -753,7 +781,12 @@ pub fn PatternWithContext(
                         current_matched.option_var = app;
                         current_matched.val = current.val;
                         current.val;
-                        current_matched = util.getOrInit(.var_next, current_matched, allocator);
+                        current_matched = util.getOrInit(
+                            .var_next,
+                            current_matched,
+                            undefined,
+                            allocator,
+                        );
                         continue;
                     }
                     // Otherwise add all entries in this pattern
@@ -977,7 +1010,11 @@ pub fn PatternWithContext(
                     current.option_var = v;
                     if (current.var_next == null)
                         found_existing = false;
-                    current = try util.getOrInit(.var_next, current, allocator);
+                    current = try util.getOrInit(
+                        .var_next,
+                        current,
+                        allocator,
+                    );
                 },
                 .apps => |apps| {
                     if (current.sub_apps == null)
@@ -997,7 +1034,8 @@ pub fn PatternWithContext(
                 .match => |_| @panic("unimplemented"),
                 .arrow => |_| @panic("unimplemented"),
                 .pattern => |sub_pattern| {
-                    const put_result = try current.pat_map.getOrPut(
+                    var pat_map = try util.getOrInit(.pat_map, current, allocator);
+                    const put_result = try pat_map.getOrPut(
                         allocator,
                         try sub_pattern.copy(allocator),
                     );
