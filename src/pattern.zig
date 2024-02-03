@@ -284,23 +284,35 @@ pub fn PatternWithContext(
                     try writer.writeByte(' ');
                 switch (self) {
                     .key => |key| _ = try util.genericWrite(key, writer),
-                    .variable => |variable| _ = try util.genericWrite(variable, writer),
+                    .variable => |variable| _ = try util.genericWrite(
+                        variable,
+                        writer,
+                    ),
                     .apps => {
                         try writer.writeByte('(');
                         try self.writeSemicolon(writer, optional_indent);
                         try writer.writeByte(')');
                     },
                     .match => |apps| {
+                        // These parens are for debugging
+                        try writer.writeByte('(');
                         try Node.ofApps(apps)
                             .writeSemicolon(writer, optional_indent);
+                        try writer.writeByte(')');
                         try writer.writeAll(" : ");
                     },
                     .arrow => |apps| {
+                        // These parens are for debugging
+                        try writer.writeByte('(');
                         try Node.ofApps(apps)
                             .writeSemicolon(writer, optional_indent);
+                        try writer.writeByte(')');
                         try writer.writeAll(" -> ");
                     },
-                    .pattern => |pattern| try pattern.writeIndent(writer, optional_indent),
+                    .pattern => |pattern| try pattern.writeIndent(
+                        writer,
+                        optional_indent,
+                    ),
                 }
             }
 
@@ -368,7 +380,8 @@ pub fn PatternWithContext(
             end_ptr: *const Self,
         };
 
-        /// This encodes match expressions used as a pattern, i.e. `x: Int -> 2`
+        /// This encodes match expressions used as a key in a pattern, i.e. `x:
+        /// Int -> 2`
         pub const Match = struct {
             query: []const Node,
             subpat: *const Self, // always an immutable reference
@@ -1076,7 +1089,6 @@ pub fn PatternWithContext(
                 try var_next.write(writer);
 
             if (self.sub_apps) |sub_apps| {
-
                 // print("Subpattern: {}\n", .{sub_apps.map.count()});
                 try sub_apps.write(writer);
             }
@@ -1098,10 +1110,7 @@ pub fn PatternWithContext(
             try writer.writeByte('{');
             try writer.writeAll(
                 if (optional_indent) |_|
-                    if (self.map.count() > 0)
-                        "\n"
-                    else
-                        ""
+                    if (self.map.count() > 0) "\n" else ""
                 else
                     " ",
             );

@@ -96,23 +96,18 @@ pub fn main() !void {
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
 
-        // TODO: fix
+        // TODO: insert with shell command like @insert instead of special
+        // casing a top level insert
         if (apps.len > 0) blk: {
-            switch (apps[0]) {
-                .arrow => |arrow_apps| {
-                    const result = try repl_pat.insert(
-                        allocator,
-                        arrow_apps,
-                        if (apps.len >= 2)
-                            Ast{ .apps = apps[2..] }
-                        else
-                            null,
-                    );
-                    _ = result;
-                    // try stderr.print("New pat ptr: {*}\n", .{result});
-                    break :blk;
-                },
-                else => {},
+            if (apps[0] == .arrow) {
+                const result = try repl_pat.insert(
+                    allocator,
+                    apps[0].arrow,
+                    Ast{ .apps = apps[1..] },
+                );
+                _ = result;
+                // try stderr.print("New pat ptr: {*}\n", .{result});
+                break :blk;
             }
             const matches = try repl_pat.matchRef(allocator, apps);
             defer allocator.free(matches);

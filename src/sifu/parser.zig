@@ -65,6 +65,14 @@ pub fn parse(allocator: Allocator, lexer: anytype) !?[]Ast {
 /// - true if terminal was found
 /// - false if terminal wasn't found, but something was parsed
 /// - null if no tokens were parsed
+// Parse algorithm tracks 4 levels of precedence. Everything is an array, so
+// lower precedence can be expressed as the prefix of the apps that isn't added
+// as an argument to the higher precedence operator. For example, in `1 -> 2 +
+// 3`, when `+` is parsed `Arrow (1) 2` is on the stack. The prefix of length 1
+// (`Arrow (1)`) has lower precedence than infix, so only anything after it (in
+// this case `2`) is added as the first argument to `+`, resulting in `Arrow (1)
+// + (2) 3`.
+// Precedence: arrow < commas < infix < match
 fn parseUntil(
     allocator: Allocator,
     lexer: anytype,
@@ -74,8 +82,13 @@ fn parseUntil(
     _ = try lexer.peek() orelse
         return &.{};
 
-    // Track the last comma, kind of like an open bracket
-    var comma_index: usize = 0;
+    // Track last arrow
+    var arrow_len: usize = 0;
+    // Track the last comma since an arrow, kind of like an open bracket
+    var comma_len: usize = 0;
+    // Track last infix op (not a builtin arrow or match) since comma
+    var infix_len: usize = 0;
+
     // Many patterns will be leaves, so it makes sense to assume an app
     // of size 1. ArrayList's `append` function will allocate space for
     // an extra 10, which this avoids
@@ -119,7 +132,8 @@ fn parseUntil(
                     var nested =
                         try parseUntil(allocator, lexer, &matched, '}');
 
-                    // if (!matched) // TODO: check if matched brace was found
+                    // if (!matched)
+                    // TODO: check if matched brace was actually found
 
                     // TODO: fix parsing nested patterns with comma seperators
                     // TODO: optimize by removing the delete
@@ -132,38 +146,45 @@ fn parseUntil(
                     try result.append(allocator, try Ast.ofPattern(allocator, pat));
                 },
                 ',' => {
-                    var left_args = ArrayListUnmanaged(Ast){};
+                    const offset = comma_len;
+                    infix_len = 0;
+                    comma_len += 1;
                     // Copy the previous apps starting from the last comma until
                     // this one and add them as a single app to result.
-                    for (result.items[comma_index..]) |app| {
-                        try left_args.append(allocator, app);
-                    }
-                    result.shrinkRetainingCapacity(comma_index);
-                    comma_index += 1;
+                    const left_args_slice =
+                        try util.popSlice(&result, offset, allocator);
                     try result.append(allocator, Ast{
-                        .apps = try left_args.toOwnedSlice(allocator),
+                        .apps = left_args_slice,
                     });
                 },
                 else => try result.append(allocator, Ast.ofLit(token)),
             },
-            // TODO: precedence: arrow < commas < match <=? infix
             .Infix => {
-                // Gather right args starting from the previous comma
-                var left_args = ArrayListUnmanaged(Ast){};
-                for (result.items[comma_index..]) |app| {
-                    try left_args.append(allocator, app);
-                }
-                const left_args_slice = try left_args.toOwnedSlice(allocator);
-                result.shrinkRetainingCapacity(comma_index);
-                if (mem.eql(u8, lit, ":"))
-                    try result.append(allocator, Ast{ .match = left_args_slice })
-                else if (mem.eql(u8, lit, "->"))
-                    try result.append(allocator, Ast{ .arrow = left_args_slice })
-                else
+                if (mem.eql(u8, lit, ":")) {
+                    var offset = comma_len + infix_len + arrow_len;
+                    // Gather right args starting from the previous comma
+                    const left_args_slice =
+                        try util.popSlice(&result, offset, allocator);
+                    try result.append(allocator, Ast{ .match = left_args_slice });
+                } else if (mem.eql(u8, lit, "->")) {
+                    comma_len = 0;
+                    infix_len = 0;
+                    arrow_len += 1;
+                    // Offset 0 for lowest precedence
+                    try result.append(allocator, Ast{
+                        .arrow = try result.toOwnedSlice(allocator),
+                    });
+                } else {
+                    var offset = comma_len + arrow_len;
+                    infix_len += 1;
+                    // Gather right args starting from the previous comma
+                    const left_args_slice =
+                        try util.popSlice(&result, offset, allocator);
                     try result.appendSlice(
                         allocator,
                         &.{ Ast.ofLit(token), Ast{ .apps = left_args_slice } },
                     );
+                }
             },
             .Var => try result.append(allocator, Ast.ofVar(token.lit)),
             .Str, .I, .F, .U => try result.append(allocator, Ast.ofLit(token)),
