@@ -153,9 +153,10 @@ fn parseUntil(
                     // this one and add them as a single app to result.
                     const left_args_slice =
                         try util.popSlice(&result, offset, allocator);
-                    try result.append(allocator, Ast{
-                        .apps = left_args_slice,
-                    });
+                    try result.appendSlice(
+                        allocator,
+                        &.{ Ast.ofLit(token), Ast{ .apps = left_args_slice } },
+                    );
                 },
                 else => try result.append(allocator, Ast.ofLit(token)),
             },

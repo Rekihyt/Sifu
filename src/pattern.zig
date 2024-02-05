@@ -290,14 +290,14 @@ pub fn PatternWithContext(
                     ),
                     .apps => {
                         try writer.writeByte('(');
-                        try self.writeSemicolon(writer, optional_indent);
+                        try self.writeIndent(writer, optional_indent);
                         try writer.writeByte(')');
                     },
                     .match => |apps| {
                         // These parens are for debugging
                         try writer.writeByte('(');
                         try Node.ofApps(apps)
-                            .writeSemicolon(writer, optional_indent);
+                            .writeIndent(writer, optional_indent);
                         try writer.writeByte(')');
                         try writer.writeAll(" : ");
                     },
@@ -305,7 +305,7 @@ pub fn PatternWithContext(
                         // These parens are for debugging
                         try writer.writeByte('(');
                         try Node.ofApps(apps)
-                            .writeSemicolon(writer, optional_indent);
+                            .writeIndent(writer, optional_indent);
                         try writer.writeByte(')');
                         try writer.writeAll(" -> ");
                     },
@@ -320,38 +320,14 @@ pub fn PatternWithContext(
                 self: Node,
                 writer: anytype,
             ) !void {
-                return self.writeSemicolon(writer, 0);
-            }
-
-            pub fn writeSemicolon(
-                self: Node,
-                writer: anytype,
-                optional_indent: ?usize,
-            ) @TypeOf(writer).Error!void {
-                switch (self) {
-                    .apps => |apps| {
-                        var all_apps = true;
-                        for (apps) |app|
-                            if (app != .apps) {
-                                all_apps = false;
-                                break;
-                            };
-                        if (all_apps) {
-                            for (apps) |app| {
-                                try app.writeIndent(writer, optional_indent);
-                                try writer.writeAll(", ");
-                            }
-                        } else try self.writeIndent(writer, optional_indent);
-                    },
-                    else => try self.writeIndent(writer, optional_indent),
-                }
+                return self.writeIndent(writer, 0);
             }
 
             pub fn writeIndent(
                 self: Node,
                 writer: anytype,
                 optional_indent: ?usize,
-            ) !void {
+            ) @TypeOf(writer).Error!void {
                 switch (self) {
                     // Ignore top level parens
                     .apps => |apps| for (apps) |app| {
