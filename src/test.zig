@@ -135,10 +135,10 @@ test "Pattern: simple vals" {
 
     try testing.expect(expected.eql(actual));
 
-    try testing.expect(node.eql(actual.matchExact(key).?.*));
-    try testing.expect(node2.eql(actual.matchExact(key2).?.*));
-    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchExact(key[0..1]));
-    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchExact(key2[0..1]));
+    try testing.expect(node.eql(actual.matchUnique(key).?.*));
+    try testing.expect(node2.eql(actual.matchUnique(key2).?.*));
+    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUnique(key[0..1]));
+    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUnique(key2[0..1]));
     try expected.write(stderr);
     try actual.write(stderr);
 }

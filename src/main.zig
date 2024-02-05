@@ -84,7 +84,7 @@ pub fn main() !void {
         };
         const apps = parsed_apps orelse
             // Match the empty apps for just a newline
-            if ((repl_pat.matchExactPrefix(&.{})).end_ptr.val) |node|
+            if ((repl_pat.matchUniquePrefix(&.{})).end_ptr.val) |node|
             &.{node.*}
         else
             &.{};
