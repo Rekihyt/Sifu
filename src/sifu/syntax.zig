@@ -34,7 +34,7 @@ pub const Type = enum {
 
 // This isn't really used yet, but may be in the future
 pub const Term = union(Type) {
-    Val: []const u8,
+    Name: []const u8,
     Var: []const u8,
     Infix: []const u8,
     Str: []const u8,
@@ -101,7 +101,7 @@ pub fn Token(comptime Context: type) type {
         pub fn parse(self: Self, allocator: Allocator) Oom!Term {
             _ = allocator;
             return switch (self.type) {
-                .Val, .Str, .Var, .Comment => self.lit,
+                .Name, .Str, .Var, .Comment => self.lit,
                 .Infix => self.lit,
                 .I => if (std.fmt.parseInt(usize, self.lit, 10)) |i|
                     i

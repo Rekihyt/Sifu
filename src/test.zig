@@ -8,7 +8,8 @@ const Term = syntax.Term;
 const Type = syntax.Type;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const fs = std.fs;
-const Lexer = @import("sifu/Lexer.zig");
+const Lexer = @import("sifu/Lexer.zig")
+    .Lexer(io.FixedBufferStream([]const u8).Reader);
 const parse = @import("sifu/parser.zig").parse;
 const io = std.io;
 const print = std.debug.print;
@@ -31,12 +32,12 @@ test "equal strings with different pointers or pos should be equal" {
     defer testing.allocator.free(str2);
 
     const term1 = Token{
-        .type = .Val,
+        .type = .Name,
         .lit = str1,
         .context = 0,
     };
     const term2 = Token{
-        .type = .Val,
+        .type = .Name,
         .lit = str2,
         .context = 1,
     };
@@ -46,12 +47,12 @@ test "equal strings with different pointers or pos should be equal" {
 
 test "equal contexts with different values should not be equal" {
     const term1 = Token{
-        .type = .Val,
+        .type = .Name,
         .lit = "Foo",
         .context = 0,
     };
     const term2 = Token{
-        .type = .Val,
+        .type = .Name,
         .lit = "Bar",
         .context = 0,
     };
@@ -64,25 +65,24 @@ test "Pattern: simple vals" {
     defer arena.deinit();
     const allocator = arena.allocator();
     var fbs = io.fixedBufferStream("Aa Bb Cc -> 123");
-    var reader = fbs.reader();
-    var lexer = Lexer.init(allocator);
+    var lexer = Lexer.init(allocator, fbs.reader());
 
-    const ast = (try parse(allocator, &lexer, reader)).?;
-    const key = ast.apps[1].apps;
-    var node = ast.apps[2];
+    const ast = try parse(allocator, &lexer);
+    const key = ast[1..];
+    var val = try Ast.createApps(allocator, ast[0].arrow);
     var actual = Pat{};
     // TODO: match patterns instead
-    // const updated = try Ast.insert(key, allocator, &actual, node);
+    // const updated = try Ast.insert(key, allocator, &actual, val);
     var expected = Pat{};
     var expected_a = Pat{};
     var expected_b = Pat{};
     var expected_c = Pat{
-        .node = &node,
+        .val = val,
     };
-    const token_aa = Token{ .lit = "Aa", .type = .Val, .context = 0 };
-    const token_bb = Token{ .lit = "Bb", .type = .Val, .context = 3 };
-    const token_bb2 = Token{ .lit = "Bb2", .type = .Val, .context = 123 };
-    const token_cc = Token{ .lit = "Cc", .type = .Val, .context = 6 };
+    const token_aa = Token{ .lit = "Aa", .type = .Name, .context = 0 };
+    const token_bb = Token{ .lit = "Bb", .type = .Name, .context = 3 };
+    const token_bb2 = Token{ .lit = "Bb2", .type = .Name, .context = 123 };
+    const token_cc = Token{ .lit = "Cc", .type = .Name, .context = 6 };
 
     // Reverse order because patterns are values, not references
     try expected_b.map.put(
@@ -108,12 +108,16 @@ test "Pattern: simple vals" {
     try testing.expect(!expected.eql(expected_a));
 
     try testing.expect(!expected.eql(actual));
-    _ = try actual.insert(allocator, key, node);
+    _ = try actual.insert(allocator, key, val.*);
+    try expected.write(stderr);
+    try stderr.writeByte('\n');
+    try actual.write(stderr);
+    try stderr.writeByte('\n');
     try testing.expect(expected.eql(actual));
 
     // TODO: match patterns instead
     // try testing.expectEqual(
-    //     @as(?*const Ast, node),
+    //     @as(?*const Ast, val),
     //     try Ast.match(key, allocator, actual),
     // );
     // try testing.expectEqual(
@@ -123,20 +127,23 @@ test "Pattern: simple vals" {
 
     // Test branching
     fbs = io.fixedBufferStream("Aa Bb2 \n\n 456");
-    var lexer2 = Lexer.init(allocator);
-    reader = fbs.reader();
-    const key2 = (try parse(allocator, &lexer2, reader)).?.apps;
-    var node2 = (try parse(allocator, &lexer2, reader)).?;
+    var lexer2 = Lexer.init(allocator, fbs.reader());
+    const key2 = try parse(allocator, &lexer2);
+    var val2 = try parse(allocator, &lexer2);
     try expected.map.getPtr(token_aa).?
-        .map.put(allocator, token_bb2, Pat{ .node = &node2 });
+        .map.put(
+        allocator,
+        token_bb2,
+        Pat{ .val = try Ast.createApps(allocator, val2) },
+    );
 
     try testing.expect(!expected.eql(actual));
-    _ = try actual.insert(allocator, key2, node2);
+    _ = try actual.insert(allocator, key2, Ast.ofApps(val2));
 
     try testing.expect(expected.eql(actual));
 
-    try testing.expect(node.eql(actual.matchUnique(key).?.*));
-    try testing.expect(node2.eql(actual.matchUnique(key2).?.*));
+    try testing.expect(val.eql(actual.matchUnique(key).?.*));
+    try testing.expect(Ast.ofApps(val2).eql(actual.matchUnique(key2).?.*));
     try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUnique(key[0..1]));
     try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUnique(key2[0..1]));
     try expected.write(stderr);

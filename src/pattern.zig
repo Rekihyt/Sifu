@@ -9,6 +9,7 @@ const Wyhash = std.hash.Wyhash;
 const array_hash_map = std.array_hash_map;
 const AutoContext = std.array_hash_map.AutoContext;
 const StringContext = std.array_hash_map.StringContext;
+const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const print = util.print;
 
 pub fn AutoPattern(
@@ -115,15 +116,15 @@ pub fn PatternWithContext(
             /// A lower case term.
             variable: Var,
             /// Spaces separated juxtaposition, or commas/parens for nested apps.
-            apps: []const Node,
+            apps: ArrayListUnmanaged(Node),
             /// A match pattern, i.e. `x : Int -> x * 2` where some node (`x`)
             /// must match some subpattern (`Int`) in order for the rest of the
             /// match to continue. Like infixes, the apps to the left form their
             /// own subapps, stored here, but the `:` token is elided.
-            match: []const Node,
+            match: ArrayListUnmanaged(Node),
             /// An arrow expression denoting a rewrite, i.e. `A B C -> 123`.
             /// Same parsing as `match`.
-            arrow: []const Node,
+            arrow: ArrayListUnmanaged(Node),
             // The pointer here saves space depending on the size of `Key`
             /// An expression in braces.
             pattern: *Self,
@@ -141,9 +142,10 @@ pub fn PatternWithContext(
                     .match => |_| @panic("unimplemented"),
                     .arrow => |_| @panic("unimplemented"),
                     .apps => |apps| blk: {
-                        var apps_copy = try allocator.alloc(Node, apps.len);
-                        for (apps, apps_copy) |app, *app_copy|
-                            app_copy.* = try app.copy(allocator);
+                        var apps_copy = try ArrayListUnmanaged(Node)
+                            .initCapacity(allocator, apps.items.len);
+                        for (apps.items) |app|
+                            apps_copy.appendAssumeCapacity(try app.copy(allocator));
 
                         break :blk Node.ofApps(apps_copy);
                     },
@@ -159,11 +161,11 @@ pub fn PatternWithContext(
                 switch (self.*) {
                     .key, .variable => {},
                     .pattern => |p| p.delete(allocator),
-                    .apps, .match, .arrow => |apps| {
-                        for (apps) |*app|
+                    .apps, .match, .arrow => |*apps| {
+                        for (apps.items) |*app|
                             @constCast(app).deleteChildren(allocator);
 
-                        allocator.free(apps);
+                        apps.deinit(allocator);
                     },
                 }
             }
@@ -173,7 +175,7 @@ pub fn PatternWithContext(
             pub fn hasherUpdate(self: Node, hasher: anytype) void {
                 hasher.update(&mem.toBytes(@intFromEnum(self)));
                 switch (self) {
-                    .apps => |apps| for (apps) |app|
+                    .apps => |apps| for (apps.items) |app|
                         app.hasherUpdate(hasher),
                     .variable => |v| hasher.update(
                         &mem.toBytes(VarCtx.hash(undefined, v)),
@@ -198,8 +200,8 @@ pub fn PatternWithContext(
                         other.variable,
                         undefined,
                     ),
-                    .apps => |apps| apps.len == other.apps.len and
-                        for (apps, other.apps) |app, other_app|
+                    .apps => |apps| apps.items.len == other.apps.items.len and
+                        for (apps.items, other.apps.items) |app, other_app|
                     {
                         if (!app.eql(other_app))
                             break false;
@@ -217,7 +219,7 @@ pub fn PatternWithContext(
                 return .{ .variable = variable };
             }
 
-            pub fn ofApps(apps: []const Node) Node {
+            pub fn ofApps(apps: ArrayListUnmanaged(Node)) Node {
                 return .{ .apps = apps };
             }
 
@@ -233,7 +235,7 @@ pub fn PatternWithContext(
             /// Lifetime of `apps` must be longer than this Node.
             pub fn createApps(
                 allocator: Allocator,
-                apps: []const Node,
+                apps: ArrayListUnmanaged(Node),
             ) Allocator.Error!*Node {
                 var node = try allocator.create(Node);
                 node.* = Node{ .apps = apps };
@@ -333,7 +335,7 @@ pub fn PatternWithContext(
             ) @TypeOf(writer).Error!void {
                 switch (self) {
                     // Ignore top level parens
-                    .apps => |apps| for (apps) |app| {
+                    .apps => |apps| for (apps.items) |app| {
                         try app.writeSExp(writer, optional_indent);
                         try writer.writeByte(' ');
                     },
@@ -610,7 +612,7 @@ pub fn PatternWithContext(
                     // fails. Match sub_apps, move to its value, which is also
                     // always a pattern even though it is wrapped in a Node
                     if (pattern.sub_apps) |sub_apps|
-                        if (sub_apps.matchUnique(apps)) |next|
+                        if (sub_apps.matchUnique(apps.items)) |next|
                             break :blk next.pattern;
 
                     break :blk null;
@@ -665,7 +667,7 @@ pub fn PatternWithContext(
         pub fn matchUnique(
             pattern: *Self,
             apps: []const Node,
-        ) ?*const Node {
+        ) ?*Node {
             const prefix = pattern.matchUniquePrefix(apps);
             return if (prefix.len == apps.len)
                 prefix.end_ptr.val
@@ -681,12 +683,12 @@ pub fn PatternWithContext(
             pattern: *Self,
             allocator: Allocator,
             var_map: *VarMap,
-            apps: []const Node,
+            apps: ArrayListUnmanaged(Node),
         ) Allocator.Error![]PrefixResult {
             var prefixes = std.ArrayListUnmanaged(PrefixResult){};
             var current = pattern;
             // Follow the longest branch that exists
-            const prefix_len = for (apps, 0..) |app, i| switch (app) {
+            const prefix_len = for (apps.items, 0..) |app, i| switch (app) {
                 // TODO: possible bug, not updating current node
                 .variable => |variable| {
                     const result = try var_map.getOrPut(allocator, variable);
@@ -728,7 +730,7 @@ pub fn PatternWithContext(
                     };
                     print("Current updated\n", .{});
                 },
-            } else apps.len;
+            } else apps.items.len;
 
             const prefix = PrefixResult{
                 .end_ptr = current,
@@ -754,8 +756,9 @@ pub fn PatternWithContext(
         pub fn matchRef(
             pattern: *Self,
             allocator: Allocator,
-            apps: []const Node,
+            apps: ArrayListUnmanaged(Node),
         ) ![]*Node {
+            print("matchref", .{});
             var var_map = VarMap{};
             var prefixes = try pattern.flattenPattern(allocator, &var_map, apps);
             defer allocator.free(prefixes);
@@ -763,12 +766,12 @@ pub fn PatternWithContext(
             var matches = std.ArrayListUnmanaged(*Node){};
             print("Prefixes : {}\n", .{prefixes.len});
             for (prefixes) |prefix| {
-                print("\tPrefix len: {}, Apps len: {}\n", .{ prefix.len, apps.len });
+                print("\tPrefix len: {}, Apps len: {}\n", .{ prefix.len, apps.items.len });
                 print("\tEnd pointer value: ", .{});
                 if (prefix.end_ptr.val) |val| val.write(err_stream) catch
                     unreachable else print("null", .{});
                 print("\n", .{});
-                if (prefix.len == apps.len) if (prefix.end_ptr.val) |val|
+                if (prefix.len == apps.items.len) if (prefix.end_ptr.val) |val|
                     // Unwrap the val as pattern, because it is always inserted as such
                     try matches.append(allocator, val);
             }
@@ -780,7 +783,7 @@ pub fn PatternWithContext(
         // pub fn match(
         //     pattern: *const Self,
         //     allocator: Allocator,
-        //     query: []const Node,
+        //     query: ArrayListUnmanaged(Node),
         // ) !?Node {
         //     return if (pattern.matchRef(query)) |m|
         //         m.copy(allocator)
@@ -801,7 +804,7 @@ pub fn PatternWithContext(
             pattern: *const Self,
             // var_map: *VarMap,
             allocator: Allocator,
-            query: []const Node,
+            query: ArrayListUnmanaged(Node),
         ) Allocator.Error![]*Node {
             const results = std.ArrayListUnmanaged(*Node){};
             const matches = try pattern.match(allocator, query);
@@ -886,8 +889,7 @@ pub fn PatternWithContext(
         /// As a pattern is matched, a hashmap for vars is populated with
         /// each var's bound variable. These can the be used by the caller for
         /// rewriting.
-        /// Query is moved into pattern, and is owned by it when this function
-        /// returns.
+        /// All nodes are copied, not moved, into the pattern.
         pub fn getOrPut(
             pattern: *Self,
             allocator: Allocator,
@@ -923,7 +925,7 @@ pub fn PatternWithContext(
                     const sub_apps =
                         try util.getOrInit(.sub_apps, current, allocator);
                     const put_result = try sub_apps
-                        .getOrPut(allocator, apps);
+                        .getOrPut(allocator, apps.items);
                     if (!put_result.found_existing)
                         found_existing = false;
 
@@ -972,13 +974,13 @@ pub fn PatternWithContext(
             pattern: *const Self,
             var_map: *VarMap,
             allocator: Allocator,
-            apps: []const Node,
+            apps: ArrayListUnmanaged(Node),
         ) Allocator.Error!MatchResult {
             var matched = Self{};
             var current_matched = &matched;
             var current = pattern;
             // Follow the longest branch that exists
-            const prefix_len = for (apps, 0..) |app, i| switch (app) {
+            const prefix_len = for (apps.items, 0..) |app, i| switch (app) {
                 // TODO: possible bug, not updating current node
                 .variable => |variable| {
                     const result = try var_map.getOrPut(allocator, variable);
@@ -1035,7 +1037,7 @@ pub fn PatternWithContext(
                     };
                     print("Current updated\n", .{});
                 },
-            } else apps.len;
+            } else apps.items.len;
             _ = prefix_len;
 
             return MatchResult{ .matched_pattern = matched, .var_map = var_map };
@@ -1288,7 +1290,8 @@ test "Memory: nested pattern" {
     // No need to free this, because key pointers are deleted
     var nested_pattern = try Pat.ofVal(testing.allocator, "Asdf");
 
-    try pattern.pat_map.put(testing.allocator, nested_pattern, val_pattern);
+    try (try util.getOrInit(.pat_map, pattern, testing.allocator))
+        .put(testing.allocator, nested_pattern, val_pattern);
 
     _ = try val_pattern.insertKeys(
         testing.allocator,

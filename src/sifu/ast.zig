@@ -22,14 +22,14 @@ pub const Pat = @import("../pattern.zig").PatternWithContext(
 
 test "simple ast to pattern" {
     const term = Token{
-        .type = .Val,
+        .type = .Name,
         .lit = "My-Token",
         .context = 0,
     };
     _ = term;
     const ast = Ast{
         .key = .{
-            .type = .Val,
+            .type = .Name,
             .lit = "Some-Other-Token",
             .context = 20,
         },
@@ -40,12 +40,12 @@ test "simple ast to pattern" {
 
 test "Token equality" {
     const t1 = Token{
-        .type = .Val,
+        .type = .Name,
         .lit = "Asdf",
         .context = 0,
     };
     const t2 = Token{
-        .type = .Val,
+        .type = .Name,
         .lit = "Asdf",
         .context = 1,
     };

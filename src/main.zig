@@ -7,6 +7,7 @@ const interpreter = @import("sifu/interpreter.zig");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
 const Lexer = @import("sifu/Lexer.zig").Lexer;
+const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const parse = @import("sifu/parser.zig").parse;
 const io = std.io;
 const fs = std.fs;
@@ -71,25 +72,17 @@ pub fn main() !void {
         // escape (from pressing alt+enter in most terminals)
         // if (char == 0x1b) {}
         // }
-        var parsed_apps = try parse(
-            parser_allocator,
-            &lexer,
-        );
+        var parsed_apps = try parse(parser_allocator, &lexer);
+        const apps = parsed_apps.items;
         defer _ = parser_gpa.detectLeaks();
-        defer if (parsed_apps) |apps| {
+        defer {
             for (apps) |*app| {
                 app.deleteChildren(parser_allocator);
             }
-            parser_allocator.free(apps);
-        };
-        const apps = parsed_apps orelse
-            // Match the empty apps for just a newline
-            if ((repl_pat.matchUniquePrefix(&.{})).end_ptr.val) |node|
-            &.{node.*}
-        else
-            &.{};
+            parsed_apps.deinit(parser_allocator);
+        }
 
-        const ast = Ast.ofApps(apps);
+        const ast = Ast.ofApps(parsed_apps);
         try stderr.writeAll("Parsed: ");
         try ast.write(stderr);
         _ = try stderr.write("\n");
@@ -98,30 +91,26 @@ pub fn main() !void {
 
         // TODO: insert with shell command like @insert instead of special
         // casing a top level insert
-        if (apps.len > 0) blk: {
-            if (apps[0] == .arrow) {
-                const result = try repl_pat.insert(
-                    allocator,
-                    apps[0].arrow,
-                    Ast{ .apps = apps[1..] },
-                );
-                _ = result;
-                // try stderr.print("New pat ptr: {*}\n", .{result});
-                break :blk;
-            }
-            const matches = try repl_pat.matchRef(allocator, apps);
+        if (apps.len > 0 and apps[0] == .arrow) {
+            const result = try repl_pat.insert(
+                allocator,
+                apps[1..],
+                Ast{ .apps = apps[0].arrow },
+            );
+            _ = result;
+            // try stderr.print("New pat ptr: {*}\n", .{result});
+        } else {
+            const matches = try repl_pat.matchRef(allocator, parsed_apps);
             defer allocator.free(matches);
             // If not inserting, then try to match the expression
             if (matches.len > 0) {
                 for (matches) |matched| {
                     print("Match: ", .{});
                     try matched.write(buff_stdout);
-                    // matched.deleteChildren(allocator);
                     _ = try buff_writer.write("\n");
                 }
             } else print("No match\n", .{});
         }
-
         try buff_writer.flush();
         fbs.reset();
     } else |e| switch (e) {
