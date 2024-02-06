@@ -38,7 +38,7 @@ pub fn mapOption(option: anytype, function: anytype) @TypeOf(function(option)) {
 }
 
 /// Get a reference to a nullable field in `struct_ptr`, creating one if it
-/// doesn't already exist.
+/// doesn't already exist, initialized to default struct value.
 pub fn getOrInit(
     comptime Field: anytype,
     struct_ptr: anytype,
@@ -47,10 +47,13 @@ pub fn getOrInit(
     const field_option = @field(struct_ptr, @tagName(Field));
     const FieldPtrType = @typeInfo(@TypeOf(field_option)).Optional.child;
     const FieldType = @typeInfo(FieldPtrType).Pointer.child;
-    const field = field_option orelse
-        try allocator.create(FieldType);
-    // @compileLog(@TypeOf(field));
-    field.* = FieldType{};
+    const field = field_option orelse blk: {
+        var new_field = try allocator.create(FieldType);
+        new_field.* = FieldType{};
+        break :blk new_field;
+    };
+    // @compileLog(FieldPtrType);
+    // @compileLog(FieldType);
     @field(struct_ptr, @tagName(Field)) = field;
     return field;
 }

@@ -133,8 +133,11 @@ pub fn PatternWithContext(
             /// The copy should be freed with `deleteChildren`.
             pub fn copy(self: Node, allocator: Allocator) Allocator.Error!Node {
                 return switch (self) {
-                    .key, .variable => self,
-                    .pattern => |p| try Node.ofPattern(allocator, try p.copy(allocator)),
+                    .key, .variable => self, // TODO: comptime copy if pointer
+                    .pattern => |p| try Node.ofPattern(
+                        allocator,
+                        try p.copy(allocator),
+                    ),
                     .match => |_| @panic("unimplemented"),
                     .arrow => |_| @panic("unimplemented"),
                     .apps => |apps| blk: {
@@ -294,20 +297,20 @@ pub fn PatternWithContext(
                         try writer.writeByte(')');
                     },
                     .match => |apps| {
+                        try writer.writeAll(": ");
                         // These parens are for debugging
                         try writer.writeByte('(');
                         try Node.ofApps(apps)
                             .writeIndent(writer, optional_indent);
                         try writer.writeByte(')');
-                        try writer.writeAll(" : ");
                     },
                     .arrow => |apps| {
                         // These parens are for debugging
+                        try writer.writeAll("-> ");
                         try writer.writeByte('(');
                         try Node.ofApps(apps)
                             .writeIndent(writer, optional_indent);
                         try writer.writeByte(')');
-                        try writer.writeAll(" -> ");
                     },
                     .pattern => |pattern| try pattern.writeIndent(
                         writer,
@@ -346,14 +349,14 @@ pub fn PatternWithContext(
         /// instead of by building up a tree of their possible values)
         pub const ExactPrefixResult = struct {
             len: usize,
-            end_ptr: *const Self,
+            end_ptr: *Self,
         };
 
         /// The longest prefix matching a pattern, where vars match all possible
         /// expressions.
         pub const PrefixResult = struct {
             len: usize,
-            end_ptr: *const Self,
+            end_ptr: *Self,
         };
 
         /// This encodes match expressions used as a key in a pattern, i.e. `x:
@@ -430,6 +433,12 @@ pub fn PatternWithContext(
                         try entry.value_ptr.*.copy(allocator),
                     );
                 }
+            }
+            if (self.match) |_| {
+                @panic("unimplemented");
+            }
+            if (self.arrow) |_| {
+                @panic("unimplemented");
             }
             if (self.val) |val| {
                 result.val = try allocator.create(Node);
@@ -611,6 +620,7 @@ pub fn PatternWithContext(
                         break :blk null;
                     _ = pat_match;
                     _ = match;
+                    @panic("unimplemented");
                     // Equal references will always have equal values here
                     // if (pat_match.pat_ptr != match.pat_ptr)
                     //     break :blk null;
@@ -636,7 +646,7 @@ pub fn PatternWithContext(
         /// Although `pat` isn't modified, the val (if any) returned from it
         /// is modifiable by the caller
         pub fn matchUniquePrefix(
-            pattern: *const Self,
+            pattern: *Self,
             apps: []const Node,
         ) ExactPrefixResult {
             var current = pattern;
@@ -646,14 +656,14 @@ pub fn PatternWithContext(
                     break i;
             } else apps.len;
 
-            return .{ .len = prefix_len, .end_ptr = @constCast(current) };
+            return .{ .len = prefix_len, .end_ptr = current };
         }
 
         /// Follows `pattern` for each app matching structure as well as value.
         /// Does not require allocation because variable branches are not
         /// explored, but rather followed.
         pub fn matchUnique(
-            pattern: *const Self,
+            pattern: *Self,
             apps: []const Node,
         ) ?*const Node {
             const prefix = pattern.matchUniquePrefix(apps);
@@ -668,7 +678,7 @@ pub fn PatternWithContext(
         /// the leaves.
         // TODO: implement correctly
         pub fn flattenPattern(
-            pattern: *const Self,
+            pattern: *Self,
             allocator: Allocator,
             var_map: *VarMap,
             apps: []const Node,
@@ -835,8 +845,6 @@ pub fn PatternWithContext(
         /// Allocations:
         /// - The path followed by apps is allocated and copied recursively
         /// - The node, if given, is allocated and copied recursively
-        /// Freeing should be done with `delete` or `deleteChildren`, depending
-        /// on how `self` was allocated.
         /// Returns a pointer to the pattern directly containing `optional_val`.
         pub fn insert(
             self: *Self,
@@ -849,15 +857,15 @@ pub fn PatternWithContext(
             // Clear existing value node
             if (result.end_ptr.val) |prev_val| {
                 prev_val.delete(allocator);
+                print("Deleting old val: {*}\n", .{result.end_ptr.val});
                 result.end_ptr.val = null;
             }
+
             // Add new value node
             if (optional_val) |val| {
                 const new_val = try allocator.create(Node);
                 // TODO: check found existing
                 new_val.* = try val.copy(allocator);
-                // stderr.print("Node ptr: {*}\n", .{result.end_ptr.val}) catch
-                // unreachable;
                 result.end_ptr.val = new_val;
             }
             return result.end_ptr;
@@ -878,15 +886,16 @@ pub fn PatternWithContext(
         /// As a pattern is matched, a hashmap for vars is populated with
         /// each var's bound variable. These can the be used by the caller for
         /// rewriting.
+        /// Query is moved into pattern, and is owned by it when this function
+        /// returns.
         pub fn getOrPut(
             pattern: *Self,
             allocator: Allocator,
             query: []const Node,
         ) Allocator.Error!GetOrPutResult {
             const prefix = pattern.matchUniquePrefix(query);
-            var current = @constCast(prefix.end_ptr);
+            var current = prefix.end_ptr;
             var found_existing = true;
-            // print("Prefix len: {}\n", .{prefix.len});
 
             // Create the rest of the branches
             for (query[prefix.len..]) |app| switch (app) {
@@ -913,19 +922,16 @@ pub fn PatternWithContext(
                         found_existing = false;
                     const sub_apps =
                         try util.getOrInit(.sub_apps, current, allocator);
-                    const put_result = try sub_apps.getOrPut(allocator, apps);
+                    const put_result = try sub_apps
+                        .getOrPut(allocator, apps);
                     if (!put_result.found_existing)
                         found_existing = false;
 
                     const end_ptr = put_result.end_ptr;
-                    const next_pattern = end_ptr.val orelse blk: {
-                        end_ptr.val = try allocator.create(Node);
-                        const pat_ptr = try allocator.create(Self);
-                        pat_ptr.* = Self{};
-                        end_ptr.val.?.* = Node{ .pattern = pat_ptr };
-                        break :blk end_ptr.val.?;
-                    };
-                    current = next_pattern.pattern;
+                    end_ptr.val = end_ptr.val orelse
+                        try Node.createPattern(allocator, Self{});
+
+                    current = end_ptr.val.?.pattern;
                 },
                 .match => |_| @panic("unimplemented"),
                 .arrow => |_| @panic("unimplemented"),
@@ -1036,6 +1042,8 @@ pub fn PatternWithContext(
         }
 
         /// Pretty print a pattern
+        // TODO: fix infix and builtin inserting and printing
+        // TODO: print sub apps in a pattern the same way they were inserted
         pub fn pretty(self: Self, writer: anytype) !void {
             try self.writeIndent(writer, 0);
         }
