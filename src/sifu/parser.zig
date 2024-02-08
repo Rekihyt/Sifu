@@ -42,7 +42,7 @@ fn consumeNewLines(lexer: anytype, reader: anytype) !bool {
     return consumed;
 }
 
-pub fn parse(allocator: Allocator, lexer: anytype) !ArrayListUnmanaged(Ast) {
+pub fn parse(allocator: Allocator, lexer: anytype) !Ast {
     var found_sep: bool = undefined;
     var result = try parseUntil(
         allocator,
@@ -71,18 +71,22 @@ pub fn parse(allocator: Allocator, lexer: anytype) !ArrayListUnmanaged(Ast) {
 // (`Arrow (1)`) has lower precedence than infix, so only anything after it (in
 // this case `2`) is added as the first argument to `+`, resulting in `Arrow (1)
 // + (2) 3`.
-// Precedence: arrow < commas < infix < match
+// Precedence: commas < arrow < infix < match
+// TODO: parse commas and newlines differently within braces and brackets.
+// - [] should be a flat Apps instead of as an infix
+// - {} should be as entries into the pattern instead of infix
 fn parseUntil(
     allocator: Allocator,
     lexer: anytype,
     found_sep: *bool,
     terminal: ?u8, // must be a greedily parsed, single char terminal
-) !ArrayListUnmanaged(Ast) {
+) !Ast {
     _ = try lexer.peek() orelse
-        return ArrayListUnmanaged(Ast){};
+        return Ast.ofApps(ArrayListUnmanaged(Ast){});
 
-    // Track last arrow
-    var arrow_len: usize = 0;
+    const Precedence = enum { Comma, Arrow, Infix, Match };
+    var precedence_level: Precedence = .Comma;
+    _ = precedence_level;
     // Track the last comma since an arrow, kind of like an open bracket
     var comma_len: usize = 0;
     // Track last infix op (not a builtin arrow or match) since comma
@@ -91,8 +95,10 @@ fn parseUntil(
     // Many patterns will be leaves, so it makes sense to assume an app
     // of size 1. ArrayList's `append` function will allocate space for
     // an extra 10, which this avoids
-    var result = try ArrayListUnmanaged(Ast).initCapacity(allocator, 1);
-    var current = &result;
+    var result = Ast.ofApps(
+        try ArrayListUnmanaged(Ast).initCapacity(allocator, 1),
+    );
+    var current = &result.apps;
     found_sep.* = while (try lexer.next()) |token| {
         const lit = token.lit;
         switch (token.type) {
@@ -118,7 +124,7 @@ fn parseUntil(
                     try current.append(
                         allocator,
                         if (matched)
-                            Ast.ofApps(nested)
+                            nested
                         else
                             // If null, no matching paren was found so parse '('
                             // as a literal
@@ -132,63 +138,79 @@ fn parseUntil(
                     var nested =
                         try parseUntil(allocator, lexer, &matched, '}');
 
-                    // if (!matched)
                     // TODO: check if matched brace was actually found
-
+                    // if (!matched)
                     // TODO: fix parsing nested patterns with comma seperators
                     // TODO: optimize by removing the delete
-                    defer {
-                        for (nested.items) |*app|
-                            app.deleteChildren(allocator);
-                        nested.deinit(allocator);
-                    }
+                    defer nested.deleteChildren(allocator);
                     try stderr.print("Nested Pat: {?}\n", .{matched});
-                    _ = try pat.insert(allocator, nested.items, null);
-                    try current.append(allocator, try Ast.ofPattern(allocator, pat));
+                    _ = try pat.insertNode(allocator, nested);
+                    try current.append(
+                        allocator,
+                        try Ast.ofPattern(allocator, pat),
+                    );
                 },
                 ',' => {
                     const offset = comma_len;
+                    comma_len += 1;
                     infix_len = 0;
-                    comma_len = 0;
                     // Copy the previous apps starting from the last comma until
                     // this one and add them as a single app to result.
-                    const left_args =
-                        try util.popSlice(current, offset, allocator);
-                    defer allocator.free(left_args);
+                    var args = try util.popSlice(current, offset, allocator);
+                    defer args.deinit(allocator);
 
                     try current.append(allocator, Ast.ofLit(token));
-                    const right_args = try current.addOne(allocator);
-                    right_args.* = Ast{ .apps = ArrayListUnmanaged(Ast){} };
-                    try current.appendSlice(allocator, left_args);
-                    current = &right_args.apps;
+                    const rest = try current.addOne(allocator);
+                    rest.* = Ast{ .apps = ArrayListUnmanaged(Ast){} };
+                    try current.appendSlice(allocator, args.items);
+                    current = &rest.apps;
                 },
                 else => try current.append(allocator, Ast.ofLit(token)),
             },
             .Infix => {
                 if (mem.eql(u8, lit, ":")) {
-                    var offset = comma_len + infix_len + arrow_len;
-                    // Gather right args starting from the previous comma
-                    const left_args_slice =
-                        try util.popSlice(&current, offset, allocator);
-                    try current.append(allocator, Ast{ .match = left_args_slice });
-                } else if (mem.eql(u8, lit, "->")) {
+                    var offset = comma_len + infix_len;
                     comma_len = 0;
                     infix_len = 0;
-                    arrow_len += 1;
+                    var match_op = try allocator.create(Ast.Match);
+                    _ = match_op;
+                    // Gather right args starting from the previous comma
+                    const args =
+                        try util.popSlice(current, offset, allocator);
+                    _ = args;
+                    @panic("unimplemented");
+                    // TODO: parse right args and lookup their
+                    // match_op.* = Ast.Match{ .query = args };
+                    // // Add them as a match node
+                    // try current.append(allocator, Ast{ .match = match_op });
+                    // Continue parsing the right args
+                    // current = &match_op.;
+                } else if (mem.eql(u8, lit, "->")) {
+                    var offset = comma_len;
+                    comma_len = 0;
+                    infix_len = 0;
                     // Offset 0 for lowest precedence
-                    try current.append(allocator, Ast{
-                        .arrow = try current.toOwnedSlice(allocator),
-                    });
+                    var arrow = try allocator.create(Ast.Arrow);
+                    // Gather right args starting from the previous comma
+                    const left_args =
+                        try util.popSlice(current, offset, allocator);
+                    arrow.* = Ast.Arrow{ .from = left_args };
+                    // Add them as a match node
+                    try current.append(allocator, Ast{ .arrow = arrow });
+                    // Continue parsing the right args
                 } else {
-                    var offset = comma_len + arrow_len;
+                    var offset = comma_len + infix_len;
                     infix_len += 1;
                     // Gather right args starting from the previous comma
-                    const left_args_slice =
-                        try util.popSlice(&current, offset, allocator);
-                    try current.appendSlice(
-                        allocator,
-                        &.{ Ast.ofLit(token), Ast{ .apps = left_args_slice } },
-                    );
+                    var args =
+                        try util.popSlice(current, offset, allocator);
+                    defer args.deinit(allocator);
+
+                    try current.append(allocator, Ast.ofLit(token));
+                    const rest = try current.addOne(allocator);
+                    rest.* = Ast{ .apps = ArrayListUnmanaged(Ast){} };
+                    try current.appendSlice(allocator, args.items);
+                    current = &rest.apps;
                 }
             },
             .Var => try current.append(allocator, Ast.ofVar(token.lit)),

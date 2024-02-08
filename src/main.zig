@@ -18,6 +18,7 @@ const print = std.debug.print;
 pub fn main() !void {
     // @compileLog(@sizeOf(Pat));
     // @compileLog(@sizeOf(Pat.Node));
+    // @compileLog(@sizeOf(ArrayListUnmanaged(Pat.Node)));
 
     var token_arena = ArenaAllocator.init(std.heap.page_allocator);
     defer token_arena.deinit();
@@ -72,17 +73,10 @@ pub fn main() !void {
         // escape (from pressing alt+enter in most terminals)
         // if (char == 0x1b) {}
         // }
-        var parsed_apps = try parse(parser_allocator, &lexer);
-        const apps = parsed_apps.items;
+        var ast = try parse(parser_allocator, &lexer);
         defer _ = parser_gpa.detectLeaks();
-        defer {
-            for (apps) |*app| {
-                app.deleteChildren(parser_allocator);
-            }
-            parsed_apps.deinit(parser_allocator);
-        }
+        defer ast.delete(allocator);
 
-        const ast = Ast.ofApps(parsed_apps);
         try stderr.writeAll("Parsed: ");
         try ast.write(stderr);
         _ = try stderr.write("\n");
@@ -91,25 +85,24 @@ pub fn main() !void {
 
         // TODO: insert with shell command like @insert instead of special
         // casing a top level insert
-        if (apps.len > 0 and apps[0] == .arrow) {
-            const result = try repl_pat.insert(
-                allocator,
-                apps[1..],
-                Ast{ .apps = apps[0].arrow },
-            );
-            _ = result;
-            // try stderr.print("New pat ptr: {*}\n", .{result});
-        } else {
-            const matches = try repl_pat.matchRef(allocator, parsed_apps);
-            defer allocator.free(matches);
-            // If not inserting, then try to match the expression
-            if (matches.len > 0) {
-                for (matches) |matched| {
-                    print("Match: ", .{});
-                    try matched.write(buff_stdout);
-                    _ = try buff_writer.write("\n");
-                }
-            } else print("No match\n", .{});
+        switch (ast) {
+            .arrow => {
+                const result = try repl_pat.insertNode(allocator, ast);
+                _ = result;
+                // try stderr.print("New pat ptr: {*}\n", .{result});
+            },
+            else => {
+                const matches = try repl_pat.matchRef(allocator, ast);
+                defer allocator.free(matches);
+                // If not inserting, then try to match the expression
+                if (matches.len > 0) {
+                    for (matches) |matched| {
+                        print("Match: ", .{});
+                        try matched.write(buff_stdout);
+                        _ = try buff_writer.write("\n");
+                    }
+                } else print("No match\n", .{});
+            },
         }
         try buff_writer.flush();
         fbs.reset();
