@@ -55,6 +55,15 @@ const meta = std.meta;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const t = @import("test.zig");
 
+pub fn PatternWithContext(
+    comptime Key: type,
+    comptime Var: type,
+    comptime KeyCtx: type,
+    comptime VarCtx: type,
+) type {
+    return PatternWithContextAndFree(Key, Var, KeyCtx, VarCtx, null, null);
+}
+
 ///
 /// A trie-like type based on the given term type. Each pattern contains zero or
 /// more children.
@@ -72,11 +81,13 @@ const t = @import("test.zig");
 ///        void` that updates a hasher (instead of a direct hash function for
 ///        efficiency)
 ///    - `eql` a function to compare two `T`s, of type `fn (T, T) bool`
-pub fn PatternWithContext(
+pub fn PatternWithContextAndFree(
     comptime Key: type,
     comptime Var: type,
     comptime KeyCtx: type,
     comptime VarCtx: type,
+    comptime keyFreeFn: ?(fn (Allocator, anytype) void),
+    comptime varFreeFn: ?(fn (Allocator, anytype) void),
 ) type {
     return struct {
         pub const Self = @This();
@@ -168,29 +179,30 @@ pub fn PatternWithContext(
 
             /// Deletes all nodes, then deinits `apps`.
             pub fn deleteApps(
-                apps: ArrayListUnmanaged(Node),
+                apps: *ArrayListUnmanaged(Node),
                 allocator: Allocator,
             ) void {
                 for (apps.items) |*app|
                     app.deleteChildren(allocator);
+                apps.deinit(allocator);
             }
 
             pub fn deleteChildren(self: *Node, allocator: Allocator) void {
                 switch (self.*) {
-                    .key, .variable => {},
+                    .key => |key| if (keyFreeFn) |free|
+                        free(allocator, key),
+                    .variable => |variable| if (varFreeFn) |free|
+                        free(allocator, variable),
                     .pattern => |p| p.delete(allocator),
-                    .apps => |*apps| {
-                        deleteApps(apps.*, allocator);
-                        apps.deinit(allocator);
-                    },
+                    .apps => |*apps| deleteApps(apps, allocator),
                     .match => |match| {
-                        deleteApps(match.query, allocator);
+                        deleteApps(&match.query, allocator);
                         match.pattern.delete(allocator);
                         allocator.destroy(match);
                     },
                     .arrow => |arrow| {
-                        deleteApps(arrow.from, allocator);
-                        deleteApps(arrow.into, allocator);
+                        deleteApps(&arrow.from, allocator);
+                        deleteApps(&arrow.into, allocator);
                         allocator.destroy(arrow);
                     },
                 }
@@ -526,6 +538,12 @@ pub fn PatternWithContext(
 
             if (self.sub_apps) |sub_apps|
                 sub_apps.delete(allocator);
+
+            if (self.arrow) |arrow|
+                arrow.delete(allocator);
+
+            if (self.match) |match|
+                match.delete(allocator);
         }
 
         pub fn hash(self: Self) u32 {
@@ -557,6 +575,13 @@ pub fn PatternWithContext(
 
             if (self.sub_apps) |sub_apps|
                 sub_apps.hasherUpdate(hasher);
+
+            if (self.match) |_| {
+                @panic("unimplemented");
+            }
+            if (self.arrow) |_| {
+                @panic("unimplemented");
+            }
         }
 
         fn keyEql(k1: Key, k2: Key) bool {
@@ -623,6 +648,12 @@ pub fn PatternWithContext(
                 other.pat_map == null;
             if (!pat_maps_eql) return false;
 
+            if (self.match) |_| {
+                @panic("unimplemented");
+            }
+            if (self.arrow) |_| {
+                @panic("unimplemented");
+            }
             return true;
         }
 
@@ -731,6 +762,15 @@ pub fn PatternWithContext(
                         // If a var was already bound, just check its value is
                         // equal to this one
                         if (result.found_existing and result.value_ptr.*.eql(app)) {
+                            // If a var was bound, insert the actual value
+                            // instead of a var in the match result.
+                            current.option_var = variable;
+                            current.val = result.value_ptr;
+                            current = try util.getOrInit(
+                                .var_next,
+                                current,
+                                allocator,
+                            );
                             continue;
                         }
                         // Otherwise add all entries in this pattern
@@ -795,7 +835,7 @@ pub fn PatternWithContext(
             allocator: Allocator,
             node: Node,
         ) ![]*Node {
-            print("matchref", .{});
+            print("matchref\n", .{});
             var var_map = VarMap{};
             var prefixes = try pattern.flattenPattern(allocator, &var_map, node);
             defer allocator.free(prefixes);

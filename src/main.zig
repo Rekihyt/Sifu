@@ -26,7 +26,7 @@ pub fn main() !void {
 
     var gpa =
         std.heap.GeneralPurposeAllocator(
-        .{ .safety = false, .verbose_log = true, .enable_memory_limit = true },
+        .{ .safety = false, .verbose_log = false, .enable_memory_limit = true },
     ){};
     defer _ = gpa.detectLeaks();
     const allocator = gpa.allocator();
@@ -40,11 +40,10 @@ pub fn main() !void {
 
     var match_gpa =
         std.heap.GeneralPurposeAllocator(
-        .{ .safety = true, .verbose_log = false },
+        .{ .safety = true, .verbose_log = true },
     ){};
     defer _ = match_gpa.deinit();
     const match_allocator = match_gpa.allocator();
-    _ = match_allocator;
 
     const stdin = io.getStdIn().reader();
     const stdout = io.getStdOut().writer();
@@ -74,7 +73,7 @@ pub fn main() !void {
         // if (char == 0x1b) {}
         // }
         var ast = try parse(parser_allocator, &lexer);
-        defer _ = parser_gpa.detectLeaks();
+        // defer _ = parser_gpa.detectLeaks();
         defer ast.deleteChildren(parser_allocator);
 
         try stderr.writeAll("Parsed: ");
@@ -92,13 +91,20 @@ pub fn main() !void {
                 // try stderr.print("New pat ptr: {*}\n", .{result});
             },
             else => {
-                const matches = try repl_pat.matchRef(allocator, ast);
-                defer allocator.free(matches);
+                defer _ = match_gpa.detectLeaks();
+                var var_map = Pat.VarMap{};
+                defer var_map.deinit(match_allocator);
+                const matches = try repl_pat.flattenPattern(
+                    match_allocator,
+                    &var_map,
+                    ast,
+                );
+                defer match_allocator.free(matches);
                 // If not inserting, then try to match the expression
                 if (matches.len > 0) {
                     for (matches) |matched| {
                         print("Match: ", .{});
-                        try matched.write(buff_stdout);
+                        try matched.end_ptr.write(buff_stdout);
                         _ = try buff_writer.write("\n");
                     }
                 } else print("No match\n", .{});
