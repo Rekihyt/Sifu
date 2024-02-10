@@ -75,7 +75,7 @@ pub fn main() !void {
         // }
         var ast = try parse(parser_allocator, &lexer);
         defer _ = parser_gpa.detectLeaks();
-        defer ast.delete(allocator);
+        defer ast.deleteChildren(parser_allocator);
 
         try stderr.writeAll("Parsed: ");
         try ast.write(stderr);
