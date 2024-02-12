@@ -16,18 +16,27 @@ pub fn print(comptime fmt: []const u8, args: anytype) void {
     stderr.print(fmt, args) catch unreachable;
 }
 
-pub fn popSlice(
-    unmanaged_list: anytype,
+pub fn popSliceAsList(
+    unmanaged_list_ptr: anytype,
     index: usize,
     allocator: Allocator,
-) !@typeInfo(@TypeOf(unmanaged_list)).Pointer.child {
+) !@typeInfo(@TypeOf(unmanaged_list_ptr)).Pointer.child {
     // if (list.items.len > index) for (list.items)
-    var result = @typeInfo(@TypeOf(unmanaged_list)).Pointer.child{};
-    for (unmanaged_list.items[index..]) |app| {
+    var result = @typeInfo(@TypeOf(unmanaged_list_ptr)).Pointer.child{};
+    for (unmanaged_list_ptr.items[index..]) |app| {
         try result.append(allocator, app);
     }
-    unmanaged_list.shrinkRetainingCapacity(index);
+    unmanaged_list_ptr.shrinkRetainingCapacity(index);
     return result;
+}
+
+pub fn popSlice(
+    unmanaged_list_ptr: anytype,
+    index: usize,
+    allocator: Allocator,
+) !@TypeOf(unmanaged_list_ptr.items) {
+    var list = try popSliceAsList(unmanaged_list_ptr, index, allocator);
+    return list.toOwnedSlice(allocator);
 }
 
 pub fn mapOption(option: anytype, function: anytype) @TypeOf(function(option)) {

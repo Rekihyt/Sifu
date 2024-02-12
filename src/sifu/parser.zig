@@ -70,9 +70,11 @@ pub fn parse(allocator: Allocator, lexer: anytype) !Ast {
 // 3`, when `+` is parsed `Arrow (1) 2` is on the stack. The prefix of length 1
 // (`Arrow (1)`) has lower precedence than infix, so only anything after it (in
 // this case `2`) is added as the first argument to `+`, resulting in `Arrow (1)
-// + (2) 3`.
+// + () 3`.
 // Precedence: commas < arrow < infix < match
 // TODO: parse commas and newlines differently within braces and brackets.
+// TODO: refactor multiple current appends into one append outside match
+// TODO: implement `=>`
 // - [] should be a flat Apps instead of as an infix
 // - {} should be as entries into the pattern instead of infix
 fn parseUntil(
@@ -82,7 +84,7 @@ fn parseUntil(
     terminal: ?u8, // must be a greedily parsed, single char terminal
 ) !Ast {
     _ = try lexer.peek() orelse
-        return Ast.ofApps(ArrayListUnmanaged(Ast){});
+        return Ast.ofApps(&.{});
 
     const Precedence = enum { Comma, Arrow, Infix, Match };
     var precedence_level: Precedence = .Comma;
@@ -95,10 +97,10 @@ fn parseUntil(
     // Many patterns will be leaves, so it makes sense to assume an app
     // of size 1. ArrayList's `append` function will allocate space for
     // an extra 10, which this avoids
-    var result = Ast.ofApps(
-        try ArrayListUnmanaged(Ast).initCapacity(allocator, 1),
-    );
-    var current = &result.apps;
+    var current = try ArrayListUnmanaged(Ast).initCapacity(allocator, 1);
+    // This pointer tracks where to put the result after converting it to an
+    // owned slice.
+    // var next_addr: *[]Ast = undefined;
     found_sep.* = while (try lexer.next()) |token| {
         const lit = token.lit;
         switch (token.type) {
@@ -154,16 +156,18 @@ fn parseUntil(
                     const offset = comma_len;
                     comma_len += 1;
                     infix_len = 0;
-                    // Copy the previous apps starting from the last comma until
-                    // this one and add them as a single app to result.
-                    var args = try util.popSlice(current, offset, allocator);
-                    defer args.deinit(allocator);
 
-                    try current.append(allocator, Ast.ofLit(token));
-                    const rest = try current.addOne(allocator);
-                    rest.* = Ast{ .apps = ArrayListUnmanaged(Ast){} };
-                    try current.appendSlice(allocator, args.items);
-                    current = &rest.apps;
+                    // Add the operator, the right args as and app, and
+                    // finally the left args.
+                    // TODO: Replace recursive call with an undefined apps that
+                    // is later set to `current.toOwnedSlice()`, this requires
+                    // tracking all appending operations as the pointer may
+                    // invalidate.
+                    try current.insertSlice(allocator, offset, &.{
+                        Ast.ofLit(token),
+                        try parseUntil(allocator, lexer, found_sep, terminal),
+                    });
+                    // next_addr = current.items[offset + 1].
                 },
                 else => try current.append(allocator, Ast.ofLit(token)),
             },
@@ -174,9 +178,9 @@ fn parseUntil(
                     infix_len = 0;
                     var match_op = try allocator.create(Ast.Match);
                     _ = match_op;
-                    // Gather right args starting from the previous comma
+                    // Gather right args starting from the previous op
                     const args =
-                        try util.popSlice(current, offset, allocator);
+                        try util.popSlice(&current, offset, allocator);
                     _ = args;
                     @panic("unimplemented");
                     // TODO: parse right args and lookup their
@@ -193,7 +197,7 @@ fn parseUntil(
                     var arrow = try allocator.create(Ast.Arrow);
                     // Gather right args starting from the previous comma
                     const left_args =
-                        try util.popSlice(current, offset, allocator);
+                        try util.popSlice(&current, offset, allocator);
                     arrow.* = Ast.Arrow{ .from = left_args };
                     // Add them as a match node
                     try current.append(allocator, Ast{ .arrow = arrow });
@@ -202,15 +206,14 @@ fn parseUntil(
                     var offset = comma_len + infix_len;
                     infix_len += 1;
                     // Gather right args starting from the previous comma
-                    var args =
-                        try util.popSlice(current, offset, allocator);
-                    defer args.deinit(allocator);
+                    var args = try util.popSlice(&current, offset, allocator);
+                    defer allocator.free(args);
 
                     try current.append(allocator, Ast.ofLit(token));
                     const rest = try current.addOne(allocator);
-                    rest.* = Ast{ .apps = ArrayListUnmanaged(Ast){} };
-                    try current.appendSlice(allocator, args.items);
-                    current = &rest.apps;
+                    rest.* = Ast{ .apps = &.{} };
+                    try current.appendSlice(allocator, args);
+                    // current = &rest.apps;
                 }
             },
             .Var => try current.append(allocator, Ast.ofVar(token.lit)),
@@ -218,9 +221,11 @@ fn parseUntil(
             .Comment, .NewLine => try current.append(allocator, Ast.ofLit(token)),
         }
     } else false;
-    return result;
-}
 
+    // previous_ptr.* = try current.toOwnedSlice(allocator);
+    // return Ast.ofApps(previous_ptr.*);
+    return Ast{ .apps = try current.toOwnedSlice(allocator) };
+}
 // This function is the responsibility of the Parser, because it is the dual
 // to parsing.
 // pub fn print(ast: anytype, writer: anytype) !void {
@@ -229,7 +234,7 @@ fn parseUntil(
 //             asts[0].key.type == .Infix)
 //         {
 //             const key = asts[0].key;
-//             // An infix always forms an App with at least 2
+//             // An infix always forms an App with at least
 //             // nodes, the second of which must be an App (which
 //             // may be empty)
 //             assert(asts.len >= 2);
@@ -266,6 +271,7 @@ const fs = std.fs;
 const io = std.io;
 const Lexer = @import("Lexer.zig")
     .Lexer(io.FixedBufferStream([]const u8).Reader);
+const List = ArrayListUnmanaged(Ast);
 
 // for debugging with zig test --test-filter, comment this import
 const verbose_tests = @import("build_options").verbose_tests;
@@ -282,8 +288,8 @@ test "simple val" {
     var fbs = io.fixedBufferStream("Asdf");
     var lexer = Lexer.init(arena.allocator(), fbs.reader());
     const ast = try parse(arena.allocator(), &lexer);
-    try testing.expect(ast.len == 1);
-    try testing.expectEqualStrings(ast[0].key.lit, "Asdf");
+    try testing.expect(ast == .apps and ast.apps.len == 1);
+    try testing.expectEqualStrings(ast.apps[0].key.lit, "Asdf");
 }
 
 fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
@@ -293,7 +299,7 @@ fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
     var fbs = io.fixedBufferStream(str);
     var lexer = Lexer.init(allocator, fbs.reader());
     const actuals = try parse(allocator, &lexer);
-    for (expecteds, actuals) |expected, actual| {
+    for (expecteds, actuals.apps) |expected, actual| {
         try expectEqualApps(expected, actual);
     }
 }
@@ -367,8 +373,8 @@ test "All Asts" {
         \\||
         \\()
     ;
-    const expecteds = &[_]Ast{
-        Ast{ .apps = &.{
+    const expecteds = &[_]Ast{Ast{
+        .apps = &.{
             .{ .key = .{
                 .type = .Name,
                 .lit = "Name1",
@@ -389,15 +395,15 @@ test "All Asts" {
                 .lit = ";",
                 .context = 6,
             } },
-        } },
-    };
+        },
+    }};
     try testStrParse(input[0..7], expecteds);
     // try expectEqualApps(expected, expected); // test the test function
 }
 
 test "App: simple vals" {
-    const expecteds = &[_]Ast{
-        Ast{ .apps = &.{
+    const expecteds = &[_]Ast{Ast{
+        .apps = &.{
             Ast{ .key = .{
                 .type = .Name,
                 .lit = "Aa",
@@ -413,8 +419,8 @@ test "App: simple vals" {
                 .lit = "Cc",
                 .context = 6,
             } },
-        } },
-    };
+        },
+    }};
     try testStrParse("Aa Bb Cc", expecteds);
 }
 
@@ -428,15 +434,15 @@ test "App: simple op" {
                     .context = 2,
                 },
             },
-            Ast{ .apps = &.{
-                Ast{
+            Ast{
+                .apps = &.{Ast{
                     .key = .{
                         .type = .I,
                         .lit = "1",
                         .context = 0,
                     },
-                },
-            } },
+                }},
+            },
             Ast{
                 .key = .{
                     .type = .I,
@@ -450,8 +456,8 @@ test "App: simple op" {
 }
 
 test "App: simple ops" {
-    const expecteds = &[_]Ast{
-        Ast{ .apps = &.{
+    const expecteds = &[_]Ast{Ast{
+        .apps = &.{
             Ast{ .key = .{
                 .type = .Infix,
                 .lit = "+",
@@ -481,14 +487,14 @@ test "App: simple ops" {
                 .lit = "3",
                 .context = 8,
             } },
-        } },
-    };
+        },
+    }};
     try testStrParse("1 + 2 + 3", expecteds);
 }
 
 test "App: simple op, no first arg" {
-    const expecteds = &[_]Ast{
-        Ast{ .apps = &.{
+    const expecteds = &[_]Ast{Ast{
+        .apps = &.{
             Ast{
                 .key = .{
                     .type = .Infix,
@@ -504,14 +510,14 @@ test "App: simple op, no first arg" {
                     .context = 4,
                 },
             },
-        } },
-    };
+        },
+    }};
     try testStrParse("+ 2", expecteds);
 }
 
 test "App: simple op, no second arg" {
-    const expecteds = &[_]Ast{
-        Ast{ .apps = &.{
+    const expecteds = &[_]Ast{Ast{
+        .apps = &.{
             Ast{
                 .key = .{
                     .type = .Infix,
@@ -526,8 +532,8 @@ test "App: simple op, no second arg" {
                     .context = 0,
                 } },
             } },
-        } },
-    };
+        },
+    }};
     try testStrParse("1 +", expecteds);
 }
 
@@ -558,19 +564,19 @@ test "App: nested parens 1" {
                 Ast{ .apps = &.{} },
             } },
         } },
-        // Ast{ .apps = &.{
-        //     Ast{ .apps = &.{
-        //         Ast{ .apps = &.{
+        // Ast{.apps = &.{ )
+        //     Ast{ .apps = &.{ )
+        //         Ast{ .apps = &.{ )
         //             Ast{ .apps = &.{} },
         //             Ast{ .apps = &.{} },
         //         } },
         //         Ast{ .apps = &.{} },
         //     } },
         // } },
-        // Ast{ .apps = &.{
-        //     Ast{ .apps = &.{
+        // Ast{.apps = &.{ )
+        //     Ast{ .apps = &.{ )
         //         Ast{ .apps = &.{} },
-        //         Ast{ .apps = &.{
+        //         Ast{ .apps = &.{ )
         //             Ast{ .apps = &.{} },
         //         } },
         //     } },
@@ -624,9 +630,9 @@ test "Apps: pattern eql hash" {
     var lexer2 = Lexer.init(allocator, fbs2.reader());
     var lexer3 = Lexer.init(allocator, fbs3.reader());
 
-    const ast1 = Ast{ .apps = try parse(allocator, &lexer1) };
-    const ast2 = Ast{ .apps = try parse(allocator, &lexer2) };
-    const ast3 = Ast{ .apps = try parse(allocator, &lexer3) };
+    const ast1 = try parse(allocator, &lexer1);
+    const ast2 = try parse(allocator, &lexer2);
+    const ast3 = try parse(allocator, &lexer3);
     // try testing.expectEqualStrings(ast.?.apps[0].pat, "Asdf");
     try testing.expect(ast1.eql(ast2));
     try testing.expectEqual(ast1.hash(), ast2.hash());

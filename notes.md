@@ -775,6 +775,16 @@ Using `(A -> 1) : {...}` instead doesn't work, because the arrow `A -> 1` isn't 
 
 The operator `-->` is also probably needed for commas
 
+The operators `=>` and `==>` are probably needed to decrease levels of nesting, because sometimes 0 is desired.
+They would make `->` map only to its first app as a singleton not an array. This might make some precedence operators redundant.
+```
+# Make apps of length 1 map to a singleton 
+(x) -> x
+# This now evaluates into a basic trie without nesting.
+{ 1 -> A, 2 -> B, 3 -> C }
+# Make keys of length 1 map to a singleton key
+(x) -> y --> x -> y
+```
 
 ---
 
@@ -801,3 +811,7 @@ A match is of the form `QueryApp : Expr`, where Expr is an Apps or Pattern.
 Add rainbow colors to app and pattern pretty printer
 Parse commas the same as newlines for consistency
 
+
+---
+
+Sifu is a lisp, just with a default nesting level of 1.

@@ -68,8 +68,8 @@ test "Pattern: simple vals" {
     var lexer = Lexer.init(allocator, fbs.reader());
 
     const ast = try parse(allocator, &lexer);
-    const key = ast[1..];
-    var val = try Ast.createApps(allocator, ast[0].arrow);
+    const key = ast.arrow.from;
+    var val = try Ast.createApps(allocator, ast.arrow.into);
     var actual = Pat{};
     // TODO: match patterns instead
     // const updated = try Ast.insert(key, allocator, &actual, val);
@@ -108,7 +108,7 @@ test "Pattern: simple vals" {
     try testing.expect(!expected.eql(expected_a));
 
     try testing.expect(!expected.eql(actual));
-    _ = try actual.insert(allocator, key, val.*);
+    _ = try actual.insertApps(allocator, key, val.*);
     try expected.write(stderr);
     try stderr.writeByte('\n');
     try actual.write(stderr);
@@ -134,18 +134,18 @@ test "Pattern: simple vals" {
         .map.put(
         allocator,
         token_bb2,
-        Pat{ .val = try Ast.createApps(allocator, val2) },
+        Pat{ .val = &val2 },
     );
 
     try testing.expect(!expected.eql(actual));
-    _ = try actual.insert(allocator, key2, Ast.ofApps(val2));
+    _ = try actual.insert(allocator, key2, val2);
 
     try testing.expect(expected.eql(actual));
 
-    try testing.expect(val.eql(actual.matchUnique(key).?.*));
-    try testing.expect(Ast.ofApps(val2).eql(actual.matchUnique(key2).?.*));
-    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUnique(key[0..1]));
-    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUnique(key2[0..1]));
+    try testing.expect(val.eql(actual.matchUniqueApps(key).?.*));
+    try testing.expect(val2.eql(actual.matchUnique(key2).?.*.val.?.*));
+    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUniqueApps(key[0..1]));
+    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUniqueApps(key2.apps[0..1]));
     try expected.write(stderr);
     try actual.write(stderr);
 }

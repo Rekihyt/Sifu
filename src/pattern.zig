@@ -123,12 +123,12 @@ pub fn PatternWithContextAndFree(
         /// parsed into an app.
         pub const Node = union(enum) {
             pub const Arrow = struct {
-                from: ArrayListUnmanaged(Node) = ArrayListUnmanaged(Node){},
-                into: ArrayListUnmanaged(Node) = ArrayListUnmanaged(Node){},
+                from: []const Node = &.{},
+                into: []const Node = &.{},
             };
 
             pub const Match = struct {
-                query: ArrayListUnmanaged(Node) = ArrayListUnmanaged(Node){},
+                query: []const Node = &.{},
                 pattern: Self, // TODO: = Self{} doesn't work here for some reason
             };
             /// An upper case term.
@@ -136,7 +136,7 @@ pub fn PatternWithContextAndFree(
             /// A lower case term.
             variable: Var,
             /// Spaces separated juxtaposition, or commas/parens for nested apps.
-            apps: ArrayListUnmanaged(Node),
+            apps: []const Node,
             /// A match pattern, i.e. `x : Int -> x * 2` where some node (`x`)
             /// must match some subpattern (`Int`) in order for the rest of the
             /// match to continue. Like infixes, the apps to the left form their
@@ -162,10 +162,9 @@ pub fn PatternWithContextAndFree(
                     .match => |_| @panic("unimplemented"),
                     .arrow => |_| @panic("unimplemented"),
                     .apps => |apps| blk: {
-                        var apps_copy = try ArrayListUnmanaged(Node)
-                            .initCapacity(allocator, apps.items.len);
-                        for (apps.items) |app|
-                            apps_copy.appendAssumeCapacity(try app.copy(allocator));
+                        var apps_copy = try allocator.alloc(Node, apps.len);
+                        for (apps, apps_copy) |app, *app_copy|
+                            app_copy.* = try app.copy(allocator);
 
                         break :blk Node.ofApps(apps_copy);
                     },
@@ -179,12 +178,12 @@ pub fn PatternWithContextAndFree(
 
             /// Deletes all nodes, then deinits `apps`.
             pub fn deleteApps(
-                apps: *ArrayListUnmanaged(Node),
+                apps: []const Node,
                 allocator: Allocator,
             ) void {
-                for (apps.items) |*app|
-                    app.deleteChildren(allocator);
-                apps.deinit(allocator);
+                for (apps) |*app|
+                    @constCast(app).deleteChildren(allocator);
+                allocator.free(apps);
             }
 
             pub fn deleteChildren(self: *Node, allocator: Allocator) void {
@@ -194,15 +193,15 @@ pub fn PatternWithContextAndFree(
                     .variable => |variable| if (varFreeFn) |free|
                         free(allocator, variable),
                     .pattern => |p| p.delete(allocator),
-                    .apps => |*apps| deleteApps(apps, allocator),
+                    .apps => |apps| deleteApps(apps, allocator),
                     .match => |match| {
-                        deleteApps(&match.query, allocator);
+                        deleteApps(match.query, allocator);
                         match.pattern.delete(allocator);
                         allocator.destroy(match);
                     },
                     .arrow => |arrow| {
-                        deleteApps(&arrow.from, allocator);
-                        deleteApps(&arrow.into, allocator);
+                        deleteApps(arrow.from, allocator);
+                        deleteApps(arrow.into, allocator);
                         allocator.destroy(arrow);
                     },
                 }
@@ -213,7 +212,7 @@ pub fn PatternWithContextAndFree(
             pub fn hasherUpdate(self: Node, hasher: anytype) void {
                 hasher.update(&mem.toBytes(@intFromEnum(self)));
                 switch (self) {
-                    .apps => |apps| for (apps.items) |app|
+                    .apps => |apps| for (apps) |app|
                         app.hasherUpdate(hasher),
                     .variable => |v| hasher.update(
                         &mem.toBytes(VarCtx.hash(undefined, v)),
@@ -238,8 +237,8 @@ pub fn PatternWithContextAndFree(
                         other.variable,
                         undefined,
                     ),
-                    .apps => |apps| apps.items.len == other.apps.items.len and
-                        for (apps.items, other.apps.items) |app, other_app|
+                    .apps => |apps| apps.len == other.apps.len and
+                        for (apps, other.apps) |app, other_app|
                     {
                         if (!app.eql(other_app))
                             break false;
@@ -257,7 +256,7 @@ pub fn PatternWithContextAndFree(
                 return .{ .variable = variable };
             }
 
-            pub fn ofApps(apps: ArrayListUnmanaged(Node)) Node {
+            pub fn ofApps(apps: []const Node) Node {
                 return .{ .apps = apps };
             }
 
@@ -273,7 +272,7 @@ pub fn PatternWithContextAndFree(
             /// Lifetime of `apps` must be longer than this Node.
             pub fn createApps(
                 allocator: Allocator,
-                apps: ArrayListUnmanaged(Node),
+                apps: []const Node,
             ) Allocator.Error!*Node {
                 var node = try allocator.create(Node);
                 node.* = Node{ .apps = apps };
@@ -376,7 +375,7 @@ pub fn PatternWithContextAndFree(
             ) @TypeOf(writer).Error!void {
                 switch (self) {
                     // Ignore top level parens
-                    .apps => |apps| for (apps.items) |app| {
+                    .apps => |apps| for (apps) |app| {
                         try app.writeSExp(writer, optional_indent);
                         try writer.writeByte(' ');
                     },
@@ -664,8 +663,9 @@ pub fn PatternWithContextAndFree(
         }
 
         /// Like matchUniquePrefix but matches only a single node exactly (the
-        /// select part of the match is skipped).
-        pub fn matchUniqueNode(pattern: *const Self, node: Node) ?*Self {
+        /// select part of matching is skipped). Returns a pointer to the next
+        /// pointer, not its value.
+        pub fn matchUnique(pattern: *const Self, node: Node) ?*Self {
             return switch (node) {
                 .key => |key| pattern.map.getPtr(key),
 
@@ -678,7 +678,7 @@ pub fn PatternWithContextAndFree(
                     // fails. Match sub_apps, move to its value, which is also
                     // always a pattern even though it is wrapped in a Node
                     if (pattern.sub_apps) |sub_apps|
-                        if (sub_apps.matchUnique(apps.items)) |next|
+                        if (sub_apps.matchUniqueApps(apps)) |next|
                             break :blk next.pattern;
 
                     break :blk null;
@@ -720,7 +720,7 @@ pub fn PatternWithContextAndFree(
             var current = pattern;
             // Follow the longest branch that exists
             const prefix_len = for (apps, 0..) |app, i| {
-                current = current.matchUniqueNode(app) orelse
+                current = current.matchUnique(app) orelse
                     break i;
             } else apps.len;
 
@@ -730,7 +730,7 @@ pub fn PatternWithContextAndFree(
         /// Follows `pattern` for each app matching structure as well as value.
         /// Does not require allocation because variable branches are not
         /// explored, but rather followed.
-        pub fn matchUnique(
+        pub fn matchUniqueApps(
             pattern: *Self,
             apps: []const Node,
         ) ?*Node {
@@ -755,7 +755,7 @@ pub fn PatternWithContextAndFree(
             var current = pattern;
             // Follow the longest branch that exists
             const prefix_len = switch (node) {
-                .apps => |apps| for (apps.items, 0..) |app, i| switch (app) {
+                .apps => |apps| for (apps, 0..) |app, i| switch (app) {
                     // TODO: possible bug, not updating current node
                     .variable => |variable| {
                         const result = try var_map.getOrPut(allocator, variable);
@@ -786,7 +786,7 @@ pub fn PatternWithContextAndFree(
                     // has a value. The values must be equal to match.
                     else => {
                         // Exact matches should preclude any var matches
-                        current = current.matchUniqueNode(app) orelse blk: {
+                        current = current.matchUnique(app) orelse blk: {
                             // If nothing matched, default to current's var, if any
                             if (current.option_var) |v| {
                                 const result = try var_map.getOrPut(allocator, v);
@@ -806,7 +806,7 @@ pub fn PatternWithContextAndFree(
                         };
                         print("Current updated\n", .{});
                     },
-                } else apps.items.len,
+                } else apps.len,
                 else => @panic("unimplemented"),
             };
             const prefix = PrefixResult{
@@ -851,7 +851,7 @@ pub fn PatternWithContextAndFree(
                 // inserted as such
                 if (prefix.end_ptr.val) |val|
                     switch (node) {
-                        .apps => |apps| if (prefix.len == apps.items.len)
+                        .apps => |apps| if (prefix.len == apps.len)
                             try matches.append(allocator, val),
                         else => try matches.append(allocator, val),
                     };
@@ -910,15 +910,28 @@ pub fn PatternWithContextAndFree(
         pub fn insertKeys(
             self: *Self,
             allocator: Allocator,
-            key: []const Key,
+            keys: []const Key,
             optional_val: ?Node,
         ) Allocator.Error!*Self {
-            const apps = try allocator.alloc(Node, key.len);
-            defer allocator.free(apps);
-            for (apps, 0..) |*node, i|
-                node.* = Node.ofLit(key[i]);
+            var apps = ArrayListUnmanaged(Node){};
+            defer apps.deinit(allocator);
+            for (keys) |key|
+                try apps.append(allocator, Node.ofLit(key));
 
-            return self.insert(allocator, Node.ofApps(apps), optional_val);
+            return self.insertApps(allocator, apps.items, optional_val);
+        }
+
+        pub fn insertApps(
+            self: *Self,
+            allocator: Allocator,
+            apps: []const Node,
+            optional_val: ?Node,
+        ) Allocator.Error!*Self {
+            return self.insert(
+                allocator,
+                Node.ofApps(@constCast(apps)),
+                optional_val,
+            );
         }
 
         pub fn insertNode(
@@ -1018,7 +1031,7 @@ pub fn PatternWithContextAndFree(
                     const sub_apps =
                         try util.getOrInit(.sub_apps, current, allocator);
                     const put_result = try sub_apps
-                        .getOrPutApps(allocator, apps.items);
+                        .getOrPutApps(allocator, apps);
                     if (!put_result.found_existing)
                         found_existing = false;
 
@@ -1094,7 +1107,7 @@ pub fn PatternWithContextAndFree(
             var current_matched = &matched;
             var current = pattern;
             // Follow the longest branch that exists
-            const prefix_len = for (apps.items, 0..) |app, i| switch (app) {
+            const prefix_len = for (apps, 0..) |app, i| switch (app) {
                 // TODO: possible bug, not updating current node
                 .variable => |variable| {
                     const result = try var_map.getOrPut(allocator, variable);
@@ -1110,7 +1123,6 @@ pub fn PatternWithContextAndFree(
                         current_matched = util.getOrInit(
                             .var_next,
                             current_matched,
-                            undefined,
                             allocator,
                         );
                         continue;
@@ -1131,7 +1143,7 @@ pub fn PatternWithContextAndFree(
                 },
                 else => {
                     // Exact matches should preclude any var matches
-                    current = current.matchUniqueNode(app) orelse blk: {
+                    current = current.matchUnique(app) orelse blk: {
                         // If nothing matched, default to current's var, if any
                         if (current.option_var) |v| {
                             const result = try var_map.getOrPut(allocator, v);
@@ -1151,7 +1163,7 @@ pub fn PatternWithContextAndFree(
                     };
                     print("Current updated\n", .{});
                 },
-            } else apps.items.len;
+            } else apps.len;
             _ = prefix_len;
 
             return MatchResult{ .matched_pattern = matched, .var_map = var_map };
@@ -1284,7 +1296,7 @@ test "Pattern: eql" {
     try p1.map.put(allocator, "Aa", p2);
 
     var p_insert = Pat{};
-    _ = try p_insert.insert(allocator, &.{
+    _ = try p_insert.insertApps(allocator, &.{
         Node{ .key = "Aa" },
         Node{ .key = "Bb" },
     }, val2);
@@ -1304,7 +1316,7 @@ test "should behave like a set when given void" {
 
     const nodes1 = &.{ Node{ .key = 123 }, Node{ .key = 456 } };
     var pattern = Pat{};
-    _ = try pattern.insert(al, nodes1, null);
+    _ = try pattern.insertApps(al, nodes1, null);
 
     // TODO: add to a test for insert
     // var expected = try Pat{};
@@ -1345,7 +1357,7 @@ test "insert multiple lits" {
     var pattern = Pat{};
     defer pattern.deleteChildren(testing.allocator);
 
-    _ = try pattern.insert(
+    _ = try pattern.insertApps(
         testing.allocator,
         &.{ Node{ .key = 1 }, Node{ .key = 2 }, Node{ .key = 3 } },
         null,
