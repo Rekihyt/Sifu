@@ -155,29 +155,11 @@ fn parseUntil(
                         try Ast.ofPattern(allocator, pat),
                     );
                 },
-                ',' => {
-                    const offset = comma_len;
-                    // comma_len += 1;
-                    infix_len = 0;
-
-                    // Add the operator, the right args as and app, and
-                    // finally the left args.
-                    try current.insertSlice(allocator, offset, &.{
-                        Ast.ofLit(token),
-                        Ast.ofApps(undefined),
-                    });
-                    // Store the old current
-                    current_dest.* = try current.toOwnedSlice(allocator);
-                    // We can track this pointer because the previous arraylist
-                    // (op and left args) will no longer be resized
-                    const next_dest = @constCast(&current_dest.*[1].apps);
-                    defer current_dest = next_dest;
-                    current = ArrayListUnmanaged(Ast){};
-                },
+                ',' => {},
                 else => try current.append(allocator, Ast.ofLit(token)),
             },
             .Infix => {
-                if (mem.eql(u8, lit, ":")) {
+                if (mem.eql(u8, lit, ":") or mem.eql(u8, lit, "::")) {
                     var offset = comma_len + infix_len;
                     comma_len = 0;
                     infix_len = 0;
@@ -194,13 +176,9 @@ fn parseUntil(
                     // try current.append(allocator, Ast{ .match = match_op });
                     // Continue parsing the right args
                     // current = &match_op.;
-                } else if (mem.eql(u8, lit, "-->")) {
+                } else if (mem.eql(u8, lit, "-->") or mem.eql(u8, lit, "==>")) {
                     @panic("unimplemented");
-                } else if (mem.eql(u8, lit, "==>")) {
-                    @panic("unimplemented");
-                } else if (mem.eql(u8, lit, "->")) {
-                    @panic("unimplemented");
-                } else if (mem.eql(u8, lit, "=>")) {
+                } else if (mem.eql(u8, lit, "->") or mem.eql(u8, lit, "=>")) {
                     var offset = comma_len;
                     comma_len = 0;
                     infix_len = 0;
@@ -213,18 +191,19 @@ fn parseUntil(
                     // Add them as a match node
                     try current.append(allocator, Ast{ .arrow = arrow });
                     // Continue parsing the right args
-                } else {
-                    var offset = comma_len + infix_len;
-                    infix_len += 1;
-                    // Gather right args starting from the previous comma
-                    var args = try util.popSlice(&current, offset, allocator);
-                    defer allocator.free(args);
-
-                    try current.append(allocator, Ast.ofLit(token));
-                    const rest = try current.addOne(allocator);
-                    rest.* = Ast{ .apps = &.{} };
-                    try current.appendSlice(allocator, args);
-                    // current = &rest.apps;
+                } else { // Add the operator, the right args as and app, and
+                    // finally the left args.
+                    try current.insertSlice(allocator, 0, &.{
+                        Ast.ofLit(token),
+                        Ast.ofApps(undefined),
+                    });
+                    // Store the old current
+                    current_dest.* = try current.toOwnedSlice(allocator);
+                    // We can track this pointer because the previous arraylist
+                    // (op and left args) will no longer be resized
+                    const next_dest = @constCast(&current_dest.*[1].apps);
+                    defer current_dest = next_dest;
+                    current = ArrayListUnmanaged(Ast){};
                 }
             },
             .Var => try current.append(allocator, Ast.ofVar(token.lit)),
@@ -232,6 +211,7 @@ fn parseUntil(
             .Comment, .NewLine => try current.append(allocator, Ast.ofLit(token)),
         }
     } else false;
+    current_dest.* = try current.toOwnedSlice(allocator);
     return Ast.ofApps(result);
 }
 // This function is the responsibility of the Parser, because it is the dual

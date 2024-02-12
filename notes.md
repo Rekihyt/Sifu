@@ -778,7 +778,9 @@ The operator `-->` is also probably needed for commas
 The operators `=>` and `==>` are probably needed to decrease levels of nesting, because sometimes 0 is desired.
 They would make `->` map only to its first app as a singleton not an array. This might make some precedence operators redundant.
 
-The operator `...` is necessary for globbing. Matching using it needs some kind of substring search algorithm for apps though (but probably not for patterns).
+Two operators for matching are probably necessary too. `*:` maybe?
+
+The operator `...` or `*` is necessary for globbing. Matching using it needs some kind of substring search algorithm for apps though (but probably not for patterns).
 
 Single arrow: rewrite to first match, looking back or else self
 Double arrow: rewrite to all matches in order looking back or else empty. 
