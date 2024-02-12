@@ -98,9 +98,12 @@ fn parseUntil(
     // of size 1. ArrayList's `append` function will allocate space for
     // an extra 10, which this avoids
     var current = try ArrayListUnmanaged(Ast).initCapacity(allocator, 1);
-    // This pointer tracks where to put the result after converting it to an
+    var result: []const Ast = undefined;
+    // This pointer tracks where to put `current` after converting it to an
     // owned slice.
-    // var next_addr: *[]Ast = undefined;
+    // Undefined because we cannot point to result's apps until it has been
+    // allocated for the final time
+    var current_dest: *[]const Ast = &result;
     found_sep.* = while (try lexer.next()) |token| {
         const lit = token.lit;
         switch (token.type) {
@@ -154,20 +157,22 @@ fn parseUntil(
                 },
                 ',' => {
                     const offset = comma_len;
-                    comma_len += 1;
+                    // comma_len += 1;
                     infix_len = 0;
 
                     // Add the operator, the right args as and app, and
                     // finally the left args.
-                    // TODO: Replace recursive call with an undefined apps that
-                    // is later set to `current.toOwnedSlice()`, this requires
-                    // tracking all appending operations as the pointer may
-                    // invalidate.
                     try current.insertSlice(allocator, offset, &.{
                         Ast.ofLit(token),
-                        try parseUntil(allocator, lexer, found_sep, terminal),
+                        Ast.ofApps(undefined),
                     });
-                    // next_addr = current.items[offset + 1].
+                    // Store the old current
+                    current_dest.* = try current.toOwnedSlice(allocator);
+                    // We can track this pointer because the previous arraylist
+                    // (op and left args) will no longer be resized
+                    const next_dest = @constCast(&current_dest.*[1].apps);
+                    defer current_dest = next_dest;
+                    current = ArrayListUnmanaged(Ast){};
                 },
                 else => try current.append(allocator, Ast.ofLit(token)),
             },
@@ -189,7 +194,13 @@ fn parseUntil(
                     // try current.append(allocator, Ast{ .match = match_op });
                     // Continue parsing the right args
                     // current = &match_op.;
+                } else if (mem.eql(u8, lit, "-->")) {
+                    @panic("unimplemented");
+                } else if (mem.eql(u8, lit, "==>")) {
+                    @panic("unimplemented");
                 } else if (mem.eql(u8, lit, "->")) {
+                    @panic("unimplemented");
+                } else if (mem.eql(u8, lit, "=>")) {
                     var offset = comma_len;
                     comma_len = 0;
                     infix_len = 0;
@@ -221,10 +232,7 @@ fn parseUntil(
             .Comment, .NewLine => try current.append(allocator, Ast.ofLit(token)),
         }
     } else false;
-
-    // previous_ptr.* = try current.toOwnedSlice(allocator);
-    // return Ast.ofApps(previous_ptr.*);
-    return Ast{ .apps = try current.toOwnedSlice(allocator) };
+    return Ast.ofApps(result);
 }
 // This function is the responsibility of the Parser, because it is the dual
 // to parsing.

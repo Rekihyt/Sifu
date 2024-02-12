@@ -777,7 +777,15 @@ The operator `-->` is also probably needed for commas
 
 The operators `=>` and `==>` are probably needed to decrease levels of nesting, because sometimes 0 is desired.
 They would make `->` map only to its first app as a singleton not an array. This might make some precedence operators redundant.
+
+The operator `...` is necessary for globbing. Matching using it needs some kind of substring search algorithm for apps though (but probably not for patterns).
+
+Single arrow: rewrite to first match, looking back or else self
+Double arrow: rewrite to all matches in order looking back or else empty. 
+
+Commas might be better as a way to append instead of separate apps.
 ```
+
 # Make apps of length 1 map to a singleton 
 (x) -> x
 # This now evaluates into a basic trie without nesting.
@@ -815,3 +823,5 @@ Parse commas the same as newlines for consistency
 ---
 
 Sifu is a lisp, just with a default nesting level of 1.
+
+
