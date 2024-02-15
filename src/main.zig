@@ -8,7 +8,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
 const Lexer = @import("sifu/Lexer.zig").Lexer;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
-const parse = @import("sifu/parser.zig").parse;
+const parseAst = @import("sifu/parser.zig").parseAst;
 const io = std.io;
 const fs = std.fs;
 const log = std.log.scoped(.sifu_cli);
@@ -72,7 +72,7 @@ pub fn main() !void {
         // escape (from pressing alt+enter in most terminals)
         // if (char == 0x1b) {}
         // }
-        var ast = try parse(parser_allocator, &lexer);
+        var ast = try parseAst(parser_allocator, &lexer);
         // defer _ = parser_gpa.detectLeaks();
         defer ast.deleteChildren(parser_allocator);
 
@@ -104,7 +104,7 @@ pub fn main() !void {
                 if (matches.len > 0) {
                     for (matches) |matched| {
                         print("Match: ", .{});
-                        try matched.end_ptr.write(buff_stdout);
+                        try matched.end.write(buff_stdout);
                         _ = try buff_writer.write("\n");
                     }
                 } else print("No match\n", .{});

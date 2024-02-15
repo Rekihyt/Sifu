@@ -96,32 +96,5 @@ pub fn Token(comptime Context: type) type {
         pub fn write(self: Self, writer: anytype) !void {
             _ = try writer.write(self.lit);
         }
-
-        /// Convert this to a term by parsing its literal value.
-        pub fn parse(self: Self, allocator: Allocator) Oom!Term {
-            _ = allocator;
-            return switch (self.type) {
-                .Name, .Str, .Var, .Comment => self.lit,
-                .Infix => self.lit,
-                .I => if (std.fmt.parseInt(usize, self.lit, 10)) |i|
-                    i
-                else |err| switch (err) {
-                    // token should only have consumed digits
-                    error.InvalidCharacter => unreachable,
-                    // TODO: arbitrary ints here
-                    error.Overflow => unreachable,
-                },
-
-                .U => if (std.fmt.parseUnsigned(usize, self.lit, 10)) |i|
-                    i
-                else |err| switch (err) {
-                    error.InvalidCharacter => unreachable,
-                    // TODO: arbitrary ints here
-                    error.Overflow => unreachable,
-                },
-                .F => std.fmt.parseFloat(fsize, self.lit) catch
-                    unreachable,
-            };
-        }
     };
 }

@@ -1,0 +1,36 @@
+
+
+MySet -> {
+	F (),
+	G (
+		Y
+	),
+	H,
+}
+
+MyLongFunctionApp -> MyFn  (
+	Arg1
+	Arg2
+	Arg3 Arg4
+)
+
+@ x    -> x
+@ x, y -> x @ y
+
+MyLongFunctionApp2 -> MyFn @
+	Arg1,
+	Arg2,
+	Arg3,
+
+MyShortFunction -> MyFn
+Seperate App
+
+{
+	A -> 1
+	B -> {
+		B1 -> 12
+		B2 -> 13
+	}
+	C -> { 4, 5, 6 }
+}
+

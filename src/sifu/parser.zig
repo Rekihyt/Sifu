@@ -27,8 +27,36 @@ const mem = std.mem;
 const math = std.math;
 const assert = std.debug.assert;
 const debug = std.debug;
+const meta = std.meta;
+const last = util.last;
 
 // TODO: add indentation tracking, and separate based on newlines+indent
+
+/// Convert this token to a term by parsing its literal value.
+pub fn parseTerm(term: Token) Oom!Term {
+    return switch (term.type) {
+        .Name, .Str, .Var, .Comment => term.lit,
+        .Infix => term.lit,
+        .I => if (std.fmt.parseInt(usize, term.lit, 10)) |i|
+            i
+        else |err| switch (err) {
+            // token should only have consumed digits
+            error.InvalidCharacter => unreachable,
+            // TODO: arbitrary ints here
+            error.Overflow => unreachable,
+        },
+
+        .U => if (std.fmt.parseUnsigned(usize, term.lit, 10)) |i|
+            i
+        else |err| switch (err) {
+            error.InvalidCharacter => unreachable,
+            // TODO: arbitrary ints here
+            error.Overflow => unreachable,
+        },
+        .F => std.fmt.parseFloat(fsize, term.lit) catch
+            unreachable,
+    };
+}
 
 fn consumeNewLines(lexer: anytype, reader: anytype) !bool {
     var consumed: bool = false;
@@ -42,16 +70,52 @@ fn consumeNewLines(lexer: anytype, reader: anytype) !bool {
     return consumed;
 }
 
-pub fn parse(allocator: Allocator, lexer: anytype) !Ast {
-    var found_sep: bool = undefined;
-    var result = try parseUntil(
-        allocator,
-        lexer,
-        &found_sep,
-        null,
-    );
+const ParseError = error{
+    NoLeftBrace,
+    NoRightBrace,
+    NoLeftParen,
+    NoRightParen,
+};
 
-    // try stderr.print("New app ptr: {*}, len: {}\n", .{ apps.ptr, apps.len });
+pub fn parsePattern(
+    allocator: Allocator,
+    lexer: anytype,
+) (ParseError || @TypeOf(lexer).Error || Allocator.Error)!Ast {
+    _ = allocator;
+}
+
+pub fn parseNestedApps(
+    allocator: Allocator,
+    lexer: anytype,
+) (ParseError || @TypeOf(lexer.*).Error || Allocator.Error)!Ast {
+    if (try lexer.next()) |l_brace|
+        if (l_brace.type == .Name and l_brace.lit[0] == '(')
+            return error.NoLeftBrace;
+
+    var result = try parseAst(allocator, lexer);
+    errdefer result.delete(allocator);
+    if (try lexer.next()) |r_brace|
+        if (r_brace.type == .Name and r_brace.lit[0] == ')')
+            return error.NoRightBrace;
+
+    return result;
+}
+
+pub fn parseNestedPattern(
+    allocator: Allocator,
+    lexer: anytype,
+) (ParseError || @TypeOf(lexer.*).Error || Allocator.Error)!Ast {
+    if (try lexer.next()) |l_brace|
+        if (l_brace.type == .Name and l_brace.lit[0] == '{')
+            return error.NoLeftBrace;
+
+    var result = try parseAst(allocator, lexer);
+    // TODO: insert / eval
+    errdefer result.delete(allocator);
+    if (try lexer.next()) |r_brace|
+        if (r_brace.type == .Name and r_brace.lit[0] == '}')
+            return error.NoRightBrace;
+
     return result;
 }
 
@@ -60,10 +124,7 @@ pub fn parse(allocator: Allocator, lexer: anytype) !Ast {
 ///
 /// Memory can be freed by using an arena allocator, or walking the tree and
 /// freeing each app. Does not allocate on errors or empty parses.
-/// Returns:
-/// - true if terminal was found
-/// - false if terminal wasn't found, but something was parsed
-/// - null if no tokens were parsed
+/// Returns: an Ast, which may be anything but a Term.
 // Parse algorithm tracks 4 levels of precedence. Everything is an array, so
 // lower precedence can be expressed as the prefix of the apps that isn't added
 // as an argument to the higher precedence operator. For example, in `1 -> 2 +
@@ -71,148 +132,91 @@ pub fn parse(allocator: Allocator, lexer: anytype) !Ast {
 // (`Arrow (1)`) has lower precedence than infix, so only anything after it (in
 // this case `2`) is added as the first argument to `+`, resulting in `Arrow (1)
 // + () 3`.
-// Precedence: commas < arrow < infix < match
-// TODO: parse commas and newlines differently within braces and brackets.
-// TODO: refactor multiple current appends into one append outside match
-// TODO: implement `=>`
-// - [] should be a flat Apps instead of as an infix
-// - {} should be as entries into the pattern instead of infix
-fn parseUntil(
+// Precedence: long arrow < long match < commas < infix < arrow < match
+// - TODO: [] should be a flat Apps instead of as an infix
+pub fn parseAst(
     allocator: Allocator,
     lexer: anytype,
-    found_sep: *bool,
-    terminal: ?u8, // must be a greedily parsed, single char terminal
-) !Ast {
-    _ = try lexer.peek() orelse
-        return Ast.ofApps(&.{});
-
-    const Precedence = enum { Comma, Arrow, Infix, Match };
-    var precedence_level: Precedence = .Comma;
-    _ = precedence_level;
-    // Track the last comma since an arrow, kind of like an open bracket
-    var comma_len: usize = 0;
-    // Track last infix op (not a builtin arrow or match) since comma
-    var infix_len: usize = 0;
-
-    // Many patterns will be leaves, so it makes sense to assume an app
-    // of size 1. ArrayList's `append` function will allocate space for
-    // an extra 10, which this avoids
-    var current = try ArrayListUnmanaged(Ast).initCapacity(allocator, 1);
-    var result: []const Ast = undefined;
+) (ParseError || @TypeOf(lexer.*).Error)!Ast {
+    var result: Ast = undefined;
+    var current = ArrayListUnmanaged(Ast){};
     // This pointer tracks where to put `current` after converting it to an
     // owned slice.
     // Undefined because we cannot point to result's apps until it has been
     // allocated for the final time
-    var current_dest: *[]const Ast = &result;
-    found_sep.* = while (try lexer.next()) |token| {
+    var current_dest: *Ast = &result;
+    errdefer { // TODO: add test coverage
+        // Check if result was written to, and therefore would need freeing
+        if (&result != current_dest)
+            result.deleteChildren(allocator);
+
+        for (current.items) |*ast|
+            ast.deleteChildren(allocator);
+
+        current.deinit(allocator);
+    }
+    while (try lexer.peek()) |token| {
         const lit = token.lit;
-        switch (token.type) {
-            .NewLine => break '\n' == terminal,
-            // Names always have at least one char
-            .Name => if (lit[0] == terminal)
-                break true, // ignore terminal
+        // Names always have at least one char
+        // Terminals are parsed greedily, so its impossible to encounter any
+        // with more than one char (like "{}")
+        switch (token.lit[0]) {
+            '(' => try current.append(
+                allocator,
+                try parseNestedApps(allocator, lexer),
+            ),
+            '{' => try current.append(
+                allocator,
+                try parseNestedPattern(allocator, lexer),
+            ),
             else => {},
         }
-        switch (token.type) {
-            .Name => switch (lit[0]) {
-                // Terminals are parsed greedily, so its impossible to
-                // encounter any with more than one char (like "{}")
-                '(' => {
-                    var matched: bool = undefined;
-                    // Try to parse a nested app
-                    const nested =
-                        try parseUntil(allocator, lexer, &matched, ')');
-
-                    try stderr.print("Nested App: {?}\n", .{matched});
-                    // if (!matched) // TODO: copy and free nested to result
-                    // else
-                    try current.append(
-                        allocator,
-                        if (matched)
-                            nested
-                        else
-                            // If null, no matching paren was found so parse '('
-                            // as a literal
-                            Ast.ofLit(token),
-                    );
-                },
-                '{' => {
-                    var pat = Pat{};
-                    var matched: bool = undefined;
-                    // Try to parse a nested app
-                    var nested =
-                        try parseUntil(allocator, lexer, &matched, '}');
-
-                    // TODO: check if matched brace was actually found
-                    // if (!matched)
-                    // TODO: fix parsing nested patterns with comma seperators
-                    // TODO: optimize by removing the delete
-                    defer nested.deleteChildren(allocator);
-                    try stderr.print("Nested Pat: {?}\n", .{matched});
-                    _ = try pat.insertNode(allocator, nested);
-                    try current.append(
-                        allocator,
-                        try Ast.ofPattern(allocator, pat),
-                    );
-                },
-                ',' => {},
-                else => try current.append(allocator, Ast.ofLit(token)),
-            },
+        switch (token.lit[0]) {
+            '(', '{' => continue, // Move to next token
+            ')', '}' => break, // ignore terminals
+            else => {},
+        }
+        // Newlines separate unless preceded by an op
+        // .NewLine => switch (current) {
+        //     .infix, .arrow, .match => break,
+        //     else => {},
+        // },
+        try current.append(allocator, switch (token.type) {
+            .Name => Ast.ofLit(token),
             .Infix => {
                 if (mem.eql(u8, lit, ":") or mem.eql(u8, lit, "::")) {
-                    var offset = comma_len + infix_len;
-                    comma_len = 0;
-                    infix_len = 0;
-                    var match_op = try allocator.create(Ast.Match);
-                    _ = match_op;
-                    // Gather right args starting from the previous op
-                    const args =
-                        try util.popSlice(&current, offset, allocator);
-                    _ = args;
                     @panic("unimplemented");
                     // TODO: parse right args and lookup their
                     // match_op.* = Ast.Match{ .query = args };
-                    // // Add them as a match node
-                    // try current.append(allocator, Ast{ .match = match_op });
-                    // Continue parsing the right args
-                    // current = &match_op.;
                 } else if (mem.eql(u8, lit, "-->") or mem.eql(u8, lit, "==>")) {
                     @panic("unimplemented");
                 } else if (mem.eql(u8, lit, "->") or mem.eql(u8, lit, "=>")) {
-                    var offset = comma_len;
-                    comma_len = 0;
-                    infix_len = 0;
-                    // Offset 0 for lowest precedence
-                    var arrow = try allocator.create(Ast.Arrow);
-                    // Gather right args starting from the previous comma
-                    const left_args =
-                        try util.popSlice(&current, offset, allocator);
-                    arrow.* = Ast.Arrow{ .from = left_args };
-                    // Add them as a match node
-                    try current.append(allocator, Ast{ .arrow = arrow });
-                    // Continue parsing the right args
-                } else { // Add the operator, the right args as and app, and
+                    @panic("unimplemented");
+                } else {
+                    // Add the operator, the right args as and app, and
                     // finally the left args.
-                    try current.insertSlice(allocator, 0, &.{
+                    try current.appendSlice(allocator, &.{
                         Ast.ofLit(token),
                         Ast.ofApps(undefined),
                     });
                     // Store the old current
-                    current_dest.* = try current.toOwnedSlice(allocator);
+                    current_dest.* = Ast{
+                        .infix = try current.toOwnedSlice(allocator),
+                    };
                     // We can track this pointer because the previous arraylist
                     // (op and left args) will no longer be resized
-                    const next_dest = @constCast(&current_dest.*[1].apps);
-                    defer current_dest = next_dest;
-                    current = ArrayListUnmanaged(Ast){};
+                    current_dest = @constCast(&last(current_dest.apps));
                 }
+                current = ArrayListUnmanaged(Ast){};
+                continue; // No need to append anything
             },
-            .Var => try current.append(allocator, Ast.ofVar(token.lit)),
-            .Str, .I, .F, .U => try current.append(allocator, Ast.ofLit(token)),
-            .Comment, .NewLine => try current.append(allocator, Ast.ofLit(token)),
-        }
-    } else false;
-    current_dest.* = try current.toOwnedSlice(allocator);
-    return Ast.ofApps(result);
+            .Var => Ast.ofVar(token.lit),
+            .Str, .I, .F, .U => Ast.ofLit(token),
+            .Comment, .NewLine => Ast.ofLit(token),
+        });
+    }
+    current_dest.* = Ast.ofApps(try current.toOwnedSlice(allocator));
+    return result;
 }
 // This function is the responsibility of the Parser, because it is the dual
 // to parsing.
@@ -254,7 +258,6 @@ fn parseUntil(
 
 const testing = std.testing;
 const expectEqualStrings = testing.expectEqualStrings;
-const meta = std.meta;
 const fs = std.fs;
 const io = std.io;
 const Lexer = @import("Lexer.zig")
@@ -275,7 +278,7 @@ test "simple val" {
 
     var fbs = io.fixedBufferStream("Asdf");
     var lexer = Lexer.init(arena.allocator(), fbs.reader());
-    const ast = try parse(arena.allocator(), &lexer);
+    const ast = try parseAst(arena.allocator(), &lexer);
     try testing.expect(ast == .apps and ast.apps.len == 1);
     try testing.expectEqualStrings(ast.apps[0].key.lit, "Asdf");
 }
@@ -286,7 +289,7 @@ fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
     const allocator = arena.allocator();
     var fbs = io.fixedBufferStream(str);
     var lexer = Lexer.init(allocator, fbs.reader());
-    const actuals = try parse(allocator, &lexer);
+    const actuals = try parseAst(allocator, &lexer);
     for (expecteds, actuals.apps) |expected, actual| {
         try expectEqualApps(expected, actual);
     }
@@ -618,9 +621,9 @@ test "Apps: pattern eql hash" {
     var lexer2 = Lexer.init(allocator, fbs2.reader());
     var lexer3 = Lexer.init(allocator, fbs3.reader());
 
-    const ast1 = try parse(allocator, &lexer1);
-    const ast2 = try parse(allocator, &lexer2);
-    const ast3 = try parse(allocator, &lexer3);
+    const ast1 = try parseAst(allocator, &lexer1);
+    const ast2 = try parseAst(allocator, &lexer2);
+    const ast3 = try parseAst(allocator, &lexer3);
     // try testing.expectEqualStrings(ast.?.apps[0].pat, "Asdf");
     try testing.expect(ast1.eql(ast2));
     try testing.expectEqual(ast1.hash(), ast2.hash());

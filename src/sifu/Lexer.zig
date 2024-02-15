@@ -31,6 +31,11 @@ const debug = std.debug;
 
 pub fn Lexer(comptime Reader: type) type {
     return struct {
+        pub const Self = @This();
+        // Get the inferred error set of the reader without EndOfStream
+        pub const Error = @typeInfo(@TypeOf(peekChar(undefined)))
+            .ErrorUnion.error_set || Allocator.Error;
+
         /// A element buffer to hold chars for the current token
         buff: ArrayListUnmanaged(u8) = .{},
         /// The position in the stream used as context
@@ -47,8 +52,6 @@ pub fn Lexer(comptime Reader: type) type {
         allocator: Allocator,
         /// The reader providing input
         reader: Reader,
-
-        pub const Self = @This();
 
         /// Creates a new lexer using the given allocator
         pub fn init(allocator: Allocator, reader: Reader) Self {
@@ -127,7 +130,6 @@ pub fn Lexer(comptime Reader: type) type {
                     error.EndOfStream => return null,
                     else => return e,
                 };
-
             return self.char;
         }
 
@@ -138,7 +140,7 @@ pub fn Lexer(comptime Reader: type) type {
         }
 
         /// Advances one character, or panics (should only be called after `peekChar`)
-        fn nextChar(self: *Self) !u8 {
+        fn nextChar(self: *Self) Error!u8 {
             const char = if (self.char) |char|
                 char
             else
@@ -159,7 +161,7 @@ pub fn Lexer(comptime Reader: type) type {
         /// Skips whitespace except for newlines until a non-whitespace character is
         /// found. Not guaranteed to skip anything. Newlines are separators, and thus
         /// treated as tokens.
-        fn skipSpace(self: *Self) !void {
+        fn skipSpace(self: *Self) Error!void {
             while (try self.peekChar()) |char|
                 switch (char) {
                     ' ', '\t', '\r' => _ = try self.nextChar(),
@@ -167,7 +169,7 @@ pub fn Lexer(comptime Reader: type) type {
                 };
         }
 
-        fn nextIdent(self: *Self) !void {
+        fn nextIdent(self: *Self) Error!void {
             while (try self.peekChar()) |next_char|
                 if (isIdent(next_char))
                     try self.consume()
@@ -186,7 +188,7 @@ pub fn Lexer(comptime Reader: type) type {
         }
 
         /// Reads the next infix characters
-        fn infix(self: *Self) !Type {
+        fn infix(self: *Self) Error!Type {
             while (try self.peekChar()) |next_char|
                 if (isInfix(next_char))
                     try self.consume()
@@ -197,7 +199,7 @@ pub fn Lexer(comptime Reader: type) type {
         }
 
         /// Reads the next digits and/or any underscores
-        fn integer(self: *Self) !Type {
+        fn integer(self: *Self) Error!Type {
             while (try self.peekChar()) |next_char|
                 if (isDigit(next_char) or next_char == '_')
                     try self.consume()
@@ -209,7 +211,7 @@ pub fn Lexer(comptime Reader: type) type {
 
         /// Reads the next characters as number. `parseFloat` only throws
         /// `InvalidCharacter`, so this function cannot fail.
-        fn float(self: *Self) !Type {
+        fn float(self: *Self) Error!Type {
             self.int();
             if (try self.peekChar() == '.') {
                 try self.consume();
@@ -221,7 +223,7 @@ pub fn Lexer(comptime Reader: type) type {
 
         /// Reads a value wrapped in double-quotes from the current character. If no
         /// matching quote is found, reads until EOF.
-        fn string(self: *Self) !Type {
+        fn string(self: *Self) Error!Type {
             while (try self.peekChar() != '"')
                 try self.consume();
 
@@ -229,7 +231,7 @@ pub fn Lexer(comptime Reader: type) type {
         }
 
         /// Reads until the end of the line or EOF
-        fn comment(self: *Self) !Type {
+        fn comment(self: *Self) Error!Type {
             while (try self.peekChar()) |next_char|
                 if (next_char != '\n')
                     try self.consume()

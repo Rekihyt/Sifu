@@ -1,16 +1,16 @@
 # An example of how `Case` might be defined as taking a list of patterns and
 # applying them to an argument until a match(es).
 
-Is Empty [] 	  -> True
+Is Empty ()       -> True
 Is Empty {}       -> True
-Is Empty (_ :> _) -> False
+Is Empty _        -> False
 
-Is Empty ()      -> True
-Is Empty (_ , _) -> False
-Is Empty (_ ; _) -> False
+# Reversed match op
+from :- into -> into : from 
+into -: from -> into : from 
 
 Case []             arg -> []
-Case (head :> tail) arg -> (Branch -> head arg) If (Is Empty Branch)
+Case (head :> tail) arg -> {Branch -> head arg} :- If (Is Empty Branch)
 	Then (Case tail arg)
 	Else arg
 

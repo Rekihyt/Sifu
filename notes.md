@@ -679,7 +679,9 @@ ComposeBranches (ord : Ord) -> Case [
 
 ### Left to Right pattern matching evaluation
 
-Patterns should be matched starting from the left most term and greedily consuming as many matches as possible. When replaced, matching begins at the current location, but not before.
+Patterns should be matched starting from the left most term and greedily
+consuming as many submatches as possible. When replaced, matching begins at the
+current location, but not before.
 
 ```
 Foo -> 321
@@ -687,19 +689,16 @@ Foo Foo -> 123
 Bar -> Foo
 Foo Bar -> 456
 
-Foo Foo # evals to 123
-Foo Bar # evals to 321 Bar
-Bar Foo # evals to Foo Foo, then 123
-Bar Bar # evals to Foo Bar, then 456
+Foo Foo # select Foo, select its Foo with val 123
+Foo Bar # select Foo, select its Bar with val 456
+Bar Foo # select Bar, try and fail to match its Foo, then fallback to 123 321
+Bar Bar # select Bar, try and fail to match its Bar, then fallback to Bar. select Bar for Bar Bar
 ```
 
 ---
 
 Pattern keys must also contain patterns, otherwise subpatterns (types) aren't possible.
 Pattern values must also contain patterns, in other words patterns must be built once during insert, not multiple times each rewrite.
-
-Asts must be converted and inserted to patterns. What is the difference?
-Patterns ...
 
 ---
 
@@ -726,24 +725,27 @@ Make frequent dynamic arrays/allocations to be optional, by having compile time 
 
 ---
 
-Maybe add regex-like variables for apps, such as zero-many, one-or-more, optional, etc? A sufficiently smart
-compiler might be able to transform operator patterns into these.
+Maybe add regex-like variables for apps, such as zero-many, one-or-more,
+optional, etc? A sufficiently smart compiler might be able to transform operator
+patterns into these.
 
 ---
 
-Non-retroactive appending: New code added is affected by previous code but not vice versa. It does not change the behavior or meaning of previous code.
-Example of match patterns being known by insert time:
+New code added is affected by previous code but not vice versa. It does not
+change the behavior or meaning of previous code. Example of match patterns being
+known by insert time:
 ```
 P1 -> {1,2,3}
 x : P1 -> 123
-y : P2 -> 456 # Error, P2 doesn't evaluate to a pattern.
+y : P2 -> 456 # Insert error, P2 doesn't evaluate to a pattern.
 P2 -> P1 # Alias P2
 
 
 ```
 ---
 
-Do NOT force pointer's on Keys and Vars. If the user has a large type, they can make it a pointer.
+Do NOT force pointer's on Keys and Vars. If the user has a large type, they can
+make it a pointer.
 
 ---
 
@@ -759,7 +761,8 @@ F 123 # Should become 456
 
 ---
 
-Precedence should minimize parentheis in common use cases. This increases readability and lowers mental overhead, as well as aids incremental compilation.
+Precedence should minimize parentheis in common use cases. This increases
+readability and lowers mental overhead, as well as aids incremental compilation.
 
 ```
 F : A -> B : C
@@ -767,25 +770,35 @@ F -> G : A
 F (x : Int) (y: Int) -> G x y
 ```
 
-The operator `::` for a match with low precendence is necessary. One case is when matching on arrows, like:
+The operator `::` for a match with low precendence is necessary. One case is
+when matching on arrows, like:
 ```
   A -> 1 :: { A -> 1, B, C }
 ```
-Using `(A -> 1) : {...}` instead doesn't work, because the arrow `A -> 1` isn't a subapp in the pattern. More generally, parenthesis are only a tool to express nesting structure, not precedence.
+Using `(A -> 1) : {...}` instead doesn't work, because the arrow `A -> 1` isn't
+a subapp in the pattern. More generally, parenthesis are only a tool to express
+nesting structure, not precedence.
 
 The operator `-->` is also probably needed for commas
 
-The operators `=>` and `==>` are probably needed to decrease levels of nesting, because sometimes 0 is desired.
-They would make `->` map only to its first app as a singleton not an array. This might make some precedence operators redundant.
+The operators `=>` and `==>` are probably needed to decrease levels of nesting,
+because sometimes 0 is desired. They would make `->` map only to its first
+app as a singleton not an array. This might make some precedence operators
+redundant.
 
 Two operators for matching are probably necessary too. `*:` maybe?
 
-The operator `...` or `*` is necessary for globbing. Matching using it needs some kind of substring search algorithm for apps though (but probably not for patterns).
+The operator `...` or `*` is necessary for globbing. Matching using it needs
+some kind of substring search algorithm for apps though (but probably not for
+patterns). It could be combined like `{*}` to denote the current pattern or
+everything in scope.
 
 Single arrow: rewrite to first match, looking back or else self
 Double arrow: rewrite to all matches in order looking back or else empty. 
 
-Commas might be better as a way to append instead of separate apps.
+Commas might be better as a way to append instead of separate apps. An append
+operator would also be good to enable treating apps of a single pattern as just
+a pattern.
 ```
 
 # Make apps of length 1 map to a singleton 
@@ -800,7 +813,10 @@ Commas might be better as a way to append instead of separate apps.
 
 ### Arrow
 
-On deletion of an arrow, all following entries in the pattern must be replayed to ensure they are still valid. This coincides perfectly with using references to save memory, as it ensures they are always valid, or else not re-added.
+On deletion of an arrow, all following entries in the pattern must be replayed
+to ensure they are still valid. This synchronizes perfectly with using
+references to save memory, as it ensures they are always valid, or else not
+re-added.
 
 ### Match
 
@@ -821,9 +837,12 @@ A match is of the form `QueryApp : Expr`, where Expr is an Apps or Pattern.
 Add rainbow colors to app and pattern pretty printer
 Parse commas the same as newlines for consistency
 
+---
+
+Sifu is a lisp, but the syntax treats everything as a list by default.
 
 ---
 
-Sifu is a lisp, just with a default nesting level of 1.
-
-
+Syntax is important for any language. The choice between syntax implementations
+isn't, but rather the fact that there are multiple possible ones
+to begin with for some feature is a possible code smell of that feature.

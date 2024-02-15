@@ -1,0 +1,15 @@
+
+Dup x -> x x
+
+UnDup x x -> x
+
+UnApp (...) -> ...
+
+Empty ->
+
+UnDup Dup -> Empty
+
+Assert 2 == UnDup Dup 2
+Assert A A == Dup A
+Assert A A == Dup Undup A A
+Assert A A A A == Dup Dup A

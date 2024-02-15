@@ -6,6 +6,7 @@ const mem = std.mem;
 const Strategy = std.hash.Strategy;
 const Wyhash = std.hash.Wyhash;
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 
 /// Shorthand for printing to stderr or null writer and asserting no errors.
 pub fn print(comptime fmt: []const u8, args: anytype) void {
@@ -151,12 +152,14 @@ pub fn fsize() type {
 
 const maxInt = std.math.maxInt;
 
-pub fn first(comptime T: type, slice: []const T) ?T {
-    return if (slice.len == 0) null else slice[0];
+pub fn first(slice: anytype) @TypeOf(slice[0]) {
+    assert(slice.len > 0);
+    return slice[0];
 }
 
-pub fn last(comptime T: type, slice: []const T) ?T {
-    return if (slice.len == 0) null else slice[slice.len - 1];
+pub fn last(slice: anytype) @TypeOf(slice[0]) {
+    assert(slice.len > 0);
+    return slice[slice.len - 1];
 }
 
 /// Compare two slices whose elements can be compared by the `order` function.

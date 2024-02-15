@@ -7,15 +7,17 @@
 
   - A computation returns 0, 1, or many values
 
-  - No turing completeness, everything terminates by matching entries less than (or equal, with other checks) to themselves
+  - No turing completeness, everything terminates by matching entries less than
+    (or recursive/equal, but with structural simplification) to themselves
 
   - Everything is a pattern map (like tries, but lookups have to deal with sub-lookups)
 
-  - Core language is just a dynamic pattern-matching/rewrite engine
-    - only builtins are triemap entries (entries `->`) and triemap queries (matches `:`)
+  - Core language is pattern-matching rewriter
+    - triemap entries (`->`) and triemap matches (`:`)
+    - triemap entries (`->`) and triemap matches (`:`)
+    - keywords are `->`, `:`, `=>`, `::`, `()`, and `{}`
     - match / set membership / typeof is the same thing (`:`)
-    - files are just triemaps with entries separated by newlines
-    - only keywords are `->`, `:`, `()`, and `{}`
+    - source files are just triemaps with entries separated by newlines
     - any characters are valid to the parser (punctuation chars are values, like in Forth)
     - values are literals, i.e. upper-case idents, ints, and match only themselves
     - vars match anything (lower-case idents)
@@ -28,12 +30,12 @@
     - types are triemaps of values
     - records are types of types
     - record fields are type level entries
-    - hashmaps of types can trivially implement row types
+    - hashmaps of types can be used to implement row types
     - type checking is a pattern match
     - dependent types are patterns of types with variables
 
   - Compiler builds on the core language, using it as a library
-    - complilation is simply creating perfect hashmaps instead of dynamic ones
+    - complilation is creating perfect hashmaps from dynamic ones
 
 ## Examples
 ```python
@@ -62,29 +64,36 @@ Compare (b1 : Bool) (b2 : Bool) -> Case [
 
 ## Roadmap
 
-- ### Core Language
+### Core Language
   
   - [x] Parser/Lexer
     - [x] Lexer (Text → Token)
-    - [x] Parser (Tokens → AST)
+    - [ ] Parser (Tokens → AST)
+      - [ ] Newline delimited apps for top level and operators' rhs
+      - [ ] Nested apps for parentheses
+      - [ ] Patterns
+      - [ ] Infix
+      - [ ] Match
+      - [ ] Arrow
       - Syntax
         - [x] Apps (parens)
-        - [ ] Patterns (braces)
+        - [x] Patterns (braces)
 
   - [ ] Patterns
     - [x] Definition
     - [x] Construction (AST → Patterns)
       - [ ] Error handling
-    - [ ] Matching
+    - [x] Matching
       - [x] Vals
       - [ ] Apps
       - [ ] Vars
+      - [ ] Multi
 
-- ### Sifu Interpreter
+### Sifu Interpreter
 
   - [ ] REPL
-    - [ ] Add entries into a global pattern
-    - [ ] Update entries
+    - [x] Add entries into a global pattern
+    - [x] Update entries
     - [ ] Load files
     - [ ] REPL specific keywords (delete entry, etc.)
 
@@ -111,5 +120,54 @@ Compare (b1 : Bool) (b2 : Bool) -> Case [
 
 ---
 
+## Specification
+
+### Terminology and Grammar
+
+
+By default, all expressions in Sifu are an app.
+
+#### Nouns
+- Term - a single atom not a var, separated by whitespace
+- Var - a lowercase word, matches and stores a match-specific key. During
+rewriting, whenever the key is encountered again, it is rewritten to this
+pattern's val. A Var pattern matches anything, including nested patterns. It
+only makes sense to match anything after trying to match something specific, so
+Vars always successfully match (if there is a Var) after a Key or Subpat match
+fails.
+- Apps - a list of atoms, nested by parenthesis
+- Pattern - a trie of apps, nested by braces
+- Match
+  1. an expression, either single or multi, of `into : from` where
+    - into is the expression to match into
+    - from is the pattern to match from
+  2. the result of evaluating a match, consisting of selecting and rewriting.
+- Multi match - like match, but with `::` instead and list monad / dot product
+semantics where all matches of `into` are included on evaluation as an apps.
+- Arrow
+  1. an expression, either single or multi, of `from -> into` where
+    - from is the expression to rewrite from
+    - into is the expression to rewrite into
+  2. an encoding in a pattern that represents an arrow after its insertion in
+that pattern.
+- Multi arrow - an expression, either single or multi, of `from => into` where
+all matches of `into` are included on evaluation as an apps.
+- Value - the right side of an arrow, the part rewritten to
+- Commas - special operator that delimits separate keys/arrows in patterns
+- Newline - separates apps, unless before a trailing operator or within a nested
+paren or brace.
+- Quotes - code surrounded with (`). Not evaluated, only treated as data.
+
+#### Verbs
+- Current scope - the set of all parent patterns and the current but only the
+current expression and above
+- Select - the first phase during matching when looking up an expression that
+match keys in the pattern
+- Evaluate - given an expression, match it against the current scope and rewrite
+to the first match's value. Repeats until no match, no value, or the value is
+equal to the current expression.
+
+
+---
 
 Thanks to Luukdegram for giving me a starting point with their compiler [Luf](https://github.com/Luukdegram/luf)
