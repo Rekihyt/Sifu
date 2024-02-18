@@ -85,13 +85,12 @@ pub fn parseAst(
     print("parseAst\n", .{});
     // (ParseError || @TypeOf(lexer).Error || Allocator.Error)
     // No need to delete asts, they will all be returned or cleaned up
-    // var parse_stack = ArrayListUnmanaged(Ast){};
-    var parser_stack = ArrayListUnmanaged(Ast){};
-    var indices = ArrayListUnmanaged(usize){};
+
+    var parser_stack = ArrayListUnmanaged(ArrayListUnmanaged(Ast)){};
+    try parser_stack.append(allocator, ArrayListUnmanaged(Ast){});
     defer {
         assert(parser_stack.items.len == 0);
-        assert(indices.items.len == 0);
-        indices.deinit(allocator);
+        parser_stack.deinit(allocator);
     }
     while (try lexer.nextLine()) |line| {
         defer lexer.allocator.free(line);
@@ -100,7 +99,7 @@ pub fn parseAst(
         // print("{s} ", .{token.lit});
         // }
         // print("\n", .{});
-        if (try parseAppend(allocator, &parser_stack, &indices, line)) |ast|
+        if (try parseAppend(allocator, &parser_stack, line)) |ast|
             return ast
         else
             continue;
@@ -124,11 +123,10 @@ fn getAppendAddr(ast: Ast) *[]const Ast {
 // - TODO: [] should be a flat Apps instead of as an infix
 pub fn parseAppend(
     allocator: Allocator,
-    current: *ArrayListUnmanaged(Ast),
-    indices: *ArrayListUnmanaged(usize),
+    parse_stack: *ArrayListUnmanaged(ArrayListUnmanaged(Ast)),
     line: []const Token,
 ) !?Ast {
-    var rewind_point = current.items.len;
+    var rewind_point = parse_stack.items.len;
     _ = rewind_point;
     // errdefer { // TODO: add test coverage
     //     // Check if result was written to, and therefore would need freeing
@@ -141,6 +139,7 @@ pub fn parseAppend(
     //     parse_stack.deinit(allocator);
     // }
     print("parseAppend\n", .{});
+    var current = parse_stack.pop();
     for (line) |token| {
         // print("Token: {s}\n", .{token.lit});
         try current.append(allocator, switch (token.type) {
@@ -151,32 +150,40 @@ pub fn parseAppend(
                     Ast.ofLit(token),
                     Ast{ .apps = undefined },
                 });
-                try indices.append(allocator, current.items.len - 1);
+                // try indices.append(allocator, current.items.len - 1);
                 break :blk Ast{
-                    .infix = try current.toOwnedSlice(allocator),
+                    .apps = undefined,
                 };
             },
             .Comma => blk: {
                 break :blk Ast.ofLit(token);
             },
-            .LeftParen => blk: {
+            .LeftParen => {
                 // Save index of the nested app to write to later
-                try indices.append(allocator, current.items.len);
-                break :blk Ast.ofApps(undefined);
+                try parse_stack.append(allocator, current);
+                current = ArrayListUnmanaged(Ast){};
+                continue;
             },
-            .RightParen => try appendNested(allocator, current, indices) orelse
-                return null,
+            .RightParen => {
+                const apps = try current.toOwnedSlice(allocator);
+                current = parse_stack.pop();
+                try current.append(allocator, Ast.ofApps(apps));
+                continue;
+            },
             .Var => Ast.ofVar(token.lit),
             .Str, .I, .F, .U => Ast.ofLit(token),
             .Comment, .NewLine => Ast.ofLit(token),
             else => @panic("unimplemented"),
         });
     }
-    var result = try appendNested(allocator, current, indices);
-    // if (current.popOrNull()) |ast| switch (ast) {
-    // .apps, .infix => ast,
-    // };
-    return result;
+    // var result = try appendNested(allocator, current, indices);
+    if (parse_stack.items.len == 0) {
+        const apps = try current.toOwnedSlice(allocator);
+        return Ast.ofApps(apps);
+    } else {
+        try parse_stack.append(allocator, current);
+        return null;
+    }
 }
 
 fn appendNested(
