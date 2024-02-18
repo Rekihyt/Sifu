@@ -133,8 +133,8 @@ pub fn PatternWithContextAndFree(
             /// A postfix encoded arrow expression denoting a rewrite, i.e. `A B
             /// C -> 123`.
             arrow: []const Node,
-            /// Sort of postfix encoded: second to last arg is the op, last arg is
-            /// rhs
+            /// Sort of postfix encoded: second to last arg is the op, last arg
+            /// is rhs
             infix: []const Node,
             // multi_match: []const Node,
             // multi_arrow: []const Node,
@@ -1143,9 +1143,9 @@ test "Memory: nesting" {
     const Node = Pat.Node;
     var nested_pattern = try Pat.create(testing.allocator);
     defer nested_pattern.delete(testing.allocator);
-    nested_pattern.sub_apps = try Pat.create(testing.allocator);
+    nested_pattern.getOrPut(testing.allocator, Pat{}, "subpat's val");
 
-    _ = try nested_pattern.sub_apps.?.insertKeys(
+    _ = try nested_pattern.insertKeys(
         testing.allocator,
         &.{ "cherry", "blossom", "tree" },
         Node.ofLit("beautiful"),

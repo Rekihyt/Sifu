@@ -29,6 +29,7 @@ const assert = std.debug.assert;
 const debug = std.debug;
 const meta = std.meta;
 const last = util.last;
+const print = util.print;
 
 // TODO: add indentation tracking, and separate based on newlines+indent
 
@@ -77,145 +78,101 @@ const ParseError = error{
     NoRightParen,
 };
 
-pub fn parsePattern(
-    allocator: Allocator,
-    lexer: anytype,
-) (ParseError || @TypeOf(lexer).Error || Allocator.Error)!Ast {
-    _ = allocator;
-}
-
-pub fn parseNestedApps(
-    allocator: Allocator,
-    lexer: anytype,
-) (ParseError || @TypeOf(lexer.*).Error || Allocator.Error)!Ast {
-    if (try lexer.next()) |l_brace|
-        if (l_brace.type == .Name and l_brace.lit[0] == '(')
-            return error.NoLeftBrace;
-
-    var result = try parseAst(allocator, lexer);
-    errdefer result.delete(allocator);
-    if (try lexer.next()) |r_brace|
-        if (r_brace.type == .Name and r_brace.lit[0] == ')')
-            return error.NoRightBrace;
-
-    return result;
-}
-
-pub fn parseNestedPattern(
-    allocator: Allocator,
-    lexer: anytype,
-) (ParseError || @TypeOf(lexer.*).Error || Allocator.Error)!Ast {
-    if (try lexer.next()) |l_brace|
-        if (l_brace.type == .Name and l_brace.lit[0] == '{')
-            return error.NoLeftBrace;
-
-    var result = try parseAst(allocator, lexer);
-    // TODO: insert / eval
-    errdefer result.delete(allocator);
-    if (try lexer.next()) |r_brace|
-        if (r_brace.type == .Name and r_brace.lit[0] == '}')
-            return error.NoRightBrace;
-
-    return result;
-}
-
-/// Parse until terminal is encountered, or a newline. A null terminal will
-/// parse until eof.
-///
-/// Memory can be freed by using an arena allocator, or walking the tree and
-/// freeing each app. Does not allocate on errors or empty parses.
-/// Returns: an Ast, which may be anything but a Term.
-// Parse algorithm tracks 4 levels of precedence. Everything is an array, so
-// lower precedence can be expressed as the prefix of the apps that isn't added
-// as an argument to the higher precedence operator. For example, in `1 -> 2 +
-// 3`, when `+` is parsed `Arrow (1) 2` is on the stack. The prefix of length 1
-// (`Arrow (1)`) has lower precedence than infix, so only anything after it (in
-// this case `2`) is added as the first argument to `+`, resulting in `Arrow (1)
-// + () 3`.
-// Precedence: long arrow < long match < commas < infix < arrow < match
-// - TODO: [] should be a flat Apps instead of as an infix
 pub fn parseAst(
     allocator: Allocator,
     lexer: anytype,
-) (ParseError || @TypeOf(lexer.*).Error)!Ast {
-    var result: Ast = undefined;
-    var current = ArrayListUnmanaged(Ast){};
-    // This pointer tracks where to put `current` after converting it to an
-    // owned slice.
-    // Undefined because we cannot point to result's apps until it has been
-    // allocated for the final time
-    var current_dest: *Ast = &result;
-    errdefer { // TODO: add test coverage
-        // Check if result was written to, and therefore would need freeing
-        if (&result != current_dest)
-            result.deleteChildren(allocator);
-
-        for (current.items) |*ast|
-            ast.deleteChildren(allocator);
-
-        current.deinit(allocator);
+) !Ast {
+    print("parseAst\n", .{});
+    // (ParseError || @TypeOf(lexer).Error || Allocator.Error)
+    // No need to delete asts, they will all be returned or cleaned up
+    // var parse_stack = ArrayListUnmanaged(Ast){};
+    // defer {
+    //     assert(parse_stack.items.len == 0);
+    //     parse_stack.deinit(allocator);
+    // }
+    var parser_stack = ArrayListUnmanaged(Ast){};
+    try parser_stack.append(allocator, Ast.ofApps(undefined));
+    while (try lexer.nextLine()) |line| {
+        defer lexer.allocator.free(line);
+        print("nextLine len: {}\n", .{line.len});
+        // for (line) |token| {
+        // defer lexer.allocator.free(token.lit);
+        // print("{s} ", .{token.lit});
+        // }
+        // print("\n", .{});
+        if (try parseAppend(allocator, &parser_stack, line)) |ast|
+            return ast
+        else
+            continue;
     }
-    while (try lexer.peek()) |token| {
-        const lit = token.lit;
-        // Names always have at least one char
-        // Terminals are parsed greedily, so its impossible to encounter any
-        // with more than one char (like "{}")
-        switch (token.lit[0]) {
-            '(' => try current.append(
-                allocator,
-                try parseNestedApps(allocator, lexer),
-            ),
-            '{' => try current.append(
-                allocator,
-                try parseNestedPattern(allocator, lexer),
-            ),
-            else => {},
-        }
-        switch (token.lit[0]) {
-            '(', '{' => continue, // Move to next token
-            ')', '}' => break, // ignore terminals
-            else => {},
-        }
-        // Newlines separate unless preceded by an op
-        // .NewLine => switch (current) {
-        //     .infix, .arrow, .match => break,
-        //     else => {},
-        // },
+    // parser_stack.deinit(allocator);
+    // return error.NoLeftBrace;
+    return Ast.ofApps(&.{});
+}
+fn getAppendAddr(ast: Ast) *[]const Ast {
+    return @constCast(switch (ast) {
+        .key, .variable => @panic("unimplemented"),
+        .apps => |apps| &apps,
+        else => @panic("unimplemented"),
+    });
+}
+/// Does not allocate on errors or empty parses. Parses the line of tokens,
+/// returning a partial Ast on trailing operators or unfinished nesting. In such
+/// a case, null is returned and the same parser_stack must be reused to finish
+/// parsing. Otherwise, an Ast is returned from an ownded slice of parser_stack.
+// Precedence: long arrow < long match < commas < infix < arrow < match
+// - TODO: [] should be a flat Apps instead of as an infix
+pub fn parseAppend(
+    allocator: Allocator,
+    current: *ArrayListUnmanaged(Ast),
+    line: []const Token,
+) !?Ast {
+    var rewind_point = current.items.len;
+    _ = rewind_point;
+    // errdefer { // TODO: add test coverage
+    //     // Check if result was written to, and therefore would need freeing
+    //     if (&result != next_dest)
+    //         result.deleteChildren(allocator);
+
+    //     for (parse_stack.items) |*ast|
+    //         ast.deleteChildren(allocator);
+
+    //     parse_stack.deinit(allocator);
+    // }
+    var result = current.pop();
+    print("parseAppend\n", .{});
+    for (line) |token| {
+        print("Token: {s}\n", .{token.lit});
         try current.append(allocator, switch (token.type) {
             .Name => Ast.ofLit(token),
-            .Infix => {
-                if (mem.eql(u8, lit, ":") or mem.eql(u8, lit, "::")) {
-                    @panic("unimplemented");
-                    // TODO: parse right args and lookup their
-                    // match_op.* = Ast.Match{ .query = args };
-                } else if (mem.eql(u8, lit, "-->") or mem.eql(u8, lit, "==>")) {
-                    @panic("unimplemented");
-                } else if (mem.eql(u8, lit, "->") or mem.eql(u8, lit, "=>")) {
-                    @panic("unimplemented");
-                } else {
-                    // Add the operator, the right args as and app, and
-                    // finally the left args.
-                    try current.appendSlice(allocator, &.{
-                        Ast.ofLit(token),
-                        Ast.ofApps(undefined),
-                    });
-                    // Store the old current
-                    current_dest.* = Ast{
-                        .infix = try current.toOwnedSlice(allocator),
-                    };
-                    // We can track this pointer because the previous arraylist
-                    // (op and left args) will no longer be resized
-                    current_dest = @constCast(&last(current_dest.apps));
-                }
-                current = ArrayListUnmanaged(Ast){};
-                continue; // No need to append anything
+            .Infix => blk: {
+                // Add an apps for the trailing args
+                try current.appendSlice(allocator, &.{
+                    Ast.ofLit(token),
+                    Ast{ .apps = undefined },
+                });
+                break :blk Ast{
+                    .infix = try current.toOwnedSlice(allocator),
+                };
+            },
+            .LeftParen => {
+                continue;
+            },
+            .RightParen => {
+                var sub_apps = current.pop();
+                sub_apps.apps = try current.toOwnedSlice(allocator);
+                continue;
             },
             .Var => Ast.ofVar(token.lit),
             .Str, .I, .F, .U => Ast.ofLit(token),
             .Comment, .NewLine => Ast.ofLit(token),
+            else => @panic("unimplemented"),
         });
     }
-    current_dest.* = Ast.ofApps(try current.toOwnedSlice(allocator));
+    result.apps = try current.toOwnedSlice(allocator);
+    // if (current.popOrNull()) |ast| switch (ast) {
+    // .apps, .infix => ast,
+    // };
     return result;
 }
 // This function is the responsibility of the Parser, because it is the dual

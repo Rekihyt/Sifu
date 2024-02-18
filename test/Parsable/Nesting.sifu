@@ -14,8 +14,8 @@ MyLongFunctionApp -> MyFn  (
 	Arg3 Arg4
 )
 
-@ x    -> x
-@ x, y -> x @ y
+@ x    --> x
+@ x, y --> x @ y
 
 MyLongFunctionApp2 -> MyFn @
 	Arg1,

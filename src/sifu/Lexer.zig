@@ -18,7 +18,6 @@ const Ast = pattern.AstType;
 const Lit = Ast.Lit;
 const syntax = @import("syntax.zig");
 const Token = syntax.Token(usize);
-const Term = syntax.Term;
 const Type = syntax.Type;
 const Set = util.Set;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
@@ -28,6 +27,7 @@ const mem = std.mem;
 const math = std.math;
 const assert = std.debug.assert;
 const debug = std.debug;
+const print = util.print;
 
 pub fn Lexer(comptime Reader: type) type {
     return struct {
@@ -85,19 +85,24 @@ pub fn Lexer(comptime Reader: type) type {
             // doesn't matter.
             const token_type: Type = switch (char) {
                 '\n' => .NewLine,
-                // ',' => .NewLine, // Treat Escape as "continue on newline"
+                ',' => .Comma,
+                '(' => .LeftParen,
+                ')' => .RightParen,
+                '{' => .LeftBrace,
+                '}' => .RightBrace,
+                ':' => .Match,
                 '+', '-' => if (try self.peekChar()) |next_char|
                     if (isDigit(next_char))
                         try self.integer()
                     else
-                        try self.infix()
+                        try self.op()
                 else
                     .Infix,
                 '#' => try self.comment(),
                 else => if (isSep(char))
                     .Name
-                else if (isInfix(char))
-                    try self.infix()
+                else if (isOp(char))
+                    try self.op()
                 else if (isUpper(char) or char == '@')
                     try self.value()
                 else if (isLower(char) or char == '_' or char == '$')
@@ -120,6 +125,25 @@ pub fn Lexer(comptime Reader: type) type {
                 .lit = try self.buff.toOwnedSlice(self.allocator),
                 .context = pos,
             };
+        }
+
+        /// Lex until a newline. Doesn't return the newline token. Returns null
+        /// if no tokens are left. Returns an empty array if one or more
+        /// newlines were parsed exclusively.
+        pub fn nextLine(
+            self: *Self,
+        ) Error!?[]const Token {
+            if (try self.peek() == null)
+                return null;
+
+            var line = ArrayListUnmanaged(Token){};
+            while (try self.next()) |token| {
+                if (token.type == .NewLine)
+                    break;
+
+                try line.append(self.allocator, token);
+            }
+            return try line.toOwnedSlice(self.allocator);
         }
 
         /// Returns the next character but does not increase the Lexer's position, or
@@ -188,14 +212,30 @@ pub fn Lexer(comptime Reader: type) type {
         }
 
         /// Reads the next infix characters
-        fn infix(self: *Self) Error!Type {
+        fn op(self: *Self) Error!Type {
+            const pos = self.pos;
+            _ = pos;
             while (try self.peekChar()) |next_char|
-                if (isInfix(next_char))
+                if (isOp(next_char))
                     try self.consume()
                 else
                     break;
 
-            return .Infix;
+            const lit = self.buff.items;
+            return if (mem.eql(u8, lit, ":"))
+                .Match
+            else if (mem.eql(u8, lit, "::"))
+                .LongMatch
+            else if (mem.eql(u8, lit, "-->"))
+                .LongArrow
+            else if (mem.eql(u8, lit, "==>"))
+                .LongMultiArrow
+            else if (mem.eql(u8, lit, "->"))
+                .Arrow
+            else if (mem.eql(u8, lit, "=>"))
+                .MultiArrow
+            else
+                .Infix;
         }
 
         /// Reads the next digits and/or any underscores
@@ -273,7 +313,7 @@ pub fn Lexer(comptime Reader: type) type {
             };
         }
 
-        fn isInfix(char: u8) bool {
+        fn isOp(char: u8) bool {
             return switch (char) {
                 // zig fmt: off
                 '.', ':', '-', '+', '=', '<', '>', '%', '^',

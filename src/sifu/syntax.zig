@@ -12,8 +12,8 @@ const Lexer = @import("Lexer.zig");
 const Wyhash = std.hash.Wyhash;
 
 /// Builtin Sifu types, values here correspond exactly to a type name in Sifu.
-/// They don't make up part of Nodes directly because Nodes are intended as a
-/// standalone datastructure and not an Ast.
+/// They don't make up part of Nodes directly because Nodes are an abstract,
+/// standalone datastructure, not an Ast.
 pub const Type = enum {
     Name,
     Var,
@@ -24,24 +24,25 @@ pub const Type = enum {
     U, // unsigned
     F, // float
     Comment,
+    Match,
+    LongMatch,
+    MultiMatch,
+    LongMultiMatch,
+    Arrow,
+    LongArrow,
+    MultiArrow,
+    LongMultiArrow,
+    LeftBrace,
+    RightBrace,
+    LeftParen,
+    RightParen,
+    Comma,
     NewLine, // New line separator
 
     /// Compares by value, not by len, pos, or pointers.
     pub fn order(self: Type, other: Type) Order {
         return math.order(@intFromEnum(self), @intFromEnum(other));
     }
-};
-
-// This isn't really used yet, but may be in the future
-pub const Term = union(Type) {
-    Name: []const u8,
-    Var: []const u8,
-    Infix: []const u8,
-    Str: []const u8,
-    I: isize,
-    U: usize,
-    F: fsize,
-    Comment: []const u8,
 };
 
 /// Any source code word with with context, including vars.
