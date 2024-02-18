@@ -86,16 +86,15 @@ pub fn parseAst(
     // (ParseError || @TypeOf(lexer).Error || Allocator.Error)
     // No need to delete asts, they will all be returned or cleaned up
     // var parse_stack = ArrayListUnmanaged(Ast){};
-    // defer {
-    //     assert(parse_stack.items.len == 0);
-    //     parse_stack.deinit(allocator);
-    // }
     var parser_stack = ArrayListUnmanaged(Ast){};
     try parser_stack.append(allocator, Ast.ofApps(undefined));
     var indices = ArrayListUnmanaged(usize){};
+    defer {
+        assert(indices.items.len == 0);
+        indices.deinit(allocator);
+    }
     while (try lexer.nextLine()) |line| {
         defer lexer.allocator.free(line);
-        print("nextLine len: {}\n", .{line.len});
         // for (line) |token| {
         // defer lexer.allocator.free(token.lit);
         // print("{s} ", .{token.lit});
@@ -158,17 +157,19 @@ pub fn parseAppend(
                 };
             },
             .LeftParen => blk: {
+                // Save index of the nested app to write to later
                 try indices.append(allocator, current.items.len);
                 break :blk Ast.ofApps(undefined);
             },
-            .RightParen => {
-                var index = indices.pop();
+            .RightParen => blk: {
+                const index = indices.pop();
                 var nested = ArrayListUnmanaged(Ast){};
                 for (current.items[index + 1 ..]) |ast|
                     try nested.append(allocator, ast);
                 current.shrinkRetainingCapacity(index + 1);
-                current.items[index].apps = try nested.toOwnedSlice(allocator);
-                continue;
+                var nested_ast = current.pop();
+                _ = nested_ast;
+                break :blk Ast{ .apps = try nested.toOwnedSlice(allocator) };
             },
             .Var => Ast.ofVar(token.lit),
             .Str, .I, .F, .U => Ast.ofLit(token),
@@ -176,6 +177,7 @@ pub fn parseAppend(
             else => @panic("unimplemented"),
         });
     }
+    print("indices len: {}\n", .{indices.items.len});
     result.apps = try current.toOwnedSlice(allocator);
     // No indices means top level app, instead of nested
     // if (current.popOrNull()) |ast| switch (ast) {
