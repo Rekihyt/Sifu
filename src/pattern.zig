@@ -339,12 +339,12 @@ pub fn PatternWithContextAndFree(
                             .writeIndent(writer, optional_indent);
                     },
                     .infix => |infix| {
-                        try last(infix)
-                            .writeIndent(writer, optional_indent);
                         // These parens are for debugging
                         try Node.ofApps(infix[0 .. infix.len - 2])
-                            .writeSExp(writer, optional_indent);
+                            .writeIndent(writer, optional_indent);
                         try infix[infix.len - 2]
+                            .writeIndent(writer, optional_indent);
+                        try last(infix)
                             .writeSExp(writer, optional_indent);
                     },
                     .pattern => |pattern| try pattern.writeIndent(

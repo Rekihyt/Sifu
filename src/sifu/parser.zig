@@ -92,6 +92,7 @@ pub fn parseAst(
     // }
     var parser_stack = ArrayListUnmanaged(Ast){};
     try parser_stack.append(allocator, Ast.ofApps(undefined));
+    var indices = ArrayListUnmanaged(usize){};
     while (try lexer.nextLine()) |line| {
         defer lexer.allocator.free(line);
         print("nextLine len: {}\n", .{line.len});
@@ -100,7 +101,7 @@ pub fn parseAst(
         // print("{s} ", .{token.lit});
         // }
         // print("\n", .{});
-        if (try parseAppend(allocator, &parser_stack, line)) |ast|
+        if (try parseAppend(allocator, &parser_stack, &indices, line)) |ast|
             return ast
         else
             continue;
@@ -125,6 +126,7 @@ fn getAppendAddr(ast: Ast) *[]const Ast {
 pub fn parseAppend(
     allocator: Allocator,
     current: *ArrayListUnmanaged(Ast),
+    indices: *ArrayListUnmanaged(usize),
     line: []const Token,
 ) !?Ast {
     var rewind_point = current.items.len;
@@ -142,7 +144,7 @@ pub fn parseAppend(
     var result = current.pop();
     print("parseAppend\n", .{});
     for (line) |token| {
-        print("Token: {s}\n", .{token.lit});
+        // print("Token: {s}\n", .{token.lit});
         try current.append(allocator, switch (token.type) {
             .Name => Ast.ofLit(token),
             .Infix => blk: {
@@ -155,12 +157,17 @@ pub fn parseAppend(
                     .infix = try current.toOwnedSlice(allocator),
                 };
             },
-            .LeftParen => {
-                continue;
+            .LeftParen => blk: {
+                try indices.append(allocator, current.items.len);
+                break :blk Ast.ofApps(undefined);
             },
             .RightParen => {
-                var sub_apps = current.pop();
-                sub_apps.apps = try current.toOwnedSlice(allocator);
+                var index = indices.pop();
+                var nested = ArrayListUnmanaged(Ast){};
+                for (current.items[index + 1 ..]) |ast|
+                    try nested.append(allocator, ast);
+                current.shrinkRetainingCapacity(index + 1);
+                current.items[index].apps = try nested.toOwnedSlice(allocator);
                 continue;
             },
             .Var => Ast.ofVar(token.lit),
@@ -170,6 +177,7 @@ pub fn parseAppend(
         });
     }
     result.apps = try current.toOwnedSlice(allocator);
+    // No indices means top level app, instead of nested
     // if (current.popOrNull()) |ast| switch (ast) {
     // .apps, .infix => ast,
     // };
