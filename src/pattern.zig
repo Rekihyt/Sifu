@@ -327,14 +327,14 @@ pub fn PatternWithContextAndFree(
                     .match => |match| {
                         try writer.writeAll(": ");
                         // These parens are for debugging
-                        try last(match).writeSExp(writer, optional_indent);
+                        try match[match.len - 1].writeSExp(writer, optional_indent);
                         try Node.ofApps(match[0 .. match.len - 1])
                             .writeIndent(writer, optional_indent);
                     },
                     .arrow => |arrow| {
                         try writer.writeAll("-> ");
                         // These parens are for debugging
-                        try last(arrow).writeSExp(writer, optional_indent);
+                        try arrow[arrow.len - 1].writeSExp(writer, optional_indent);
                         try Node.ofApps(arrow[0 .. arrow.len - 1])
                             .writeIndent(writer, optional_indent);
                     },
@@ -344,8 +344,8 @@ pub fn PatternWithContextAndFree(
                             .writeIndent(writer, optional_indent);
                         try infix[infix.len - 2]
                             .writeIndent(writer, optional_indent);
-                        try last(infix)
-                            .writeSExp(writer, optional_indent);
+                        try infix[infix.len - 1]
+                            .writeIndent(writer, optional_indent);
                     },
                     .pattern => |pattern| try pattern.writeIndent(
                         writer,

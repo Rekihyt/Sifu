@@ -157,9 +157,10 @@ pub fn first(slice: anytype) @TypeOf(slice[0]) {
     return slice[0];
 }
 
-pub fn last(slice: anytype) @TypeOf(slice[0]) {
-    assert(slice.len > 0);
-    return slice[slice.len - 1];
+pub fn last(slice: anytype) @typeInfo(@TypeOf(slice)).Pointer.child {
+    @panic("this function appears to be broken");
+    // assert(slice.len > 0);
+    // return slice[slice.len - 1];
 }
 
 /// Compare two slices whose elements can be compared by the `order` function.
