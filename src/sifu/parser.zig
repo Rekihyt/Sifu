@@ -86,14 +86,13 @@ pub fn parseAst(
     // No need to delete asts, they will all be returned or cleaned up
     var parser_stack = ArrayListUnmanaged(ArrayListUnmanaged(Ast)){};
     try parser_stack.append(allocator, ArrayListUnmanaged(Ast){});
-    defer {
-        parser_stack.deinit(allocator);
-    }
-    var result = Ast.ofApps(undefined);
-    _ = result;
+    defer parser_stack.deinit(allocator);
+    var node_stack = ArrayListUnmanaged(Ast){};
+    try node_stack.append(allocator, Ast.ofApps(&.{}));
+    defer node_stack.deinit(allocator);
     while (try lexer.nextLine()) |line| {
         defer lexer.allocator.free(line);
-        if (try parseAppend(allocator, &parser_stack, line)) |ast|
+        if (try parseAppend(allocator, &node_stack, &parser_stack, line)) |ast|
             return ast
         else
             continue;
@@ -116,6 +115,7 @@ fn getAppendAddr(ast: Ast) *[]const Ast {
 // - TODO: [] should be a flat Apps instead of as an infix
 pub fn parseAppend(
     allocator: Allocator,
+    node_stack: *ArrayListUnmanaged(Ast),
     parse_stack: *ArrayListUnmanaged(ArrayListUnmanaged(Ast)),
     // result: *[]const Ast,
     line: []const Token,
@@ -133,48 +133,58 @@ pub fn parseAppend(
     //     parse_stack.deinit(allocator);
     // }
     print("parseAppend\n", .{});
-    var next = parse_stack.pop();
-    var result = Ast.ofApps(&.{});
-    var next_ptr = &result;
-    for (line) |token| {
-        try next.append(allocator, switch (token.type) {
-            .Name => Ast.ofLit(token),
+    var next_ast = node_stack.pop();
+    var current = parse_stack.pop();
+    for (line) |token|
+        switch (token.type) {
+            .Name => try current.append(allocator, Ast.ofLit(token)),
             .Infix => {
                 // Add an apps for the trailing args
-                try next.appendSlice(allocator, &.{
+                try current.appendSlice(allocator, &.{
                     Ast.ofLit(token),
                     Ast.ofApps(&.{}),
                 });
-                const next_slice = try next.toOwnedSlice(allocator);
-                next_ptr.* = Ast{ .infix = next_slice };
-                next_ptr = @constCast(&next_ptr.infix[next_ptr.infix.len - 1]);
-                next = ArrayListUnmanaged(Ast){};
-                continue;
-            },
-            .Comma => blk: {
-                break :blk Ast.ofLit(token);
+                try current.append(allocator, Ast{
+                    .infix = try current.toOwnedSlice(allocator),
+                });
             },
             .LeftParen => {
                 // Save index of the nested app to write to later
-                try parse_stack.append(allocator, next);
-                next = ArrayListUnmanaged(Ast){};
-                continue;
+                try parse_stack.append(allocator, current);
+                current = ArrayListUnmanaged(Ast){};
             },
             .RightParen => {
-                const apps = try next.toOwnedSlice(allocator);
-                next = parse_stack.pop();
-                try next.append(allocator, Ast.ofApps(apps));
-                continue;
+                next_ast = Ast.ofApps(try current.toOwnedSlice(allocator));
+                current = parse_stack.pop();
+                try current.append(allocator, next_ast);
             },
-            .Var => Ast.ofVar(token.lit),
-            .Str, .I, .F, .U => Ast.ofLit(token),
-            .Comment, .NewLine => Ast.ofLit(token),
+            .Comma => {
+                try current.append(allocator, Ast.ofLit(token));
+            },
+            .Var => try current.append(allocator, Ast.ofVar(token.lit)),
+            .Str, .I, .F, .U => try current.append(allocator, Ast.ofLit(token)),
+            .Comment, .NewLine => try current.append(allocator, Ast.ofLit(token)),
             else => @panic("unimplemented"),
-        });
-    }
+        };
+    const result = addIntoNode(next_ast, try current.toOwnedSlice(allocator));
+
     // print("Result: {*}\n", .{&last(result.infix)});
-    next_ptr.* = Ast{ .apps = try next.toOwnedSlice(allocator) };
+    // Ast{ .apps = try current.toOwnedSlice(allocator) };
+    print("Parse Stack Len: {}\n", .{parse_stack.items.len});
+    print("Result: {s}\n", .{@tagName(result)});
     return result;
+}
+
+fn addIntoNode(node: Ast, apps: []const Ast) Ast {
+    return switch (node) {
+        .apps => Ast.ofApps(apps),
+        // .infix => {
+        //  @constCast(
+        //     &current_ptr.infix[current_ptr.infix.len - 1],
+        // );
+        // },
+        else => @panic(""),
+    };
 }
 
 // This function is the responsibility of the Parser, because it is the dual
