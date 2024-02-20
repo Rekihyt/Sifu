@@ -84,29 +84,31 @@ pub fn parseAst(
     print("parseAst\n", .{});
     // (ParseError || @TypeOf(lexer).Error || Allocator.Error)
     // No need to delete asts, they will all be returned or cleaned up
-    var parser_stack = ArrayListUnmanaged(ArrayListUnmanaged(Ast)){};
-    try parser_stack.append(allocator, ArrayListUnmanaged(Ast){});
-    defer parser_stack.deinit(allocator);
+    var parse_stack = ArrayListUnmanaged(ArrayListUnmanaged(Ast)){};
+    try parse_stack.append(allocator, ArrayListUnmanaged(Ast){});
+    defer parse_stack.deinit(allocator);
     var node_stack = ArrayListUnmanaged(Ast){};
     try node_stack.append(allocator, Ast.ofApps(&.{}));
     defer node_stack.deinit(allocator);
+    errdefer { // TODO: add test coverage
+        for (parse_stack.items) |*asts| {
+            for (asts.items) |*ast|
+                ast.deleteChildren(allocator);
+
+            asts.deinit(allocator);
+        }
+        parse_stack.deinit(allocator);
+    }
     while (try lexer.nextLine()) |line| {
         defer lexer.allocator.free(line);
-        if (try parseAppend(allocator, &node_stack, &parser_stack, line)) |ast|
+        if (try parseAppend(allocator, &node_stack, &parse_stack, line)) |ast|
             return ast
         else
             continue;
     }
-    return error.NoLeftBrace;
-    // return Ast.ofApps(&.{});
+    return Ast.ofApps(&.{});
 }
-fn getAppendAddr(ast: Ast) *[]const Ast {
-    return @constCast(switch (ast) {
-        .key, .variable => @panic("unimplemented"),
-        .apps => |apps| &apps,
-        else => @panic("unimplemented"),
-    });
-}
+
 /// Does not allocate on errors or empty parses. Parses the line of tokens,
 /// returning a partial Ast on trailing operators or unfinished nesting. In such
 /// a case, null is returned and the same parser_stack must be reused to finish
@@ -120,19 +122,6 @@ pub fn parseAppend(
     // result: *[]const Ast,
     line: []const Token,
 ) !?Ast {
-    var rewind_point = parse_stack.items.len;
-    _ = rewind_point;
-    // errdefer { // TODO: add test coverage
-    //     // Check if result was written to, and therefore would need freeing
-    //     if (&result != next_dest)
-    //         result.deleteChildren(allocator);
-
-    //     for (parse_stack.items) |*ast|
-    //         ast.deleteChildren(allocator);
-
-    //     parse_stack.deinit(allocator);
-    // }
-    print("parseAppend\n", .{});
     var next_ast = node_stack.pop();
     var current = parse_stack.pop();
     for (line) |token|
@@ -154,7 +143,7 @@ pub fn parseAppend(
                 current = ArrayListUnmanaged(Ast){};
             },
             .RightParen => {
-                next_ast = Ast.ofApps(try current.toOwnedSlice(allocator));
+                next_ast = intoNode(next_ast, try current.toOwnedSlice(allocator));
                 current = parse_stack.pop();
                 try current.append(allocator, next_ast);
             },
@@ -166,18 +155,16 @@ pub fn parseAppend(
             .Comment, .NewLine => try current.append(allocator, Ast.ofLit(token)),
             else => @panic("unimplemented"),
         };
-    const result = addIntoNode(next_ast, try current.toOwnedSlice(allocator));
-
-    // print("Result: {*}\n", .{&last(result.infix)});
-    // Ast{ .apps = try current.toOwnedSlice(allocator) };
+    const result = intoNode(next_ast, try current.toOwnedSlice(allocator));
     print("Parse Stack Len: {}\n", .{parse_stack.items.len});
     print("Result: {s}\n", .{@tagName(result)});
     return result;
 }
 
-fn addIntoNode(node: Ast, apps: []const Ast) Ast {
+// Convert a list of nodes into a single node, depending on its type
+fn intoNode(node: Ast, nodes: []const Ast) Ast {
     return switch (node) {
-        .apps => Ast.ofApps(apps),
+        .apps => Ast.ofApps(nodes),
         // .infix => {
         //  @constCast(
         //     &current_ptr.infix[current_ptr.infix.len - 1],
