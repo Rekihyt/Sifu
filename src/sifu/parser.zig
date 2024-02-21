@@ -87,9 +87,9 @@ pub fn parseAst(
     var parse_stack = ArrayListUnmanaged(ArrayListUnmanaged(Ast)){};
     try parse_stack.append(allocator, ArrayListUnmanaged(Ast){});
     defer parse_stack.deinit(allocator);
-    var node_stack = ArrayListUnmanaged(Ast){};
-    try node_stack.append(allocator, Ast.ofApps(&.{}));
-    defer node_stack.deinit(allocator);
+    //  var node_stack = ArrayListUnmanaged(Ast){};
+    // try node_stack.append(allocator, Ast.ofApps(&.{}));
+    //  defer node_stack.deinit(allocator);
     errdefer { // TODO: add test coverage
         for (parse_stack.items) |*asts| {
             for (asts.items) |*ast|
@@ -101,7 +101,7 @@ pub fn parseAst(
     }
     while (try lexer.nextLine()) |line| {
         defer lexer.allocator.free(line);
-        if (try parseAppend(allocator, &node_stack, &parse_stack, line)) |ast|
+        if (try parseAppend(allocator, &parse_stack, line)) |ast|
             return ast
         else
             continue;
@@ -117,17 +117,16 @@ pub fn parseAst(
 // - TODO: [] should be a flat Apps instead of as an infix
 pub fn parseAppend(
     allocator: Allocator,
-    node_stack: *ArrayListUnmanaged(Ast),
     parse_stack: *ArrayListUnmanaged(ArrayListUnmanaged(Ast)),
     // result: *[]const Ast,
     line: []const Token,
 ) !?Ast {
-    var next_ast = node_stack.pop();
+    var next_ast = Ast.ofApps(&.{});
     var current = parse_stack.pop();
     for (line) |token|
         switch (token.type) {
             .Name => try current.append(allocator, Ast.ofLit(token)),
-            .Infix => {
+            .Infix, .Match, .Arrow => {
                 // Add an apps for the trailing args
                 try current.appendSlice(allocator, &.{
                     Ast.ofLit(token),
@@ -138,13 +137,16 @@ pub fn parseAppend(
                 });
             },
             .LeftParen => {
+                // Save an app to append to later
+                try current.append(allocator, Ast.ofApps(&.{}));
                 // Save index of the nested app to write to later
                 try parse_stack.append(allocator, current);
                 current = ArrayListUnmanaged(Ast){};
             },
             .RightParen => {
-                next_ast = intoNode(next_ast, try current.toOwnedSlice(allocator));
+                next_ast = try intoNode(allocator, next_ast, &current);
                 current = parse_stack.pop();
+                next_ast = current.pop(); // TODO: intoNode on this
                 try current.append(allocator, next_ast);
             },
             .Comma => {
@@ -155,22 +157,43 @@ pub fn parseAppend(
             .Comment, .NewLine => try current.append(allocator, Ast.ofLit(token)),
             else => @panic("unimplemented"),
         };
-    const result = intoNode(next_ast, try current.toOwnedSlice(allocator));
+    const result = try intoNode(allocator, next_ast, &current);
     print("Parse Stack Len: {}\n", .{parse_stack.items.len});
     print("Result: {s}\n", .{@tagName(result)});
     return result;
 }
 
 // Convert a list of nodes into a single node, depending on its type
-fn intoNode(node: Ast, nodes: []const Ast) Ast {
-    return switch (node) {
-        .apps => Ast.ofApps(nodes),
-        // .infix => {
-        //  @constCast(
-        //     &current_ptr.infix[current_ptr.infix.len - 1],
-        // );
-        // },
-        else => @panic(""),
+pub fn intoNode(
+    allocator: Allocator,
+    kind: Ast,
+    nodes: *ArrayListUnmanaged(Ast),
+) !Ast {
+    return switch (kind) {
+        .apps => blk: {
+            var list = ArrayListUnmanaged(Ast){};
+            defer nodes.deinit(allocator);
+            var maybe_ptr: ?*Ast = null;
+            for (nodes.items) |node| {
+                if (maybe_ptr) |ptr| {
+                    ptr.* = node;
+                    maybe_ptr = null;
+                    continue;
+                }
+                if (node == .infix or node == .arrow or node == .match)
+                    maybe_ptr = @constCast(&node.infix[node.infix.len - 1]);
+                try list.append(allocator, node);
+            }
+            break :blk Ast.ofApps(try list.toOwnedSlice(allocator));
+        },
+        .pattern => blk: {
+            print("pat\n", .{});
+            var pattern = Pat{};
+            for (nodes.items) |ast|
+                _ = try pattern.insertNode(allocator, ast);
+            break :blk Ast.ofPattern(pattern);
+        },
+        else => @panic("unimplemented"),
     };
 }
 

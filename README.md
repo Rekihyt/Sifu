@@ -5,8 +5,6 @@
   
   - Computation is a pattern match
 
-  - A computation returns 0, 1, or many values
-
   - No turing completeness, everything terminates by matching entries less than
     (or recursive/equal, but with structural simplification) to themselves
 
@@ -14,11 +12,12 @@
 
   - Core language is pattern-matching rewriter
     - triemap entries (`->`) and triemap matches (`:`)
-    - triemap entries (`->`) and triemap matches (`:`)
+    - multi triemap entries (`=>`) and multi triemap matches (`::`)
     - keywords are `->`, `:`, `=>`, `::`, `()`, and `{}`
     - match / set membership / typeof is the same thing (`:`)
     - source files are just triemaps with entries separated by newlines
-    - any characters are valid to the parser (punctuation chars are values, like in Forth)
+    - any characters are valid to the parser (punctuation chars are values, like
+in Forth)
     - values are literals, i.e. upper-case idents, ints, and match only themselves
     - vars match anything (lower-case idents)
 
