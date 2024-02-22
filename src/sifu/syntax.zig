@@ -18,26 +18,26 @@ pub const Type = enum {
     Name,
     Var,
     Str,
-    Infix,
     // Ints/UInts are be applied to a number which signifies their size
     I, // signed
     U, // unsigned
     F, // float
     Comment,
+    Comma,
+    NewLine, // New line separator
     Match,
-    LongMatch,
     MultiMatch,
-    LongMultiMatch,
     Arrow,
-    LongArrow,
     MultiArrow,
+    Infix,
+    LongMatch,
+    LongMultiMatch,
+    LongArrow,
     LongMultiArrow,
     LeftBrace,
     RightBrace,
     LeftParen,
     RightParen,
-    Comma,
-    NewLine, // New line separator
 
     /// Compares by value, not by len, pos, or pointers.
     pub fn order(self: Type, other: Type) Order {

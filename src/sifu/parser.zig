@@ -87,9 +87,6 @@ pub fn parseAst(
     var parse_stack = ArrayListUnmanaged(ArrayListUnmanaged(Ast)){};
     try parse_stack.append(allocator, ArrayListUnmanaged(Ast){});
     defer parse_stack.deinit(allocator);
-    //  var node_stack = ArrayListUnmanaged(Ast){};
-    // try node_stack.append(allocator, Ast.ofApps(&.{}));
-    //  defer node_stack.deinit(allocator);
     errdefer { // TODO: add test coverage
         for (parse_stack.items) |*asts| {
             for (asts.items) |*ast|
@@ -121,22 +118,40 @@ pub fn parseAppend(
     // result: *[]const Ast,
     line: []const Token,
 ) !?Ast {
-    var next_ast = Ast.ofApps(&.{});
     var current = parse_stack.pop();
+    // This is a non-null value when a preceding value with greater than or
+    // equal precedence was parsed
+    var op_index: ?usize = null;
     for (line) |token|
         switch (token.type) {
             .Name => try current.append(allocator, Ast.ofLit(token)),
             .Infix, .Match, .Arrow => {
+                if (op_index) |index| if (@intFromEnum(current.items[index]) >
+                    @intFromEnum(Ast.infix))
+                {
+                    var rhs = try ArrayListUnmanaged(Ast).initCapacity(
+                        allocator,
+                        current.items.len - (index + 1),
+                    );
+                    for (current.items[index + 1 ..]) |arg|
+                        rhs.appendAssumeCapacity(arg);
+                    current.shrinkRetainingCapacity(index + 1);
+                    current.items[index] = Ast.ofApps(
+                        try rhs.toOwnedSlice(allocator),
+                    );
+                };
                 // Add an apps for the trailing args
                 try current.appendSlice(allocator, &.{
                     Ast.ofLit(token),
-                    Ast.ofApps(&.{}),
+                    Ast{ .apps = &.{} },
                 });
-                try current.append(allocator, Ast{
-                    .infix = try current.toOwnedSlice(allocator),
-                });
+                try current.append(
+                    allocator,
+                    Ast{ .infix = try current.toOwnedSlice(allocator) },
+                );
             },
             .LeftParen => {
+                op_index = null;
                 // Save an app to append to later
                 try current.append(allocator, Ast.ofApps(&.{}));
                 // Save index of the nested app to write to later
@@ -144,9 +159,10 @@ pub fn parseAppend(
                 current = ArrayListUnmanaged(Ast){};
             },
             .RightParen => {
-                next_ast = try intoNode(allocator, next_ast, &current);
+                var nested = current;
                 current = parse_stack.pop();
-                next_ast = current.pop(); // TODO: intoNode on this
+                const kind = current.pop();
+                const next_ast = try intoNode(allocator, kind, &nested);
                 try current.append(allocator, next_ast);
             },
             .Comma => {
@@ -157,7 +173,7 @@ pub fn parseAppend(
             .Comment, .NewLine => try current.append(allocator, Ast.ofLit(token)),
             else => @panic("unimplemented"),
         };
-    const result = try intoNode(allocator, next_ast, &current);
+    const result = Ast.ofApps(try current.toOwnedSlice(allocator));
     print("Parse Stack Len: {}\n", .{parse_stack.items.len});
     print("Result: {s}\n", .{@tagName(result)});
     return result;
@@ -170,22 +186,7 @@ pub fn intoNode(
     nodes: *ArrayListUnmanaged(Ast),
 ) !Ast {
     return switch (kind) {
-        .apps => blk: {
-            var list = ArrayListUnmanaged(Ast){};
-            defer nodes.deinit(allocator);
-            var maybe_ptr: ?*Ast = null;
-            for (nodes.items) |node| {
-                if (maybe_ptr) |ptr| {
-                    ptr.* = node;
-                    maybe_ptr = null;
-                    continue;
-                }
-                if (node == .infix or node == .arrow or node == .match)
-                    maybe_ptr = @constCast(&node.infix[node.infix.len - 1]);
-                try list.append(allocator, node);
-            }
-            break :blk Ast.ofApps(try list.toOwnedSlice(allocator));
-        },
+        .apps => Ast.ofApps(try nodes.toOwnedSlice(allocator)),
         .pattern => blk: {
             print("pat\n", .{});
             var pattern = Pat{};

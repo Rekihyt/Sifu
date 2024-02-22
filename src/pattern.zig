@@ -117,6 +117,7 @@ pub fn PatternWithContextAndFree(
         /// the syntax described below to this data structure, but that syntax
         /// is otherwise irrelevant. Any infix operator that isn't a builtin
         /// (match, arrow or comma) is parsed into an app.
+        /// These are ordered in their precedence, which is used during parsing.
         pub const Node = union(enum) {
             /// An upper case term.
             key: Key,
@@ -130,14 +131,21 @@ pub fn PatternWithContextAndFree(
             /// the left form their own subapps, stored here, but the `:` token
             /// is elided.
             match: []const Node,
+            /// "long" versions of ops have same semantics, but are tracked to
+            /// facilitate parsing/printing. They may be removed in the future,
+            /// as parsing isn't a concern of this abstract data structure.
+            // long_match: []const Node,
             /// A postfix encoded arrow expression denoting a rewrite, i.e. `A B
             /// C -> 123`.
             arrow: []const Node,
+            // long_arrow: []const Node,
             /// Sort of postfix encoded: second to last arg is the op, last arg
             /// is rhs
             infix: []const Node,
             // multi_match: []const Node,
             // multi_arrow: []const Node,
+            // long_multi_match: []const Node,
+            // long_multi_arrow: []const Node,
             // The pointer here saves space depending on the size of `Key`
             /// An expression in braces.
             pattern: Self,
@@ -333,12 +341,14 @@ pub fn PatternWithContextAndFree(
                     },
                     .infix => |infix| {
                         // These parens are for debugging
+                        try writer.writeByte('(');
                         try Node.ofApps(infix[0 .. infix.len - 2])
                             .writeIndent(writer, optional_indent);
                         try infix[infix.len - 2]
                             .writeIndent(writer, optional_indent);
                         try infix[infix.len - 1]
                             .writeSExp(writer, optional_indent);
+                        try writer.writeByte(')');
                     },
                     .pattern => |pattern| try pattern.writeIndent(
                         writer,
@@ -390,6 +400,9 @@ pub fn PatternWithContextAndFree(
         /// Maps asts to the next pattern, if there is one. These form the
         /// branches of the trie.
         map: NodeMap = NodeMap{},
+
+        /// Whether this pattern's value should be matched as a singleton or list
+        multi: bool = false,
 
         /// A null val represents an undefined pattern, for example in `Foo
         /// Bar -> 123`, the val at `Foo` would be null.
@@ -448,37 +461,14 @@ pub fn PatternWithContextAndFree(
         }
 
         pub fn hasherUpdate(self: Self, hasher: anytype) void {
-            _ = hasher;
-            _ = self;
-            // for (self.map.keys()) |key|
-            //     hasher.update(&mem.toBytes(KeyCtx.hash(undefined, key)));
-            // for (self.map.values()) |p|
-            //     p.hasherUpdate(hasher);
+            for (self.map.keys()) |node|
+                node.hasherUpdate(hasher);
+            for (self.map.values()) |p|
+                p.hasherUpdate(hasher);
 
-            // if (self.pat_map) |pat_map| {
-            //     for (pat_map.keys()) |p|
-            //         p.hasherUpdate(hasher);
-            //     for (pat_map.values()) |p|
-            //         p.hasherUpdate(hasher);
-            // }
-
-            // if (self.option_var) |v|
-            //     hasher.update(&mem.toBytes(VarCtx.hash(undefined, v)));
-            // if (self.var_next) |var_next|
-            //     var_next.*.hasherUpdate(hasher);
-
-            // if (self.val) |val|
-            //     hasher.update(&mem.toBytes(val.hash()));
-
-            // if (self.sub_apps) |sub_apps|
-            //     sub_apps.hasherUpdate(hasher);
-
-            // if (self.match) |_| {
-            //     @panic("unimplemented");
-            // }
-            // if (self.arrow) |_| {
-            //     @panic("unimplemented");
-            // }
+            hasher.update(&mem.toBytes(self.multi));
+            if (self.val) |val|
+                hasher.update(&mem.toBytes(val.hash()));
         }
 
         fn keyEql(k1: Key, k2: Key) bool {
@@ -712,6 +702,7 @@ pub fn PatternWithContextAndFree(
             _ = result;
             const matches = try pattern.match(allocator, query);
             defer matches.free();
+            // var scope_len  = pattern.map.;
 
             var i = 0;
             while (i < matches.len) : (i += 1) {
