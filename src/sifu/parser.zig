@@ -87,6 +87,19 @@ pub fn parseAst(
     var parse_stack = ArrayListUnmanaged(ArrayListUnmanaged(Ast)){};
     try parse_stack.append(allocator, ArrayListUnmanaged(Ast){});
     defer parse_stack.deinit(allocator);
+    // This points to the last op parsed for a level of nesting. This tracks
+    // infixes for each level of nesting, in congruence with the parse stack.
+    // These are nullable because each level of nesting gets a new relative
+    // tail, which is null until an op is found, and can only be written to once
+    // the entire level of nesting is parsed (apart from another infix). Like
+    // the parse stack, indices here correspond to a level of nesting, while
+    // infixes mutate the element at their index as they are parsed.
+    var op_tail_ptrs = ArrayListUnmanaged(?*Ast){};
+    defer op_tail_ptrs.deinit(allocator);
+    try op_tail_ptrs.append(allocator, null);
+    var op_indices = ArrayListUnmanaged(?usize){};
+    defer op_indices.deinit(allocator);
+    try op_indices.append(allocator, null);
     errdefer { // TODO: add test coverage
         for (parse_stack.items) |*asts| {
             for (asts.items) |*ast|
@@ -98,7 +111,13 @@ pub fn parseAst(
     }
     while (try lexer.nextLine()) |line| {
         defer lexer.allocator.free(line);
-        if (try parseAppend(allocator, &parse_stack, line)) |ast|
+        if (try parseAppend(
+            allocator,
+            &parse_stack,
+            &op_tail_ptrs,
+            &op_indices,
+            line,
+        )) |ast|
             return ast
         else
             continue;
@@ -115,20 +134,21 @@ pub fn parseAst(
 pub fn parseAppend(
     allocator: Allocator,
     parse_stack: *ArrayListUnmanaged(ArrayListUnmanaged(Ast)),
-    // result: *[]const Ast,
+    op_tail_ptrs: *ArrayListUnmanaged(?*Ast),
+    op_indices: *ArrayListUnmanaged(?usize),
     line: []const Token,
 ) !?Ast {
+    // These variables are relative to the current level of nesting being parsed
     var current = parse_stack.pop();
-    // This is a non-null value when a preceding value with greater than or
-    // equal precedence was parsed
-    var op_index: ?usize = null;
-    for (line) |token|
-        switch (token.type) {
-            .Name => try current.append(allocator, Ast.ofLit(token)),
-            .Infix, .Match, .Arrow => {
-                if (op_index) |index| if (@intFromEnum(current.items[index]) >
-                    @intFromEnum(Ast.infix))
-                {
+    var op_tail_ptr = op_tail_ptrs.pop();
+    var op_index = op_indices.pop();
+    for (line) |token| switch (token.type) {
+        .Name => try current.append(allocator, Ast.ofLit(token)),
+        .Infix, .Match, .Arrow => blk: {
+            if (op_index) |index| {
+                const op = current.items[index];
+                if (@intFromEnum(op) < @intFromEnum(Ast.infix)) {
+                    print("Parsing lower precedence\n", .{});
                     var rhs = try ArrayListUnmanaged(Ast).initCapacity(
                         allocator,
                         current.items.len - (index + 1),
@@ -136,45 +156,55 @@ pub fn parseAppend(
                     for (current.items[index + 1 ..]) |arg|
                         rhs.appendAssumeCapacity(arg);
                     current.shrinkRetainingCapacity(index + 1);
-                    current.items[index] = Ast.ofApps(
-                        try rhs.toOwnedSlice(allocator),
-                    );
-                };
-                // Add an apps for the trailing args
-                try current.appendSlice(allocator, &.{
-                    Ast.ofLit(token),
-                    Ast{ .apps = &.{} },
-                });
-                try current.append(
-                    allocator,
-                    Ast{ .infix = try current.toOwnedSlice(allocator) },
-                );
-            },
-            .LeftParen => {
-                op_index = null;
-                // Save an app to append to later
-                try current.append(allocator, Ast.ofApps(&.{}));
-                // Save index of the nested app to write to later
-                try parse_stack.append(allocator, current);
-                current = ArrayListUnmanaged(Ast){};
-            },
-            .RightParen => {
-                var nested = current;
-                current = parse_stack.pop();
-                const kind = current.pop();
-                const next_ast = try intoNode(allocator, kind, &nested);
-                try current.append(allocator, next_ast);
-            },
-            .Comma => {
+                    // // Set the rhs of the previous infix
+                    // tail_ptrs.items[tail_ptrs.items.len - 1] = Ast.ofApps(
+                    //     try rhs.toOwnedSlice(allocator),
+                    // );
+                    // // Set that as the lhs of this infix
+                    // break :blk Ast{
+                    //     .infix = try current.toOwnedSlice(allocator),
+                    // };
+                    break :blk;
+                }
+            }
+            if (token.type == .Infix)
                 try current.append(allocator, Ast.ofLit(token));
-            },
-            .Var => try current.append(allocator, Ast.ofVar(token.lit)),
-            .Str, .I, .F, .U => try current.append(allocator, Ast.ofLit(token)),
-            .Comment, .NewLine => try current.append(allocator, Ast.ofLit(token)),
-            else => @panic("unimplemented"),
-        };
+            // Add an apps for the trailing args
+            try current.append(allocator, Ast{ .apps = &.{} });
+
+            if (op_tail_ptr) |ptr|
+                ptr.* = Ast{ .infix = try current.toOwnedSlice(allocator) };
+
+            // try op_tail_ptrs.append(allocator, getLastPtr(current.getLast()));
+            op_index = current.items.len - 1;
+        },
+        .LeftParen => {
+            op_index = null;
+            // Save an app to append to later
+            try current.append(allocator, Ast.ofApps(&.{}));
+            // Save index of the nested app to write to later
+            try parse_stack.append(allocator, current);
+            current = ArrayListUnmanaged(Ast){};
+        },
+        .RightParen => {
+            var nested = current;
+            current = parse_stack.pop();
+            const kind = current.pop();
+            const next_ast = try intoNode(allocator, kind, &nested);
+            try current.append(allocator, next_ast);
+        },
+        .Comma => {
+            try current.append(allocator, Ast.ofLit(token));
+        },
+        .Var => try current.append(allocator, Ast.ofVar(token.lit)),
+        .Str, .I, .F, .U => try current.append(allocator, Ast.ofLit(token)),
+        .Comment, .NewLine => try current.append(allocator, Ast.ofLit(token)),
+        else => @panic("unimplemented"),
+    };
     const result = Ast.ofApps(try current.toOwnedSlice(allocator));
     print("Parse Stack Len: {}\n", .{parse_stack.items.len});
+    print("Tail Stack Len: {}\n", .{op_tail_ptrs.items.len});
+    print("Indices Stack Len: {}\n", .{op_indices.items.len});
     print("Result: {s}\n", .{@tagName(result)});
     return result;
 }
@@ -196,6 +226,13 @@ pub fn intoNode(
         },
         else => @panic("unimplemented"),
     };
+}
+
+fn getLastPtr(ast: Ast) *Ast {
+    return @constCast(switch (ast) {
+        .apps, .infix, .arrow, .match => |apps| &apps[apps.len - 1],
+        else => @panic("not a list type of Ast"),
+    });
 }
 
 // This function is the responsibility of the Parser, because it is the dual
