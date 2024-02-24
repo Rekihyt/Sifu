@@ -340,15 +340,12 @@ pub fn PatternWithContextAndFree(
                             .writeIndent(writer, optional_indent);
                     },
                     .infix => |infix| {
-                        // These parens are for debugging
-                        try writer.writeByte('(');
                         try Node.ofApps(infix[0 .. infix.len - 2])
                             .writeIndent(writer, optional_indent);
                         try infix[infix.len - 2]
                             .writeIndent(writer, optional_indent);
                         try infix[infix.len - 1]
                             .writeSExp(writer, optional_indent);
-                        try writer.writeByte(')');
                     },
                     .pattern => |pattern| try pattern.writeIndent(
                         writer,
@@ -574,7 +571,11 @@ pub fn PatternWithContextAndFree(
             var current = pattern;
             // Follow the longest branch that exists
             const prefix_len = switch (node) {
-                .apps => |apps| for (apps, 0..) |app, i| switch (app) {
+                .apps,
+                .infix,
+                .match,
+                .arrow,
+                => |apps| for (apps, 0..) |app, i| switch (app) {
                     // TODO: possible bug, not updating current node
                     .variable => |variable| {
                         const result = try var_map.getOrPut(allocator, variable);

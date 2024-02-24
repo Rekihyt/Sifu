@@ -142,66 +142,75 @@ pub fn parseAppend(
     var current = parse_stack.pop();
     var op_tail_ptr = op_tail_ptrs.pop();
     var op_index = op_indices.pop();
-    for (line) |token| switch (token.type) {
-        .Name => try current.append(allocator, Ast.ofLit(token)),
-        .Infix, .Match, .Arrow => blk: {
-            if (op_index) |index| {
-                const op = current.items[index];
-                if (@intFromEnum(op) < @intFromEnum(Ast.infix)) {
-                    print("Parsing lower precedence\n", .{});
-                    var rhs = try ArrayListUnmanaged(Ast).initCapacity(
-                        allocator,
-                        current.items.len - (index + 1),
-                    );
-                    for (current.items[index + 1 ..]) |arg|
-                        rhs.appendAssumeCapacity(arg);
-                    current.shrinkRetainingCapacity(index + 1);
-                    // // Set the rhs of the previous infix
-                    // tail_ptrs.items[tail_ptrs.items.len - 1] = Ast.ofApps(
-                    //     try rhs.toOwnedSlice(allocator),
-                    // );
-                    // // Set that as the lhs of this infix
-                    // break :blk Ast{
-                    //     .infix = try current.toOwnedSlice(allocator),
-                    // };
-                    break :blk;
+    for (line) |token| {
+        const current_tail_ptr = op_tail_ptr;
+        const next = switch (token.type) {
+            .Name => Ast.ofLit(token),
+            .Infix, .Match, .Arrow => blk: {
+                if (op_index) |index| {
+                    const prev_op = current.items[index];
+                    if (@intFromEnum(prev_op) < @intFromEnum(Ast.infix)) {
+                        print("Parsing lower precedence\n", .{});
+                        op_index = index + 1;
+                    } else op_index = index;
                 }
-            }
-            if (token.type == .Infix)
+                print("Op at index: {?}\n", .{op_index});
+                if (token.type == .Infix)
+                    try current.append(allocator, Ast.ofLit(token));
+                try current.append(allocator, Ast{ .apps = &.{} });
+                // Right hand args for previous op with higher precedence
+                var rhs = try util.popMany(&current, op_index orelse 0, allocator);
+                print("Rhs Len: {}\n", .{rhs.items.len});
+                // Add an apps for the trailing args
+                const op = Ast{ .infix = try rhs.toOwnedSlice(allocator) };
+                op.write(stderr) catch unreachable;
+                print("\n", .{});
+                op_tail_ptr = getLastPtr(op);
+                op_index = op_index orelse 0;
+                break :blk op;
+            },
+            .LeftParen => {
+                op_index = null;
+                // Save an app to append to later
+                try current.append(allocator, Ast.ofApps(&.{}));
+                // Save index of the nested app to write to later
+                try parse_stack.append(allocator, current);
+                current = ArrayListUnmanaged(Ast){};
+                continue;
+            },
+            .RightParen => {
+                var nested = current;
+                current = parse_stack.pop();
+                const kind = current.pop();
+                const next_ast = try intoNode(allocator, kind, &nested);
+                try current.append(allocator, next_ast);
+                continue;
+            },
+            .Comma => {
                 try current.append(allocator, Ast.ofLit(token));
-            // Add an apps for the trailing args
-            try current.append(allocator, Ast{ .apps = &.{} });
-
-            if (op_tail_ptr) |ptr|
-                ptr.* = Ast{ .infix = try current.toOwnedSlice(allocator) };
-
-            // try op_tail_ptrs.append(allocator, getLastPtr(current.getLast()));
-            op_index = current.items.len - 1;
-        },
-        .LeftParen => {
-            op_index = null;
-            // Save an app to append to later
-            try current.append(allocator, Ast.ofApps(&.{}));
-            // Save index of the nested app to write to later
-            try parse_stack.append(allocator, current);
-            current = ArrayListUnmanaged(Ast){};
-        },
-        .RightParen => {
-            var nested = current;
-            current = parse_stack.pop();
-            const kind = current.pop();
-            const next_ast = try intoNode(allocator, kind, &nested);
-            try current.append(allocator, next_ast);
-        },
-        .Comma => {
-            try current.append(allocator, Ast.ofLit(token));
-        },
-        .Var => try current.append(allocator, Ast.ofVar(token.lit)),
-        .Str, .I, .F, .U => try current.append(allocator, Ast.ofLit(token)),
-        .Comment, .NewLine => try current.append(allocator, Ast.ofLit(token)),
-        else => @panic("unimplemented"),
-    };
-    const result = Ast.ofApps(try current.toOwnedSlice(allocator));
+                continue;
+            },
+            .Var => Ast.ofVar(token.lit),
+            .Str, .I, .F, .U => Ast.ofLit(token),
+            .Comment, .NewLine => Ast.ofLit(token),
+            else => @panic("unimplemented"),
+        };
+        // TODO: case here on the kind of next
+        if (current_tail_ptr) |ptr|
+            ptr.* = next
+        else
+            try current.append(allocator, next);
+        next.write(stderr) catch unreachable;
+        print("\n", .{});
+        print("Current Len: {}\n", .{current.items.len});
+    }
+    // TODO: return optional void and move to caller
+    const result = if (op_index == 0)
+        current.pop()
+    else
+        Ast.ofApps(try current.toOwnedSlice(allocator));
+    try op_tail_ptrs.append(allocator, op_tail_ptr);
+    try op_indices.append(allocator, op_index);
     print("Parse Stack Len: {}\n", .{parse_stack.items.len});
     print("Tail Stack Len: {}\n", .{op_tail_ptrs.items.len});
     print("Indices Stack Len: {}\n", .{op_indices.items.len});

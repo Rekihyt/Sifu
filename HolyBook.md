@@ -49,3 +49,5 @@ more alluring than even a total function, but you must resist. Stray not from th
 holy light of simplicity, for the path back is winding and twisted.
 9. Seek isomorphisms for all your functions, for they shine Her light in every
 direction.
+10. To the false prophets who espouse a "functional" language, ask them to
+pattern match on one of their so-called "functions".

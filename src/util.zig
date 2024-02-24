@@ -17,26 +17,27 @@ pub fn print(comptime fmt: []const u8, args: anytype) void {
     stderr.print(fmt, args) catch unreachable;
 }
 
-pub fn popSliceAsList(
+pub fn popMany(
     unmanaged_list_ptr: anytype,
     index: usize,
     allocator: Allocator,
 ) !@typeInfo(@TypeOf(unmanaged_list_ptr)).Pointer.child {
     // if (list.items.len > index) for (list.items)
-    var result = @typeInfo(@TypeOf(unmanaged_list_ptr)).Pointer.child{};
+    var result = try @typeInfo(@TypeOf(unmanaged_list_ptr)).Pointer.child
+        .initCapacity(allocator, unmanaged_list_ptr.items.len - index);
     for (unmanaged_list_ptr.items[index..]) |app| {
-        try result.append(allocator, app);
+        result.appendAssumeCapacity(app);
     }
     unmanaged_list_ptr.shrinkRetainingCapacity(index);
     return result;
 }
 
-pub fn popSlice(
+pub fn popManyAsSlice(
     unmanaged_list_ptr: anytype,
     index: usize,
     allocator: Allocator,
 ) !@TypeOf(unmanaged_list_ptr.items) {
-    var list = try popSliceAsList(unmanaged_list_ptr, index, allocator);
+    var list = try popMany(unmanaged_list_ptr, index, allocator);
     return list.toOwnedSlice(allocator);
 }
 
