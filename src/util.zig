@@ -22,7 +22,6 @@ pub fn popMany(
     index: usize,
     allocator: Allocator,
 ) !@typeInfo(@TypeOf(unmanaged_list_ptr)).Pointer.child {
-    // if (list.items.len > index) for (list.items)
     var result = try @typeInfo(@TypeOf(unmanaged_list_ptr)).Pointer.child
         .initCapacity(allocator, unmanaged_list_ptr.items.len - index);
     for (unmanaged_list_ptr.items[index..]) |app| {

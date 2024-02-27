@@ -145,15 +145,13 @@ pub fn parseAppend(
     var next = next_stack.pop();
     var maybe_op_tail = op_tails.pop();
     for (line) |token| {
-        const this_op_tail = maybe_op_tail;
         const next_ast = switch (token.type) {
             .Name => Ast.ofLit(token),
-            .Infix, .Match, .Arrow => blk: {
+            .Infix, .Match, .Arrow => {
                 if (maybe_op_tail) |tail| if (current.getLastOrNull()) |op| {
                     if (@intFromEnum(op) < @intFromEnum(Ast.infix)) {
                         print("Parsing lower precedence\n", .{});
                     }
-                    // } else op_index = index + 1;
                     print("Op: ", .{});
                     op.write(stderr) catch unreachable;
                     print("\n", .{});
@@ -163,13 +161,18 @@ pub fn parseAppend(
                     try next.append(allocator, Ast.ofLit(token));
                 try next.append(allocator, Ast{ .apps = &.{} });
                 // Right hand args for previous op with higher precedence
-                // print("Rhs Len: {}\n", .{rhs.items.len});
+                print("Rhs Len: {}\nOp: ", .{next.items.len});
                 // Add an apps for the trailing args
                 const op = Ast{ .infix = try next.toOwnedSlice(allocator) };
                 op.write(stderr) catch unreachable;
                 print("\n", .{});
-                maybe_op_tail = getLastPtr(op);
-                break :blk op;
+                defer maybe_op_tail = getLastPtr(op);
+                if (maybe_op_tail) |tail| {
+                    // Add an apps for the trailing args
+                    tail.* = op;
+                    continue;
+                } else try current.append(allocator, op);
+                continue;
             },
             .LeftParen => {
                 try op_tails.append(allocator, maybe_op_tail);
@@ -197,14 +200,13 @@ pub fn parseAppend(
             .Comment, .NewLine => Ast.ofLit(token),
             else => @panic("unimplemented"),
         };
-        if (this_op_tail) |tail| {
-            // Add an apps for the trailing args
-            tail.* = next_ast;
-        } else try current.append(allocator, next_ast);
-        next_ast.write(stderr) catch unreachable;
-        print("\n", .{});
-        print("Current Len: {}\n", .{current.items.len});
+        try next.append(allocator, next_ast);
     }
+    const next_ast = Ast{ .apps = try next.toOwnedSlice(allocator) };
+    if (maybe_op_tail) |tail| {
+        // Add an apps for the trailing args
+        tail.* = next_ast;
+    } else try current.append(allocator, next_ast);
     // TODO: return optional void and move to caller
     const result = Ast.ofApps(try current.toOwnedSlice(allocator));
     try op_tails.append(allocator, maybe_op_tail);
