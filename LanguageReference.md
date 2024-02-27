@@ -1,20 +1,63 @@
 # Language Reference
 
-## Sifu-Specific Terminology
+## Sifu-Specific Terminology and Grammar
 
-- Terms: a syntax atom like `1`, `"asd"`, or `Foo`.
-- App, Applications: a concatenated sequence of terms, like `F x 1`
-- Ast: an Ast is a specific term data type that is then concatenated into Apps. Sifu parses every token as a Term, and Apps can be nested, so together they form an abstract syntax tree.
-- Pattern: a specification for how to match a particular Ast. Patterns and Asts are intimately connected, because to match a nested structure, patterns must be nested in the same way.
-- Ast: A near synonym for Pattern but implies usage as data, not computation. It is also a tree, whereas Patterns are more like tries.
-- Return: a shorthand for "evaluate to"
-- Function: a nickname for multi-term patterns that start with a constant (the "function" name) and take "arguments" as variables in its subsequent terms.
-- Entry: a definition of a pattern with a value, like `Foo -> Bar`.
-  - Key: the left-hand side (`Foo`)
-  - Val, Value, Body: the right-hand side (`Bar`) 
+#### Nouns
+
+- Term - a single atom not a var, separated by whitespace like `1`, `"asd"`,
+or `Foo`.
 - Sub-term: a term inside an app, which is the containing term
-- Match: an expression with a pattern that it will be matched with.
-`Foo : Bool` will match `Foo` against the pattern `Bool`, but first needs to match `Bool` until it gets a pattern (like `{True, False}`).
+- Var - a lowercase word, matches and stores a match-specific key. During
+rewriting, whenever the key is encountered again, it is rewritten to this
+pattern's val. A Var pattern matches anything, including nested patterns. It
+only makes sense to match anything after trying to match something specific, so
+Vars always successfully match (if there is a Var) after a Key or Subpat match
+fails.
+- Apps - a list of atoms, nested by parenthesis
+- Ast - the Sifu specific data type of the generic Pattern data structure. Sifu
+parses every token as a Token, which is a term with meta-information, and Apps
+can be nested, so together they form the abstract syntax tree.
+- Pattern - a trie of apps, nested by braces
+- Match
+  1. an expression, either single or multi, of `into : from` where
+    - into is the expression to match into
+    - from is the pattern to match from
+  2. the result of evaluating a match, consisting of selecting and rewriting.
+- Multi match - like match, but with `::` instead and list monad / dot product
+semantics where all matches of `into` are included on evaluation as an apps.
+- Arrow
+  1. an expression, either single or multi, of `from -> into` where
+    - from is the expression to rewrite from, also called the Key
+    - into is the expression to rewrite into, also called the Value
+  2. an encoding in a pattern that represents an arrow after its insertion in
+that pattern.
+- Multi arrow - an expression, either single or multi, of `from => into` where
+all matches of `into` are included on evaluation as an apps.
+- Value - the right side of an arrow, the part rewritten to
+- Commas - special operator that delimits separate keys/arrows in patterns
+- Newline - separates apps, unless before a trailing operator or within a nested
+paren or brace.
+- Quotes - code surrounded with (`). Not evaluated, only treated as data.
+- Ops - a special kind of Term that has different parsing
+- Infix - shorthand for an Op that is user defined
+- Builtin - a builtin operator (there are no keywords). Builtins are the only
+operators with precedence in Sifu. This precedence is as follows: 
+> semicolons < long match, long arrow < comma < infix < short match, short arrow
+  - Commas and Semis - these delimit separate expressions within a specific level of nesting. Commas are high precedence, while Semicolons are low. 
+
+#### Verbs
+
+- Current scope - the set of all parent patterns and the current but only the
+current expression and above
+- Select - the first phase during matching when looking up an expression that
+match keys in the pattern
+- Evaluate - given an expression, match it against the current scope and rewrite
+to the first match's value. Repeats until no match, no value, or the value is
+equal to the current expression.
+- Return: a shorthand for "evaluate to after matching from a tag"
+- Function: a nickname for multi-term patterns that start with a constant (the
+"function" name) and take "arguments" as variables in its subsequent terms.
+
 
 ---
 
@@ -24,11 +67,18 @@
 
 ### Apps
 `Foo` is an App of one term, `(Foo)` is an App of an App of a term.
+By default, all expressions in Sifu form an app until either an infix or pattern is parsed.
+
 
 ### Parentheses
-Parentheses do more than just specify precedence, they force their contained expression into a single-term App. This has a somewhat unexpected consequence: single-terms inside parentheses are apps instead of terms. While this is weird for expressions, is makes sense for matching. If the key `(Foo Bar)` doesn't match `Foo Bar`, then `(Foo)` shouldn't match `Foo`.
+Parentheses do more than just specify precedence, they force their contained
+expression into a single-term App. This has a sometimes surprising consequence:
+single-terms inside parentheses are apps instead of terms. While this is weird
+for expressions, is makes sense for matching, and consistency in general. If the
+key `(Foo Bar)` doesn't match `Foo Bar`, then `(Foo)` shouldn't match `Foo`.
 
-(These technically make the language into a Lisp, but don't tell anyone, I want _some_ users)
+(These technically make the language into a Lisp, but don't tell anyone, I want
+_some_ users)
 
 ### Infix Operators
 
@@ -97,6 +147,10 @@ To prevent a match to either `F` or `G` from recursing forever, patterns only ma
 ## Semantics and Syntax Isomorphism
 
 All syntax in Sifu can be parsed into a Pattern, then mapped back into the original syntax (although it will be desugared). This implies that _all_ syntax has semantics, i.e. parentheses have meaning.
+
+## Parsing
+
+parsing
 
 ## Type Checking as Pattern matching on Patterns
 

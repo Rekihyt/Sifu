@@ -13,7 +13,7 @@
   - Core language is pattern-matching rewriter
     - triemap entries (`->`) and triemap matches (`:`)
     - multi triemap entries (`=>`) and multi triemap matches (`::`)
-    - keywords are `->`, `:`, `=>`, `::`, `()`, and `{}`
+    - keywords are `->`, `:`, `=>`, `::`, `,`, `;`, `()`, and `{}`
     - match / set membership / typeof is the same thing (`:`)
     - source files are just triemaps with entries separated by newlines
     - any characters are valid to the parser (punctuation chars are values, like
@@ -119,54 +119,6 @@ Compare (b1 : Bool) (b2 : Bool) -> Case [
 
 ---
 
-## Specification
 
-### Terminology and Grammar
-
-
-By default, all expressions in Sifu are an app.
-
-#### Nouns
-- Term - a single atom not a var, separated by whitespace
-- Var - a lowercase word, matches and stores a match-specific key. During
-rewriting, whenever the key is encountered again, it is rewritten to this
-pattern's val. A Var pattern matches anything, including nested patterns. It
-only makes sense to match anything after trying to match something specific, so
-Vars always successfully match (if there is a Var) after a Key or Subpat match
-fails.
-- Apps - a list of atoms, nested by parenthesis
-- Pattern - a trie of apps, nested by braces
-- Match
-  1. an expression, either single or multi, of `into : from` where
-    - into is the expression to match into
-    - from is the pattern to match from
-  2. the result of evaluating a match, consisting of selecting and rewriting.
-- Multi match - like match, but with `::` instead and list monad / dot product
-semantics where all matches of `into` are included on evaluation as an apps.
-- Arrow
-  1. an expression, either single or multi, of `from -> into` where
-    - from is the expression to rewrite from
-    - into is the expression to rewrite into
-  2. an encoding in a pattern that represents an arrow after its insertion in
-that pattern.
-- Multi arrow - an expression, either single or multi, of `from => into` where
-all matches of `into` are included on evaluation as an apps.
-- Value - the right side of an arrow, the part rewritten to
-- Commas - special operator that delimits separate keys/arrows in patterns
-- Newline - separates apps, unless before a trailing operator or within a nested
-paren or brace.
-- Quotes - code surrounded with (`). Not evaluated, only treated as data.
-
-#### Verbs
-- Current scope - the set of all parent patterns and the current but only the
-current expression and above
-- Select - the first phase during matching when looking up an expression that
-match keys in the pattern
-- Evaluate - given an expression, match it against the current scope and rewrite
-to the first match's value. Repeats until no match, no value, or the value is
-equal to the current expression.
-
-
----
 
 Thanks to Luukdegram for giving me a starting point with their compiler [Luf](https://github.com/Luukdegram/luf)
