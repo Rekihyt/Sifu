@@ -179,10 +179,13 @@ pub fn parseAppend(
                 continue;
             },
             .RightParen => blk: {
-                var nested = level.current;
-                level = levels.pop();
-                const apps = Ast.ofApps(try nested.toOwnedSlice(allocator));
-                break :blk apps;
+                defer level = levels.pop();
+                const nested = try level.next.toOwnedSlice(allocator);
+                if (level.maybe_op_tail) |tail| {
+                    // Add an apps for the trailing args
+                    tail.* = Ast{ .apps = nested };
+                } else try level.current.appendSlice(allocator, nested);
+                break :blk Ast.ofApps(try level.current.toOwnedSlice(allocator));
             },
             .Comma => {
                 try level.current.append(allocator, Ast.ofLit(token));
@@ -195,11 +198,11 @@ pub fn parseAppend(
         };
         try level.next.append(allocator, next_ast);
     }
-    const next_ast = Ast{ .apps = try level.next.toOwnedSlice(allocator) };
+    const nested = try level.next.toOwnedSlice(allocator);
     if (level.maybe_op_tail) |tail| {
         // Add an apps for the trailing args
-        tail.* = next_ast;
-    } else try level.current.append(allocator, next_ast);
+        tail.* = Ast{ .apps = nested };
+    } else try level.current.appendSlice(allocator, nested);
     // TODO: return optional void and move to caller
     const result = Ast.ofApps(try level.current.toOwnedSlice(allocator));
     print("Levels Len: {}\n", .{levels.items.len});
