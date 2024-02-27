@@ -139,13 +139,13 @@ pub fn parseAppend(
     line: []const Token,
 ) !?Ast {
     // These variables are relative to the current level of nesting being parsed
-    var level = levels.pop();
+    var lvl = levels.pop();
     for (line) |token| {
         const next_ast = switch (token.type) {
             .Name => Ast.ofLit(token),
             .Infix, .Match, .Arrow => {
-                if (level.maybe_op_tail) |tail|
-                    if (level.current.getLastOrNull()) |op| {
+                if (lvl.maybe_op_tail) |tail|
+                    if (lvl.current.getLastOrNull()) |op| {
                         if (@intFromEnum(op) < @intFromEnum(Ast.infix)) {
                             print("Parsing lower precedence\n", .{});
                         }
@@ -155,40 +155,42 @@ pub fn parseAppend(
                         _ = tail;
                     };
                 if (token.type == .Infix)
-                    try level.next.append(allocator, Ast.ofLit(token));
-                try level.next.append(allocator, Ast{ .apps = &.{} });
+                    try lvl.next.append(allocator, Ast.ofLit(token));
+                try lvl.next.append(allocator, Ast{ .apps = &.{} });
                 // Right hand args for previous op with higher precedence
-                print("Rhs Len: {}\nOp: ", .{level.next.items.len});
+                print("Rhs Len: {}\nOp: ", .{lvl.next.items.len});
                 // Add an apps for the trailing args
-                const op = Ast{ .infix = try level.next.toOwnedSlice(allocator) };
+                const op = Ast{ .infix = try lvl.next.toOwnedSlice(allocator) };
                 op.write(stderr) catch unreachable;
                 print("\n", .{});
-                defer level.maybe_op_tail = getLastPtr(op);
-                if (level.maybe_op_tail) |tail| {
+                defer lvl.maybe_op_tail = getLastPtr(op);
+                if (lvl.maybe_op_tail) |tail| {
                     // Add an apps for the trailing args
                     tail.* = op;
                     continue;
-                } else try level.current.append(allocator, op);
+                } else try lvl.current.append(allocator, op);
                 continue;
             },
             .LeftParen => {
                 // Save index of the nested app to write to later
-                try levels.append(allocator, level);
+                try levels.append(allocator, lvl);
                 // Reset vars for new nesting level
-                level = Level{};
+                lvl = Level{};
                 continue;
             },
             .RightParen => blk: {
-                defer level = levels.pop();
-                const nested = try level.next.toOwnedSlice(allocator);
-                if (level.maybe_op_tail) |tail| {
+                defer lvl = levels.pop();
+                if (lvl.maybe_op_tail) |tail| {
                     // Add an apps for the trailing args
-                    tail.* = Ast{ .apps = nested };
-                } else try level.current.appendSlice(allocator, nested);
-                break :blk Ast.ofApps(try level.current.toOwnedSlice(allocator));
+                    tail.* = Ast{ .apps = try lvl.next.toOwnedSlice(allocator) };
+                } else {
+                    defer lvl.next.deinit(allocator);
+                    try lvl.current.appendSlice(allocator, lvl.next.items);
+                }
+                break :blk Ast.ofApps(try lvl.current.toOwnedSlice(allocator));
             },
             .Comma => {
-                try level.current.append(allocator, Ast.ofLit(token));
+                try lvl.current.append(allocator, Ast.ofLit(token));
                 continue;
             },
             .Var => Ast.ofVar(token.lit),
@@ -196,15 +198,17 @@ pub fn parseAppend(
             .Comment, .NewLine => Ast.ofLit(token),
             else => @panic("unimplemented"),
         };
-        try level.next.append(allocator, next_ast);
+        try lvl.next.append(allocator, next_ast);
     }
-    const nested = try level.next.toOwnedSlice(allocator);
-    if (level.maybe_op_tail) |tail| {
+    if (lvl.maybe_op_tail) |tail| {
         // Add an apps for the trailing args
-        tail.* = Ast{ .apps = nested };
-    } else try level.current.appendSlice(allocator, nested);
+        tail.* = Ast{ .apps = try lvl.next.toOwnedSlice(allocator) };
+    } else {
+        defer lvl.next.deinit(allocator);
+        try lvl.current.appendSlice(allocator, lvl.next.items);
+    }
     // TODO: return optional void and move to caller
-    const result = Ast.ofApps(try level.current.toOwnedSlice(allocator));
+    const result = Ast.ofApps(try lvl.current.toOwnedSlice(allocator));
     print("Levels Len: {}\n", .{levels.items.len});
     print("Result: {s}\n", .{@tagName(result)});
     return result;
