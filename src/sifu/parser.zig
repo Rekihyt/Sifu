@@ -125,6 +125,40 @@ const Level = struct {
     // infixes mutate the element at their index as they are parsed.
     maybe_op_tail: ?*Ast = null,
     is_pattern: bool = false,
+
+    /// Write the next terms to this operator, if any. Anything apart from slice
+    /// kinds will be apps. Returns a pointer to the op if one was finalized.
+    fn finalizeOp(
+        lvl: *Level,
+        AstSliceType: meta.Tag(Ast),
+        allocator: Allocator,
+    ) !void {
+        const next_slice = try lvl.next.toOwnedSlice(allocator);
+        var ast = switch (AstSliceType) {
+            .infix => Ast{ .infix = next_slice },
+            .match => Ast{ .match = next_slice },
+            .arrow => Ast{ .arrow = next_slice },
+            else => Ast{ .apps = next_slice },
+        };
+        defer lvl.maybe_op_tail = getOpTail(ast);
+        if (lvl.maybe_op_tail) |tail| {
+            print("Appending Tail: ", .{});
+            ast.write(stderr) catch unreachable;
+            print("\n", .{});
+            tail.* = ast;
+        } else if (ast == .apps) {
+            try lvl.current.appendSlice(allocator, next_slice);
+            allocator.free(next_slice);
+        } else {
+            try lvl.current.append(allocator, ast);
+        }
+    }
+
+    // Finalize the next op, if any, then return current as a slice.
+    fn finalize(lvl: *Level, allocator: Allocator) ![]const Ast {
+        _ = try lvl.finalizeOp(.apps, allocator);
+        return try lvl.current.toOwnedSlice(allocator);
+    }
 };
 
 /// Does not allocate on errors or empty parses. Parses the line of tokens,
@@ -143,16 +177,16 @@ pub fn parseAppend(
     for (line) |token| {
         const next_ast = switch (token.type) {
             .Name => Ast.ofLit(token),
-            .Infix, .Match, .Arrow => {
-                var op = switch (token.type) {
-                    .Infix => Ast{ .infix = &.{} },
-                    .Match => Ast{ .match = &.{} },
-                    .Arrow => Ast{ .arrow = &.{} },
+            inline .Infix, .Match, .Arrow => |tag| {
+                const op_tag: meta.Tag(Ast) = switch (tag) {
+                    .Infix => .infix,
+                    .Arrow => .arrow,
+                    .Match => .match,
                     else => unreachable,
                 };
                 if (lvl.maybe_op_tail) |tail|
                     if (lvl.current.getLastOrNull()) |prev_op| {
-                        if (@intFromEnum(op) < @intFromEnum(prev_op)) {
+                        if (@intFromEnum(op_tag) < @intFromEnum(prev_op)) {
                             print("Parsing lower precedence\n", .{});
                         }
                         print("Op: ", .{});
@@ -160,26 +194,13 @@ pub fn parseAppend(
                         print("\n", .{});
                         _ = tail;
                     };
-                if (op == .infix)
+                if (op_tag == .infix)
                     try lvl.next.append(allocator, Ast.ofLit(token));
                 // Add an apps for the trailing args
                 try lvl.next.append(allocator, Ast{ .apps = &.{} });
                 // Right hand args for previous op with higher precedence
-                print("Rhs Len: {}\nOp: ", .{lvl.next.items.len});
-                (switch (op) {
-                    .infix => |*infix| infix,
-                    .match => |*match| match,
-                    .arrow => |*arrow| arrow,
-                    else => unreachable,
-                }).* = try lvl.next.toOwnedSlice(allocator);
-                op.write(stderr) catch unreachable;
-                print("\n", .{});
-                defer lvl.maybe_op_tail = getLastPtr(op);
-                if (lvl.maybe_op_tail) |tail| {
-                    // Add an apps for the trailing args
-                    tail.* = op;
-                    continue;
-                } else try lvl.current.append(allocator, op);
+                print("Rhs Len: {}\n", .{lvl.next.items.len});
+                try lvl.finalizeOp(op_tag, allocator);
                 continue;
             },
             .LeftParen => {
@@ -191,17 +212,10 @@ pub fn parseAppend(
             },
             .RightParen => blk: {
                 defer lvl = levels.pop();
-                if (lvl.maybe_op_tail) |tail| {
-                    // Add an apps for the trailing args
-                    tail.* = Ast{ .apps = try lvl.next.toOwnedSlice(allocator) };
-                } else {
-                    defer lvl.next.deinit(allocator);
-                    try lvl.current.appendSlice(allocator, lvl.next.items);
-                }
-                break :blk Ast.ofApps(try lvl.current.toOwnedSlice(allocator));
+                break :blk Ast.ofApps(try lvl.finalize(allocator));
             },
             .Comma => {
-                try lvl.current.append(allocator, Ast.ofLit(token));
+                try lvl.next.append(allocator, Ast.ofLit(token));
                 continue;
             },
             .Var => Ast.ofVar(token.lit),
@@ -211,15 +225,8 @@ pub fn parseAppend(
         };
         try lvl.next.append(allocator, next_ast);
     }
-    if (lvl.maybe_op_tail) |tail| {
-        // Add an apps for the trailing args
-        tail.* = Ast{ .apps = try lvl.next.toOwnedSlice(allocator) };
-    } else {
-        defer lvl.next.deinit(allocator);
-        try lvl.current.appendSlice(allocator, lvl.next.items);
-    }
+    const result = Ast.ofApps(try lvl.finalize(allocator));
     // TODO: return optional void and move to caller
-    const result = Ast.ofApps(try lvl.current.toOwnedSlice(allocator));
     print("Levels Len: {}\n", .{levels.items.len});
     print("Result: {s}\n", .{@tagName(result)});
     return result;
@@ -244,10 +251,10 @@ pub fn intoNode(
     };
 }
 
-fn getLastPtr(ast: Ast) *Ast {
+fn getOpTail(ast: Ast) ?*Ast {
     return @constCast(switch (ast) {
-        .apps, .infix, .arrow, .match => |apps| &apps[apps.len - 1],
-        else => @panic("not a list type of Ast"),
+        .infix, .arrow, .match => |apps| &apps[apps.len - 1],
+        else => null,
     });
 }
 

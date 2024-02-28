@@ -330,27 +330,19 @@ pub fn PatternWithContextAndFree(
                         try self.writeIndent(writer, optional_indent);
                         try writer.writeByte(')');
                     },
-                    .match => |match| {
-                        try writer.writeAll(": ");
-                        // These parens are for debugging
-                        try match[match.len - 1].writeSExp(writer, optional_indent);
-                        try Node.ofApps(match[0 .. match.len - 1])
+                    inline .infix, .arrow, .match => |apps, tag| {
+                        try Node.ofApps(apps[0 .. apps.len - 1])
                             .writeIndent(writer, optional_indent);
-                    },
-                    .arrow => |arrow| {
-                        try writer.writeAll("-> ");
-                        // These parens are for debugging
-                        try arrow[arrow.len - 1].writeSExp(writer, optional_indent);
-                        try Node.ofApps(arrow[0 .. arrow.len - 1])
-                            .writeIndent(writer, optional_indent);
-                    },
-                    .infix => |infix| {
-                        try Node.ofApps(infix[0 .. infix.len - 2])
-                            .writeIndent(writer, optional_indent);
-                        try infix[infix.len - 2]
-                            .writeIndent(writer, optional_indent);
-                        try infix[infix.len - 1]
+                        switch (tag) {
+                            .arrow => try writer.writeAll(" -> "),
+                            .match => try writer.writeAll(" : "),
+                            else => {},
+                        }
+                        // These parens are for debugging precedence
+                        // try writer.writeByte('(');
+                        try apps[apps.len - 1]
                             .writeSExp(writer, optional_indent);
+                        // try writer.writeByte(')');
                     },
                     .pattern => |pattern| try pattern.writeIndent(
                         writer,

@@ -87,8 +87,7 @@ pub fn main() !void {
         switch (ast) {
             .arrow => {
                 const result = try repl_pat.insertNode(allocator, ast);
-                _ = result;
-                // try stderr.print("New pat ptr: {*}\n", .{result});
+                try stderr.print("New pat ptr: {*}\n", .{result});
             },
             else => {
                 defer _ = match_gpa.detectLeaks();
