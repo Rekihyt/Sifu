@@ -204,16 +204,21 @@ pub fn PatternWithContextAndFree(
             pub fn hasherUpdate(self: Node, hasher: anytype) void {
                 hasher.update(&mem.toBytes(@intFromEnum(self)));
                 switch (self) {
-                    .apps, .infix => |apps| for (apps) |app|
-                        app.hasherUpdate(hasher),
+                    inline .apps, .infix, .match, .arrow => |apps, tag| {
+                        for (apps) |app|
+                            app.hasherUpdate(hasher);
+                        switch (tag) {
+                            .arrow => hasher.update("->"),
+                            .match => hasher.update(":"),
+                            else => {},
+                        }
+                    },
                     .variable => |v| hasher.update(
                         &mem.toBytes(VarCtx.hash(undefined, v)),
                     ),
                     .key => |k| hasher.update(
                         &mem.toBytes(KeyCtx.hash(undefined, k)),
                     ),
-                    .match => |_| @panic("unimplemented"),
-                    .arrow => |_| @panic("unimplemented"),
                     .pattern => |p| p.hasherUpdate(hasher),
                 }
             }

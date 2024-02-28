@@ -144,23 +144,34 @@ pub fn parseAppend(
         const next_ast = switch (token.type) {
             .Name => Ast.ofLit(token),
             .Infix, .Match, .Arrow => {
+                var op = switch (token.type) {
+                    .Infix => Ast{ .infix = &.{} },
+                    .Match => Ast{ .match = &.{} },
+                    .Arrow => Ast{ .arrow = &.{} },
+                    else => unreachable,
+                };
                 if (lvl.maybe_op_tail) |tail|
-                    if (lvl.current.getLastOrNull()) |op| {
-                        if (@intFromEnum(op) < @intFromEnum(Ast.infix)) {
+                    if (lvl.current.getLastOrNull()) |prev_op| {
+                        if (@intFromEnum(op) < @intFromEnum(prev_op)) {
                             print("Parsing lower precedence\n", .{});
                         }
                         print("Op: ", .{});
-                        op.write(stderr) catch unreachable;
+                        prev_op.write(stderr) catch unreachable;
                         print("\n", .{});
                         _ = tail;
                     };
-                if (token.type == .Infix)
+                if (op == .infix)
                     try lvl.next.append(allocator, Ast.ofLit(token));
+                // Add an apps for the trailing args
                 try lvl.next.append(allocator, Ast{ .apps = &.{} });
                 // Right hand args for previous op with higher precedence
                 print("Rhs Len: {}\nOp: ", .{lvl.next.items.len});
-                // Add an apps for the trailing args
-                const op = Ast{ .infix = try lvl.next.toOwnedSlice(allocator) };
+                (switch (op) {
+                    .infix => |*infix| infix,
+                    .match => |*match| match,
+                    .arrow => |*arrow| arrow,
+                    else => unreachable,
+                }).* = try lvl.next.toOwnedSlice(allocator);
                 op.write(stderr) catch unreachable;
                 print("\n", .{});
                 defer lvl.maybe_op_tail = getLastPtr(op);
