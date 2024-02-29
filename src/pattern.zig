@@ -312,6 +312,13 @@ pub fn PatternWithContextAndFree(
                     ord;
             }
 
+            pub fn getSlice(self: Node) ?[]const Node {
+                return @constCast(switch (self) {
+                    .apps, .infix, .arrow, .match => |slice| slice,
+                    else => null,
+                });
+            }
+
             fn writeSExp(
                 self: Node,
                 writer: anytype,
@@ -394,7 +401,10 @@ pub fn PatternWithContextAndFree(
         /// Maps asts to the next pattern, if there is one. These form the
         /// branches of the trie.
         map: NodeMap = NodeMap{},
-
+        /// This is for encoding/matching nested apps
+        sub_apps: ?*Self = null,
+        /// This is for encoding/matching nested patterns
+        sub_pat: ?*Self = null,
         /// Whether this pattern's value should be matched as a singleton or list
         multi: bool = false,
 
@@ -463,6 +473,10 @@ pub fn PatternWithContextAndFree(
             hasher.update(&mem.toBytes(self.multi));
             if (self.val) |val|
                 hasher.update(&mem.toBytes(val.hash()));
+            if (self.sub_apps) |sub_apps|
+                sub_apps.hasherUpdate(hasher);
+            if (self.sub_pat) |sub_pat|
+                sub_pat.hasherUpdate(hasher);
         }
 
         fn keyEql(k1: Key, k2: Key) bool {
@@ -473,14 +487,6 @@ pub fn PatternWithContextAndFree(
         /// sub-patterns and if their debruijn variables are equal. The patterns
         /// are assumed to be in debruijn form already.
         pub fn eql(self: Self, other: Self) bool {
-            const val_eql = if (self.val) |self_val|
-                if (other.val) |other_val|
-                    self_val.*.eql(other_val.*)
-                else
-                    false
-            else
-                other.val == null;
-            if (!val_eql) return false;
             _ = util.sliceEql(self.map.keys(), other.map.keys(), Node.eql) or
                 return false;
 
@@ -489,6 +495,33 @@ pub fn PatternWithContextAndFree(
                 other.map.values(),
                 Self.eql,
             ) or return false;
+
+            const val_eql = if (self.val) |self_val|
+                if (other.val) |other_val|
+                    self_val.*.eql(other_val.*)
+                else
+                    false
+            else
+                other.val == null;
+            if (!val_eql) return false;
+
+            const sub_apps_eql = if (self.sub_apps) |sub_apps|
+                if (other.sub_apps) |other_sub_apps|
+                    sub_apps.*.eql(other_sub_apps.*)
+                else
+                    false
+            else
+                other.sub_apps == null;
+            if (!sub_apps_eql) return false;
+
+            const sub_pat_eql = if (self.sub_pat) |sub_pat|
+                if (other.sub_pat) |other_sub_pat|
+                    sub_pat.*.eql(other_sub_pat.*)
+                else
+                    false
+            else
+                other.sub_pat == null;
+            if (!sub_pat_eql) return false;
 
             return true;
         }
@@ -742,11 +775,7 @@ pub fn PatternWithContextAndFree(
             apps: []const Node,
             optional_val: ?Node,
         ) Allocator.Error!*Self {
-            return self.insert(
-                allocator,
-                Node.ofApps(@constCast(apps)),
-                optional_val,
-            );
+            return self.insert(allocator, apps, optional_val);
         }
 
         pub fn insertNode(
@@ -755,19 +784,16 @@ pub fn PatternWithContextAndFree(
             node: Node,
         ) Allocator.Error!*Self {
             return switch (node) {
-                .arrow => |arrow| {
-                    _ = arrow;
-                    @panic("unimplemented");
-                },
-                // self.insert(
-                //     allocator,
-                //     arrow.from,
-                //     arrow.into,
-                // ),
-                else => self.insert(allocator, node, null),
+                .arrow => |arrow| self.insertApps(
+                    allocator,
+                    arrow[0 .. arrow.len - 1],
+                    arrow[arrow.len - 1],
+                ),
+                else => self.insert(allocator, node.getSlice() orelse
+                    @panic("Cannot insert non-slice Ast"), null),
             };
         }
-        /// Add a node to the pattern by following `apps`.
+        /// Add a node to the pattern by following `key`.
         /// Allocations:
         /// - The path followed by apps is allocated and copied recursively
         /// - The node, if given, is allocated and copied recursively
@@ -776,7 +802,7 @@ pub fn PatternWithContextAndFree(
         pub fn insert(
             self: *Self,
             allocator: Allocator,
-            key: Node,
+            key: []const Node,
             optional_val: ?Node,
         ) Allocator.Error!*Self {
             var result = try self.getOrPut(allocator, key);
@@ -787,7 +813,6 @@ pub fn PatternWithContextAndFree(
                 print("Deleting old val: {*}\n", .{result.end.val});
                 result.end.val = null;
             }
-
             // Add new value node
             if (optional_val) |val| {
                 const new_val = try allocator.create(Node);
@@ -817,14 +842,15 @@ pub fn PatternWithContextAndFree(
         pub fn getOrPut(
             pattern: *Self,
             allocator: Allocator,
-            query: Node,
+            key: []const Node,
         ) Allocator.Error!GetOrPutResult {
             var current = pattern;
             var found_existing = true;
-            // TODO: loop
-            const put_result = try pattern.map.getOrPut(allocator, query);
-            _ = put_result;
 
+            for (key) |ast| {
+                const put_result = try pattern.map.getOrPut(allocator, ast);
+                if (put_result.found_existing) {} else {}
+            }
             return GetOrPutResult{
                 .end = current,
                 .found_existing = found_existing,

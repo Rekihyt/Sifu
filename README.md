@@ -36,6 +36,7 @@ in Forth)
   - Compiler builds on the core language, using it as a library
     - complilation is creating perfect hashmaps from dynamic ones
 
+
 ## Examples
 ```python
 # Implement some simple types
@@ -119,6 +120,10 @@ Compare (b1 : Bool) (b2 : Bool) -> Case [
 
 ---
 
+## Questions
 
+If the ASTs are hashable, why not use a hashmap instead of a trie of tries?
+
+Hashmaps or tries would work for inserting, but granular matching wouldn't.
 
 Thanks to Luukdegram for giving me a starting point with their compiler [Luf](https://github.com/Luukdegram/luf)
