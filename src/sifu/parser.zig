@@ -83,17 +83,17 @@ pub fn parseAst(
 ) !Ast {
     print("parseAst\n", .{});
     // (ParseError || @TypeOf(lexer).Error || Allocator.Error)
-    // No need to delete asts, they will all be returned or cleaned up
+    // No need to destroy asts, they will all be returned or cleaned up
     var levels = ArrayListUnmanaged(Level){};
     defer levels.deinit(allocator);
     try levels.append(allocator, Level{});
     errdefer { // TODO: add test coverage
         for (levels.items) |*level| {
             for (level.current.items) |*ast|
-                ast.deleteChildren(allocator);
+                ast.deinit(allocator);
             level.current.deinit(allocator);
             for (level.next.items) |*ast|
-                ast.deleteChildren(allocator);
+                ast.deinit(allocator);
             level.next.deinit(allocator);
         }
         levels.deinit(allocator);
@@ -135,7 +135,6 @@ const Level = struct {
     ) !void {
         const next_slice = try lvl.next.toOwnedSlice(allocator);
         var ast = switch (AstSliceType) {
-            .infix => Ast{ .infix = next_slice },
             .match => Ast{ .match = next_slice },
             .arrow => Ast{ .arrow = next_slice },
             else => Ast{ .apps = next_slice },
@@ -165,7 +164,7 @@ const Level = struct {
 /// returning a partial Ast on trailing operators or unfinished nesting. In such
 /// a case, null is returned and the same parser_stack must be reused to finish
 /// parsing. Otherwise, an Ast is returned from an ownded slice of parser_stack.
-// Precedence: long arrow < long match < commas < infix < arrow < match
+// Precedence: semis < long arrow, long match < commas < infix < arrow, match
 // - TODO: [] should be a flat Apps instead of as an infix
 pub fn parseAppend(
     allocator: Allocator,
@@ -179,7 +178,7 @@ pub fn parseAppend(
             .Name => Ast.ofLit(token),
             inline .Infix, .Match, .Arrow => |tag| {
                 const op_tag: meta.Tag(Ast) = switch (tag) {
-                    .Infix => .infix,
+                    .Infix => .apps,
                     .Arrow => .arrow,
                     .Match => .match,
                     else => unreachable,
@@ -194,7 +193,7 @@ pub fn parseAppend(
                         print("\n", .{});
                         _ = tail;
                     };
-                if (op_tag == .infix)
+                if (op_tag == .apps)
                     try lvl.next.append(allocator, Ast.ofLit(token));
                 // Add an apps for the trailing args
                 try lvl.next.append(allocator, Ast{ .apps = &.{} });
@@ -253,7 +252,7 @@ pub fn intoNode(
 
 fn getOpTail(ast: Ast) ?*Ast {
     return @constCast(switch (ast) {
-        .infix, .arrow, .match => |apps| &apps[apps.len - 1],
+        .arrow, .match => |apps| &apps[apps.len - 1],
         else => null,
     });
 }

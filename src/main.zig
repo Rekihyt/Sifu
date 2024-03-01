@@ -57,7 +57,7 @@ pub fn main() !void {
     //    - restart parsing after 2 newlines
     //    - exit on EOF
     var repl_pat = Pat{};
-    defer repl_pat.deleteChildren(allocator);
+    defer repl_pat.deinit(allocator);
     // try stderr.print("Repl Pat Address: {*}", .{&repl_pat});
 
     while (stdin.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
@@ -74,7 +74,7 @@ pub fn main() !void {
         // }
         var ast = try parseAst(parser_allocator, &lexer);
         // defer _ = parser_gpa.detectLeaks();
-        defer ast.deleteChildren(parser_allocator);
+        defer ast.deinit(parser_allocator);
 
         try stderr.writeAll("Parsed: ");
         try ast.write(stderr);
