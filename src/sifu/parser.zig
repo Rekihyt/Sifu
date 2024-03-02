@@ -89,8 +89,6 @@ pub fn parseAst(
     try levels.append(allocator, Level{});
     errdefer { // TODO: add test coverage
         for (levels.items) |*level| {
-            for (level.current.items) |*ast|
-                ast.deinit(allocator);
             level.current.deinit(allocator);
             for (level.next.items) |*ast|
                 ast.deinit(allocator);
@@ -111,8 +109,8 @@ pub fn parseAst(
 /// This encodes the values needed to parse a specific level of nesting. These
 /// fields would be the parameters in a recursive algorithm.
 const Level = struct {
-    // This contains previously parsed, as well as Asts in progress.
-    current: ArrayListUnmanaged(Ast) = ArrayListUnmanaged(Ast){},
+    // This contains the current Ast being parsed.
+    current: Ast = Ast.ofApps(&.{}),
     // This is temporary storage for an op's rhs so that they don't need to be
     // removed from the current list when done
     next: ArrayListUnmanaged(Ast) = ArrayListUnmanaged(Ast){},
@@ -127,36 +125,42 @@ const Level = struct {
     is_pattern: bool = false,
 
     /// Write the next terms to this operator, if any. Anything apart from slice
-    /// kinds will be apps. Returns a pointer to the op if one was finalized.
+    /// kinds (`.Infix`, `.Match` etc.) will be apps. Returns a pointer to the
+    /// op if one was finalized.
     fn finalizeOp(
         lvl: *Level,
-        AstSliceType: meta.Tag(Ast),
+        op_tag: ?Type,
         allocator: Allocator,
     ) !void {
         const next_slice = try lvl.next.toOwnedSlice(allocator);
-        var ast = switch (AstSliceType) {
-            .match => Ast{ .match = next_slice },
-            .arrow => Ast{ .arrow = next_slice },
-            else => Ast{ .apps = next_slice },
-        };
-        defer lvl.maybe_op_tail = getOpTail(ast);
-        if (lvl.maybe_op_tail) |tail| {
-            print("Appending Tail: ", .{});
+        const maybe_op_tail = lvl.maybe_op_tail;
+        // After we set this pointer, next_slice cannot be freed.
+        var ast = if (op_tag) |tag| blk: {
+            const op = switch (tag) {
+                .Match => Ast{ .match = next_slice },
+                .Arrow => Ast{ .arrow = next_slice },
+                .Infix => Ast{ .apps = next_slice },
+                else => panic(
+                    "Invalid op tag: {s}, pass null for non-ops\n",
+                    .{@tagName(tag)},
+                ),
+            };
+            lvl.maybe_op_tail = getOpTail(op);
+            break :blk op;
+        } else Ast{ .apps = next_slice };
+        if (maybe_op_tail) |tail| {
             ast.write(stderr) catch unreachable;
             print("\n", .{});
             tail.* = ast;
-        } else if (ast == .apps) {
-            try lvl.current.appendSlice(allocator, next_slice);
-            allocator.free(next_slice);
         } else {
-            try lvl.current.append(allocator, ast);
+            lvl.current = ast;
         }
     }
 
     // Finalize the next op, if any, then return current as a slice.
-    fn finalize(lvl: *Level, allocator: Allocator) ![]const Ast {
-        _ = try lvl.finalizeOp(.apps, allocator);
-        return try lvl.current.toOwnedSlice(allocator);
+    fn finalize(lvl: *Level, allocator: Allocator) !Ast {
+        _ = try lvl.finalizeOp(null, allocator);
+        return lvl.current;
     }
 };
 
@@ -184,22 +188,20 @@ pub fn parseAppend(
                     else => unreachable,
                 };
                 if (lvl.maybe_op_tail) |tail|
-                    if (lvl.current.getLastOrNull()) |prev_op| {
-                        if (@intFromEnum(op_tag) < @intFromEnum(prev_op)) {
-                            print("Parsing lower precedence\n", .{});
-                        }
+                    if (@intFromEnum(op_tag) < @intFromEnum(lvl.current)) {
+                        print("Parsing lower precedence\n", .{});
                         print("Op: ", .{});
-                        prev_op.write(stderr) catch unreachable;
+                        lvl.current.write(stderr) catch unreachable;
                         print("\n", .{});
                         _ = tail;
                     };
-                if (op_tag == .apps)
+                if (tag == .Infix)
                     try lvl.next.append(allocator, Ast.ofLit(token));
                 // Add an apps for the trailing args
                 try lvl.next.append(allocator, Ast{ .apps = &.{} });
                 // Right hand args for previous op with higher precedence
                 print("Rhs Len: {}\n", .{lvl.next.items.len});
-                try lvl.finalizeOp(op_tag, allocator);
+                try lvl.finalizeOp(tag, allocator);
                 continue;
             },
             .LeftParen => {
@@ -211,7 +213,7 @@ pub fn parseAppend(
             },
             .RightParen => blk: {
                 defer lvl = levels.pop();
-                break :blk Ast.ofApps(try lvl.finalize(allocator));
+                break :blk try lvl.finalize(allocator);
             },
             .Comma => {
                 try lvl.next.append(allocator, Ast.ofLit(token));
@@ -224,7 +226,7 @@ pub fn parseAppend(
         };
         try lvl.next.append(allocator, next_ast);
     }
-    const result = Ast.ofApps(try lvl.finalize(allocator));
+    const result = try lvl.finalize(allocator);
     // TODO: return optional void and move to caller
     print("Levels Len: {}\n", .{levels.items.len});
     print("Result: {s}\n", .{@tagName(result)});
@@ -250,11 +252,12 @@ pub fn intoNode(
     };
 }
 
+// Assumes apps are Infix encoded (they have at least one element).
 fn getOpTail(ast: Ast) ?*Ast {
-    return @constCast(switch (ast) {
-        .arrow, .match => |apps| &apps[apps.len - 1],
+    return switch (ast) {
+        .apps, .arrow, .match => |apps| @constCast(&apps[apps.len - 1]),
         else => null,
-    });
+    };
 }
 
 // This function is the responsibility of the Parser, because it is the dual
