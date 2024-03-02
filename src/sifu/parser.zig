@@ -127,11 +127,11 @@ const Level = struct {
     /// Write the next terms to this operator, if any. Anything apart from slice
     /// kinds (`.Infix`, `.Match` etc.) will be apps. Returns a pointer to the
     /// op if one was finalized.
-    fn finalizeOp(
+    fn finalize(
         lvl: *Level,
         op_tag: ?Type,
         allocator: Allocator,
-    ) !void {
+    ) !Ast {
         const next_slice = try lvl.next.toOwnedSlice(allocator);
         const maybe_op_tail = lvl.maybe_op_tail;
         // After we set this pointer, next_slice cannot be freed.
@@ -155,11 +155,6 @@ const Level = struct {
         } else {
             lvl.current = ast;
         }
-    }
-
-    // Finalize the next op, if any, then return current as a slice.
-    fn finalize(lvl: *Level, allocator: Allocator) !Ast {
-        _ = try lvl.finalizeOp(null, allocator);
         return lvl.current;
     }
 };
@@ -201,7 +196,7 @@ pub fn parseAppend(
                 try lvl.next.append(allocator, Ast{ .apps = &.{} });
                 // Right hand args for previous op with higher precedence
                 print("Rhs Len: {}\n", .{lvl.next.items.len});
-                try lvl.finalizeOp(tag, allocator);
+                _ = try lvl.finalize(tag, allocator);
                 continue;
             },
             .LeftParen => {
@@ -213,7 +208,7 @@ pub fn parseAppend(
             },
             .RightParen => blk: {
                 defer lvl = levels.pop();
-                break :blk try lvl.finalize(allocator);
+                break :blk try lvl.finalize(null, allocator);
             },
             .Comma => {
                 try lvl.next.append(allocator, Ast.ofLit(token));
@@ -226,7 +221,7 @@ pub fn parseAppend(
         };
         try lvl.next.append(allocator, next_ast);
     }
-    const result = try lvl.finalize(allocator);
+    const result = try lvl.finalize(null, allocator);
     // TODO: return optional void and move to caller
     print("Levels Len: {}\n", .{levels.items.len});
     print("Result: {s}\n", .{@tagName(result)});
