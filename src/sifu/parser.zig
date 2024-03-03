@@ -140,7 +140,7 @@ const Level = struct {
                 .Match => Ast{ .match = next_slice },
                 .Arrow => Ast{ .arrow = next_slice },
                 .Infix => Ast{ .apps = next_slice },
-                .Comma => Ast{ .list = next_slice },
+                .Comma => Ast{ .comma = next_slice },
                 else => panic(
                     "Invalid op tag: {s}, pass null for non-ops\n",
                     .{@tagName(tag)},
@@ -181,7 +181,7 @@ pub fn parseAppend(
                     .Infix => .apps,
                     .Arrow => .arrow,
                     .Match => .match,
-                    .Comma => .list,
+                    .Comma => .comma,
                     else => unreachable,
                 };
                 if (lvl.maybe_op_tail) |tail|
@@ -248,7 +248,7 @@ pub fn intoNode(
 // Assumes apps are Infix encoded (they have at least one element).
 fn getOpTail(ast: Ast) ?*Ast {
     return switch (ast) {
-        .apps, .arrow, .match, .list => |apps| @constCast(&apps[apps.len - 1]),
+        .apps, .arrow, .match, .comma => |apps| @constCast(&apps[apps.len - 1]),
         else => null,
     };
 }

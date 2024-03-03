@@ -44,7 +44,6 @@ pub fn main() !void {
     ){};
     defer _ = match_gpa.deinit();
     const match_allocator = match_gpa.allocator();
-    _ = match_allocator;
 
     const stdin = io.getStdIn().reader();
     const stdout = io.getStdOut().writer();
@@ -70,7 +69,7 @@ pub fn main() !void {
         var lexer = Lexer(@TypeOf(fbs_written_reader))
             .init(token_allocator, fbs_written_reader);
         // for (fbs.getWritten()) |char| {
-        // escape (from pressing alt+enter in most terminals)
+        // escape (from pressing alt+enter in most shells)
         // if (char == 0x1b) {}
         // }
         var ast = try parseAst(parser_allocator, &lexer);
@@ -85,29 +84,28 @@ pub fn main() !void {
 
         // TODO: insert with shell command like @insert instead of special
         // casing a top level insert
-        // if (ast.apps.len == 1 and ast.apps[0] == .arrow) {
-        //     const arrow = ast.apps[0];
-        //     const result = try repl_pat.insertNode(allocator, arrow);
-        //     try stderr.print("New pat ptr: {*}\n", .{result});
-        // } else {
-        //     defer _ = match_gpa.detectLeaks();
-        //     var var_map = Pat.VarMap{};
-        //     defer var_map.deinit(match_allocator);
-        //     const matches = try repl_pat.flattenPattern(
-        //         match_allocator,
-        //         &var_map,
-        //         ast,
-        //     );
-        //     defer match_allocator.free(matches);
-        //     // If not inserting, then try to match the expression
-        //     if (matches.len > 0) {
-        //         for (matches) |matched| {
-        //             print("Match: ", .{});
-        //             try matched.end.write(buff_stdout);
-        //             _ = try buff_writer.write("\n");
-        //         }
-        //     } else print("No match\n", .{});
-        // }
+        if (ast == .arrow) {
+            const result = try repl_pat.insert(allocator, ast);
+            try stderr.print("New pat ptr: {*}\n", .{result});
+        } else {
+            defer _ = match_gpa.detectLeaks();
+            var var_map = Pat.VarMap{};
+            defer var_map.deinit(match_allocator);
+            const matches = try repl_pat.flattenPattern(
+                match_allocator,
+                &var_map,
+                ast,
+            );
+            defer match_allocator.free(matches);
+            // If not inserting, then try to match the expression
+            if (matches.len > 0) {
+                for (matches) |matched| {
+                    print("Match: ", .{});
+                    try matched.end.write(buff_stdout);
+                    _ = try buff_writer.write("\n");
+                }
+            } else print("No match\n", .{});
+        }
         try buff_writer.flush();
         fbs.reset();
     } else |e| switch (e) {

@@ -174,7 +174,7 @@ pub fn PatternWithContextAndFree(
             /// A single element in comma separated list, with the comma elided.
             /// Commas are operators that are recognized as separators for
             /// patterns.
-            list: []const Node,
+            comma: []const Node,
             // A pointer here saves space depending on the size of `Key`
             /// An expression in braces.
             pattern: Self,
@@ -186,7 +186,7 @@ pub fn PatternWithContextAndFree(
                 return switch (self) {
                     .key, .variable => self, // TODO: comptime copy if pointer
                     .pattern => |p| Node.ofPattern(try p.copy(allocator)),
-                    inline .apps, .arrow, .match, .list => |apps, tag| blk: {
+                    inline .apps, .arrow, .match, .comma => |apps, tag| blk: {
                         var apps_copy = try allocator.alloc(Node, apps.len);
                         for (apps, apps_copy) |app, *app_copy|
                             app_copy.* = try app.copy(allocator);
@@ -223,7 +223,7 @@ pub fn PatternWithContextAndFree(
                     .variable => |variable| if (varFreeFn) |free|
                         free(allocator, variable),
                     .pattern => |*p| p.deinit(allocator),
-                    .apps, .match, .arrow, .list => |apps| destroySlice(
+                    .apps, .match, .arrow, .comma => |apps| destroySlice(
                         apps,
                         allocator,
                     ),
@@ -241,7 +241,7 @@ pub fn PatternWithContextAndFree(
                         switch (tag) {
                             .arrow => hasher.update("->"),
                             .match => hasher.update(":"),
-                            .list => hasher.update(","),
+                            .comma => hasher.update(","),
                             else => {},
                         }
                     },
@@ -266,8 +266,8 @@ pub fn PatternWithContextAndFree(
                         other.variable,
                         undefined,
                     ),
-                    inline .apps, .infix, .arrow, .match, .list => |apps, tag| blk: {
-                        const other_slice = @field(other, tag);
+                    inline .apps, .arrow, .match, .comma => |apps, tag| blk: {
+                        const other_slice = @field(other, @tagName(tag));
                         break :blk apps.len == other_slice.len and
                             for (apps, other_slice) |app, other_app|
                         {
@@ -383,7 +383,7 @@ pub fn PatternWithContextAndFree(
             ) @TypeOf(writer).Error!void {
                 switch (self) {
                     // Ignore top level parens
-                    inline .apps, .arrow, .match, .list => |apps, tag| {
+                    inline .apps, .arrow, .match, .comma => |apps, tag| {
                         if (apps.len == 0)
                             return;
                         try apps[0].writeSExp(writer, optional_indent);
@@ -397,7 +397,7 @@ pub fn PatternWithContextAndFree(
                         switch (tag) {
                             .arrow => try writer.writeAll(" ->"),
                             .match => try writer.writeAll(" :"),
-                            .list => try writer.writeAll(","),
+                            .comma => try writer.writeAll(","),
                             else => {},
                         }
                         try writer.writeByte(' ');
@@ -413,13 +413,13 @@ pub fn PatternWithContextAndFree(
         /// instead of by building up a tree of their possible values)
         pub const ExactPrefixResult = struct {
             len: usize,
-            end: Self,
+            end: *Self,
         };
         /// The longest prefix matching a pattern, where vars match all possible
         /// expressions.
         pub const PrefixResult = struct {
             len: usize,
-            end: Self,
+            end: *Self,
         };
         pub const VarNext = struct {
             variable: Var,
@@ -592,13 +592,13 @@ pub fn PatternWithContextAndFree(
 
         /// Like matchUniquePrefix but matches only a single node exactly (the
         /// select part of the match is skipped).
-        pub fn matchUniqueTerm(pattern: *const Self, term: Node) ?Self {
+        pub fn matchUniqueTerm(pattern: *Self, term: Node) ?*Self {
             return switch (term) {
-                .key => |key| pattern.map.get(key),
+                .key => |key| pattern.map.getPtr(key),
 
                 // vars with different names are "equal"
                 .variable => if (pattern.option_var_next) |var_next|
-                    var_next.pattern
+                    &var_next.pattern
                 else
                     null,
 
@@ -609,7 +609,7 @@ pub fn PatternWithContextAndFree(
                     // always a pattern even though it is wrapped in a Node
                     if (pattern.sub_apps) |sub_apps|
                         if (sub_apps.matchUnique(apps)) |next|
-                            break :blk next.pattern;
+                            break :blk &next.pattern;
 
                     break :blk null;
                 },
@@ -624,7 +624,7 @@ pub fn PatternWithContextAndFree(
 
                 },
                 .arrow => |_| @panic("unimplemented"),
-
+                .comma => |_| @panic("unimplemented, loop over list and match each app separately"),
                 .pattern => |pattern_term| blk: {
                     _ = pattern_term;
                     break :blk if (pattern.sub_pat) |sub_pat| {
@@ -646,7 +646,7 @@ pub fn PatternWithContextAndFree(
         /// Although `pat` isn't modified, the val (if any) returned from it
         /// is modifiable by the caller
         pub fn matchUniquePrefix(
-            pattern: Self,
+            pattern: *Self,
             apps: []const Node,
         ) ExactPrefixResult {
             var current = pattern;
@@ -678,7 +678,7 @@ pub fn PatternWithContextAndFree(
         /// the leaves.
         // TODO: implement correctly
         pub fn flattenPattern(
-            pattern: Self,
+            pattern: *Self,
             allocator: Allocator,
             var_map: *VarMap,
             node: Node,
@@ -727,7 +727,7 @@ pub fn PatternWithContextAndFree(
                                         continue;
                                 } else result.value_ptr.* = app;
 
-                                break :blk var_next.pattern;
+                                break :blk &var_next.pattern;
                             }
                             break i;
                         };
@@ -789,7 +789,7 @@ pub fn PatternWithContextAndFree(
 
         /// Same as `matchRef` but returns a copy of the value.
         // pub fn match(
-        //     pattern: *const Self,
+        //     pattern: *Self,
         //     allocator: Allocator,
         //     into: ArrayListUnmanaged(Node),
         // ) !?Node {
@@ -854,16 +854,7 @@ pub fn PatternWithContextAndFree(
             return self.insertApps(allocator, apps.items, optional_val);
         }
 
-        pub fn insertApps(
-            self: *Self,
-            allocator: Allocator,
-            apps: []const Node,
-            optional_val: ?Node,
-        ) Allocator.Error!*Self {
-            return self.insert(allocator, apps, optional_val);
-        }
-
-        pub fn insertNode(
+        pub fn insert(
             self: *Self,
             allocator: Allocator,
             node: Node,
@@ -874,17 +865,20 @@ pub fn PatternWithContextAndFree(
                     arrow[0 .. arrow.len - 1],
                     arrow[arrow.len - 1],
                 ),
-                else => self.insert(allocator, node) orelse
-                    @panic("Cannot insert non-slice Ast"),
+                .match => @panic("unimplemented"),
+                .comma => @panic("unimplemented, insert each element in list"),
+                .apps => |apps| self.insertApps(allocator, apps, null),
+                else => @panic("Cannot insert non-slice Ast"),
             };
         }
+
         /// Add a node to the pattern by following `key`.
         /// Allocations:
         /// - The path followed by apps is allocated and copied recursively
         /// - The node, if given, is allocated and copied recursively
         /// Returns a pointer to the pattern directly containing `optional_val`.
         // TODO: decide if this should just take one Node arg
-        pub fn insert(
+        pub fn insertApps(
             self: *Self,
             allocator: Allocator,
             key: []const Node,
@@ -900,10 +894,8 @@ pub fn PatternWithContextAndFree(
             }
             // Add new value node
             if (optional_val) |val| {
-                const new_val = try allocator.create(Node);
                 // TODO: check found existing
-                new_val.* = try val.copy(allocator);
-                result.value_ptr.val = new_val;
+                result.value_ptr.val = try val.clone(allocator);
             }
             return result.value_ptr;
         }
@@ -922,7 +914,7 @@ pub fn PatternWithContextAndFree(
             keys: []const Node,
         ) Allocator.Error!GetOrPutResult {
             var prefix = pattern.matchUniquePrefix(keys);
-            var current = &prefix.end;
+            var current = prefix.end;
             var found_existing = true;
             // Create the rest of the branches
             for (keys[prefix.len..]) |app| switch (app) {
@@ -969,6 +961,7 @@ pub fn PatternWithContextAndFree(
                 },
                 .match => @panic("unimplemented"),
                 .arrow => @panic("unimplemented"),
+                .comma => @panic("unimplemented"),
                 .pattern => |pat_term| {
                     _ = pat_term;
                     var pat = try util.getOrInit(.sub_pat, current, allocator);
@@ -982,7 +975,7 @@ pub fn PatternWithContextAndFree(
             };
             return GetOrPutResult{
                 // Return the point where we started adding new nodes
-                .key_ptr = &prefix.end,
+                .key_ptr = prefix.end,
                 .value_ptr = current,
                 .found_existing = found_existing,
                 .index = 0, // TODO
@@ -1021,7 +1014,7 @@ pub fn PatternWithContextAndFree(
         /// Returns a new pattern that only contains branches that matched `apps`.
         // TODO: fix if function is even needed
         pub fn prunePattern(
-            pattern: *const Self,
+            pattern: *Self,
             var_map: *VarMap,
             allocator: Allocator,
             apps: ArrayListUnmanaged(Node),
