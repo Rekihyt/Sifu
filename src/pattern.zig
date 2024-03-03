@@ -171,7 +171,11 @@ pub fn PatternWithContextAndFree(
             // multi_arrow: []const Node,
             // long_multi_match: []const Node,
             // long_multi_arrow: []const Node,
-            // The pointer here saves space depending on the size of `Key`
+            /// A single element in comma separated list, with the comma elided.
+            /// Commas are operators that are recognized as separators for
+            /// patterns.
+            list: []const Node,
+            // A pointer here saves space depending on the size of `Key`
             /// An expression in braces.
             pattern: Self,
 
@@ -182,7 +186,7 @@ pub fn PatternWithContextAndFree(
                 return switch (self) {
                     .key, .variable => self, // TODO: comptime copy if pointer
                     .pattern => |p| Node.ofPattern(try p.copy(allocator)),
-                    inline .apps, .arrow, .match => |apps, tag| blk: {
+                    inline .apps, .arrow, .match, .list => |apps, tag| blk: {
                         var apps_copy = try allocator.alloc(Node, apps.len);
                         for (apps, apps_copy) |app, *app_copy|
                             app_copy.* = try app.copy(allocator);
@@ -203,13 +207,13 @@ pub fn PatternWithContextAndFree(
                 allocator.destroy(self);
             }
 
-            pub fn destroyApps(
-                apps: []const Node,
+            pub fn destroySlice(
+                slice: []const Node,
                 allocator: Allocator,
             ) void {
-                for (apps) |*app|
+                for (slice) |*app|
                     @constCast(app).deinit(allocator);
-                allocator.free(apps);
+                allocator.free(slice);
             }
 
             pub fn deinit(self: *Node, allocator: Allocator) void {
@@ -219,7 +223,7 @@ pub fn PatternWithContextAndFree(
                     .variable => |variable| if (varFreeFn) |free|
                         free(allocator, variable),
                     .pattern => |*p| p.deinit(allocator),
-                    .apps, .match, .arrow => |apps| destroyApps(
+                    .apps, .match, .arrow, .list => |apps| destroySlice(
                         apps,
                         allocator,
                     ),
@@ -237,6 +241,7 @@ pub fn PatternWithContextAndFree(
                         switch (tag) {
                             .arrow => hasher.update("->"),
                             .match => hasher.update(":"),
+                            .list => hasher.update(","),
                             else => {},
                         }
                     },
@@ -261,18 +266,18 @@ pub fn PatternWithContextAndFree(
                         other.variable,
                         undefined,
                     ),
-                    .apps => |apps| apps.len == other.apps.len and
-                        for (apps, other.apps) |app, other_app|
-                    {
-                        if (!app.eql(other_app))
-                            break false;
-                    } else true,
-                    .match => |_| @panic("unimplemented"),
-                    .arrow => |_| @panic("unimplemented"),
+                    inline .apps, .infix, .arrow, .match, .list => |apps, tag| blk: {
+                        const other_slice = @field(other, tag);
+                        break :blk apps.len == other_slice.len and
+                            for (apps, other_slice) |app, other_app|
+                        {
+                            if (!app.eql(other_app))
+                                break false;
+                        } else true;
+                    },
                     .pattern => |p| p.eql(other.pattern),
                 };
             }
-
             pub fn ofLit(key: Key) Node {
                 return .{ .key = key };
             }
@@ -336,13 +341,6 @@ pub fn PatternWithContextAndFree(
                     ord;
             }
 
-            pub fn getSlice(self: Node) ?[]const Node {
-                return @constCast(switch (self) {
-                    .apps, .arrow, .match => |slice| slice,
-                    else => null,
-                });
-            }
-
             pub fn writeSExp(
                 self: Node,
                 writer: anytype,
@@ -359,29 +357,15 @@ pub fn PatternWithContextAndFree(
                         variable,
                         writer,
                     ),
-                    .apps => {
-                        try writer.writeByte('(');
-                        try self.writeIndent(writer, optional_indent);
-                        try writer.writeByte(')');
-                    },
-                    inline .arrow, .match => |apps, tag| {
-                        try Node.ofApps(apps[0 .. apps.len - 1])
-                            .writeIndent(writer, optional_indent);
-                        switch (tag) {
-                            .arrow => try writer.writeAll(" -> "),
-                            .match => try writer.writeAll(" : "),
-                            else => {},
-                        }
-                        // These parens are for debugging precedence
-                        // try writer.writeByte('(');
-                        try apps[apps.len - 1]
-                            .writeSExp(writer, optional_indent);
-                        // try writer.writeByte(')');
-                    },
                     .pattern => |pattern| try pattern.writeIndent(
                         writer,
                         optional_indent,
                     ),
+                    else => {
+                        try writer.writeByte('(');
+                        try self.writeIndent(writer, optional_indent);
+                        try writer.writeByte(')');
+                    },
                 }
             }
 
@@ -399,16 +383,28 @@ pub fn PatternWithContextAndFree(
             ) @TypeOf(writer).Error!void {
                 switch (self) {
                     // Ignore top level parens
-                    inline .apps, .arrow, .match => |apps| {
-                        for (apps) |app| {
-                            try app.writeSExp(writer, optional_indent);
+                    inline .apps, .arrow, .match, .list => |apps, tag| {
+                        if (apps.len == 0)
+                            return;
+                        try apps[0].writeSExp(writer, optional_indent);
+                        if (apps.len == 1) {
+                            return;
+                        } else for (apps[1 .. apps.len - 1]) |app| {
                             try writer.writeByte(' ');
+                            try app.writeSExp(writer, optional_indent);
                         }
-                    },
-                    else => {
-                        try self.writeSExp(writer, optional_indent);
+
+                        switch (tag) {
+                            .arrow => try writer.writeAll(" ->"),
+                            .match => try writer.writeAll(" :"),
+                            .list => try writer.writeAll(","),
+                            else => {},
+                        }
                         try writer.writeByte(' ');
+                        try apps[apps.len - 1]
+                            .writeSExp(writer, optional_indent);
                     },
+                    else => try self.writeSExp(writer, optional_indent),
                 }
             }
         };
@@ -878,8 +874,8 @@ pub fn PatternWithContextAndFree(
                     arrow[0 .. arrow.len - 1],
                     arrow[arrow.len - 1],
                 ),
-                else => self.insert(allocator, node.getSlice() orelse
-                    @panic("Cannot insert non-slice Ast"), null),
+                else => self.insert(allocator, node) orelse
+                    @panic("Cannot insert non-slice Ast"),
             };
         }
         /// Add a node to the pattern by following `key`.
