@@ -105,6 +105,11 @@ pub fn main() !void {
                     _ = try buff_writer.write("\n");
                 }
             } else print("No match\n", .{});
+            // const evaluation = try repl_pat.evaluate(
+            //     match_allocator,
+            //     ast,
+            // );
+            // defer match_allocator.free(evaluation);
         }
         try buff_writer.flush();
         fbs.reset();

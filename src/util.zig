@@ -8,6 +8,13 @@ const Wyhash = std.hash.Wyhash;
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
+/// Remove the tag from a union type.
+pub fn toUntagged(comptime TaggedUnion: type) type {
+    var info = @typeInfo(TaggedUnion);
+    info.Union.tag_type = null;
+    return @Type(info);
+}
+
 /// Shorthand for printing to stderr or null writer and asserting no errors.
 pub fn print(comptime fmt: []const u8, args: anytype) void {
     const stderr = if (@import("build_options").verbose_tests)
