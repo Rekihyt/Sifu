@@ -13,6 +13,7 @@ const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const print = util.print;
 const first = util.first;
 const last = util.last;
+const panic = std.debug.panic;
 
 pub fn AutoPattern(
     comptime Key: type,
@@ -93,54 +94,39 @@ pub fn PatternWithContextAndFree(
 ) type {
     return struct {
         pub const Self = @This();
-
-        pub const KeyMap = std.ArrayHashMapUnmanaged(
-            Key,
-            Self,
-            KeyCtx,
-            true,
-        );
         pub const NodeMap = std.ArrayHashMapUnmanaged(
             Node, // The tree
             *Self, // The next pattern in the trie for this key's tree
             util.IntoArrayContext(Node),
             true,
         );
+        /// This is a pointer to the pattern at the end of some path of nodes,
+        /// and an index to the start of the path.
+        const GetOrPutResult = struct {
+            // the value in the node map (the value is a pointer, this isn't a
+            // pointer to memory managed by the node map)
+            pattern_ptr: *Self,
+            index: usize, // the index in the top level node map
+            found_existing: bool,
+        };
+        /// Used to store the children, which are the next patterns pointed to
+        /// by literal keys.
+        pub const PatternList = std.ArrayListUnmanaged(Self);
+        /// This is used as a kind of temporary storage for matching
         pub const VarMap = std.ArrayHashMapUnmanaged(
             Var,
             Node,
             VarCtx,
             true,
         );
-        const GetOrPutResult = struct {
-            key_ptr: *Node,
-            value_ptr: *Self,
-            found_existing: bool,
-            index: usize,
-        };
 
         /// Maps terms to the next pattern, if there is one. These form
         /// the branches of the trie for a level of nesting. All vars hash to
-        /// the same thing in this map.
-        // map: NodeMap = NodeMap{},
-        /// Stores keys.
-        key_map: KeyMap = KeyMap{},
-        /// A Var matches and stores a locally-unique key. During rewriting,
-        /// whenever the key is encountered again, it is rewritten to this
-        /// pattern's val. A Var pattern matches anything, including nested
-        /// patterns. It only makes sense to match anything after trying to
-        /// match something specific, so Vars always successfully match (if
-        /// there is a Var) after a Key or Subpat match fails.
-        option_var_next: ?*VarNext = null,
-        /// This is for storing nested apps. Each layer of pointer redirection
-        /// stores a level of app nesting (parens). Subapps will still be stored
-        /// as keys in the NodeMap, but they will all point here.
-        sub_apps: ?*Self = null,
-        /// This is for encoding/matching nested patterns. Subpats will still be
-        /// stored as keys in the NodeMap, but they will all point here.
-        sub_pat: ?*Self = null,
-        /// Whether this pattern's value should be matched as a singleton or list
-        multi: bool = false,
+        /// the same thing in this map. This map references the rest of the
+        /// fields in this struct (except values) which are responsible for
+        /// storing things by value. Nested apps and patterns are encoded by
+        /// a layer of pointer indirection.
+        map: NodeMap = NodeMap{},
         /// A null val represents an undefined pattern, for example in `Foo
         /// Bar -> 123`, the val at `Foo` would be null.
         val: ?*Node = null, // TODO: check pointer still necessary
@@ -157,9 +143,16 @@ pub fn PatternWithContextAndFree(
         /// (match, arrow or comma) is parsed into an app.
         /// These are ordered in their precedence, which is used during parsing.
         pub const Node = union(enum) {
-            /// An upper case term.
+            /// A unique constant, literal values. Uniqueness when in a pattern
+            /// arises from NodeMap referencing the same value multiple times
+            /// (based on Key.eql).
             key: Key,
-            /// A lower case term.
+            /// A Var matches and stores a locally-unique key. During rewriting,
+            /// whenever the key is encountered again, it is rewritten to this
+            /// pattern's val. A Var pattern matches anything, including nested
+            /// patterns. It only makes sense to match anything after trying to
+            /// match something specific, so Vars always successfully match (if
+            /// there is a Var) after a Key or Subpat match fails.
             variable: Var,
             /// Spaces separated juxtaposition, or commas/parens for nested apps.
             /// Infix operators add their rhs as a nested apps after themselves.
@@ -170,18 +163,14 @@ pub fn PatternWithContextAndFree(
             /// the left form their own subapps, stored here, but the `:` token
             /// is elided.
             match: []const Node,
+            /// A postfix encoded arrow expression denoting a rewrite, i.e. `A B
+            /// C -> 123`.
+            arrow: []const Node,
             /// "long" versions of ops have same semantics, but are tracked to
             /// facilitate parsing/printing. They may be removed in the future,
             /// as parsing isn't a concern of this abstract data structure.
             // long_match: []const Node,
-            /// A postfix encoded arrow expression denoting a rewrite, i.e. `A B
-            /// C -> 123`.
-            arrow: []const Node,
             // long_arrow: []const Node,
-            // multi_match: []const Node,
-            // multi_arrow: []const Node,
-            // long_multi_match: []const Node,
-            // long_multi_arrow: []const Node,
             /// A single element in comma separated list, with the comma elided.
             /// Commas are operators that are recognized as separators for
             /// patterns.
@@ -456,13 +445,13 @@ pub fn PatternWithContextAndFree(
             }
         };
 
-        pub fn ofVal(
+        pub fn ofKey(
             allocator: Allocator,
-            optional_val: ?Key,
+            optional_key: ?Key,
         ) Allocator.Error!Self {
             return Self{
-                .val = if (optional_val) |val|
-                    try Node.createKey(allocator, val)
+                .val = if (optional_key) |key|
+                    try Node.createKey(allocator, key)
                 else
                     null,
             };
@@ -471,25 +460,14 @@ pub fn PatternWithContextAndFree(
         /// Deep copy a pattern by value.
         pub fn copy(self: Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self{};
-            var map_iter = self.key_map.iterator();
+            var map_iter = self.map.iterator();
             while (map_iter.next()) |entry|
-                try result.key_map.putNoClobber(
+                try result.map.putNoClobber(
                     allocator,
-                    // TODO: test if this is right and doesn't need copying too
+                    // TODO: check if this is right and doesn't need copying too
                     entry.key_ptr.*,
-                    @panic("unimplemented"),
-                    // try entry.value_ptr.clone(allocator),
+                    try entry.value_ptr.*.clone(allocator),
                 );
-
-            if (self.option_var_next) |var_next|
-                result.option_var_next = try var_next.clone(allocator);
-
-            if (self.sub_apps) |sub_apps|
-                result.sub_apps.? = try sub_apps.clone(allocator);
-
-            if (self.sub_pat) |sub_pat|
-                result.sub_pat.? = try sub_pat.clone(allocator);
-
             if (self.val) |val|
                 result.val.? = try val.clone(allocator);
 
@@ -513,17 +491,10 @@ pub fn PatternWithContextAndFree(
 
         /// The opposite of `copy`.
         pub fn deinit(self: *Self, allocator: Allocator) void {
-            defer self.key_map.deinit(allocator);
-            for (self.key_map.values()) |*pattern|
-                pattern.deinit(allocator);
-            for (self.key_map.values()) |*pattern|
-                pattern.deinit(allocator);
-            if (self.option_var_next) |var_next|
-                var_next.destroy(allocator);
-            if (self.sub_apps) |sub_apps|
-                sub_apps.destroy(allocator);
-            if (self.sub_pat) |sub_pat|
-                sub_pat.destroy(allocator);
+            defer self.map.deinit(allocator);
+            for (self.map.values()) |pattern_ptr|
+                pattern_ptr.deinit(allocator);
+
             if (self.val) |val|
                 // Value nodes are also allocated recursively
                 val.destroy(allocator);
@@ -536,15 +507,11 @@ pub fn PatternWithContextAndFree(
         }
 
         pub fn hasherUpdate(self: Self, hasher: anytype) void {
-            for (self.key_map.keys()) |node|
-                node.hasherUpdate(hasher);
-            for (self.key_map.values()) |p|
-                p.hasherUpdate(hasher);
-            if (self.sub_apps) |sub_apps|
-                sub_apps.hasherUpdate(hasher);
-            if (self.sub_pat) |sub_pat|
-                sub_pat.hasherUpdate(hasher);
-            hasher.update(&mem.toBytes(self.multi));
+            var map_iter = self.map.iterator();
+            while (map_iter.next()) |entry| {
+                entry.key_ptr.*.hasherUpdate(hasher);
+                entry.value_ptr.*.hasherUpdate(hasher);
+            }
             if (self.val) |val|
                 hasher.update(&mem.toBytes(val.hash()));
         }
@@ -557,76 +524,66 @@ pub fn PatternWithContextAndFree(
         /// sub-patterns and if their debruijn variables are equal. The patterns
         /// are assumed to be in debruijn form already.
         pub fn eql(self: Self, other: Self) bool {
-            // zig fmt: off
-            return util.sliceEql(self.key_map.keys(), other.key_map.keys(), Key.eql)
-            and util.sliceEql(self.key_map.values(), other.key_map.values(), Self.eql)
-            and if (self.val) |self_val| if (other.val) |other_val|
-                    self_val.*.eql(other_val.*)
-                else
-                    false
+            var map_iter = self.map.iterator();
+            var other_iter = other.map.iterator();
+            while (map_iter.next()) |entry| {
+                const other_entry = other_iter.next() orelse
+                    return false;
+                if (!(entry.key_ptr.*.eql(other_entry.key_ptr.*) and
+                    entry.value_ptr == other_entry.value_ptr))
+                    return false;
+            }
+            return if (self.val) |self_val| if (other.val) |other_val|
+                self_val.*.eql(other_val.*)
             else
-                other.val == null
-            and if (self.sub_apps) |sub_apps|
-                if (other.sub_apps) |other_sub_apps|
-                    sub_apps.eql(other_sub_apps.*)
-                else
-                    false
-            else
-                other.sub_apps == null
-            and if (self.sub_pat) |sub_pat| if (other.sub_pat) |other_sub_pat|
-                    sub_pat.eql(other_sub_pat.*)
-                else
-                    false
-            else
-                other.sub_pat == null;
-            // zig fmt: on
+                false else other.val == null;
         }
 
         /// Like getPrefix but matches only a single node exactly (the
         /// select part of the match is skipped).
-        pub fn getNext(pattern: *Self, term: Node) ?*Self {
-            return switch (term) {
-                .key => |key| pattern.key_map.getPtr(key),
+        // pub fn getNext(pattern: *Self, term: Node) ?*Self {
+        //     return switch (term) {
+        //         .key => |key| pattern.map.getPtr(key),
 
-                // vars with different names are "equal"
-                .variable => if (pattern.option_var_next) |var_next|
-                    &var_next.pattern
-                else
-                    null,
+        //         // vars with different names are "equal"
+        //         .variable => if (pattern.option_var_next) |var_next|
+        //             &var_next.pattern
+        //         else
+        //             null,
 
-                .apps => |apps| blk: {
-                    // Check that the entire sub_apps matched sub_apps
-                    // If there isn't a node for another pattern, this match
-                    // fails. Match sub_apps, move to its value, which is also
-                    // always a pattern even though it is wrapped in a Node
-                    if (pattern.sub_apps) |sub_apps|
-                        if (sub_apps.matchUnique(apps)) |next|
-                            break :blk &next.pattern;
+        //         .apps => |apps| blk: {
+        //             // Check that the entire sub_apps matched sub_apps
+        //             // If there isn't a node for another pattern, this match
+        //             // fails. Match sub_apps, move to its value, which is also
+        //             // always a pattern even though it is wrapped in a Node
+        //             if (pattern.sub_apps) |sub_apps|
+        //                 if (sub_apps.matchUnique(apps)) |next|
+        //                     break :blk &next.pattern;
 
-                    break :blk null;
-                },
-                .match => |match| {
-                    _ = match;
-                    // Do a submatch here
-                    @panic("unimplemented");
-                    // Equal references will always have equal values here
-                    // if (pat_match.pat_ptr != match.pat_ptr)
-                    //     break :blk null;
-                    // if (pat_match.query.eql(match.query))
+        //             break :blk null;
+        //         },
+        //         .match => |match| {
+        //             _ = match;
+        //             // Do a submatch here
+        //             @panic("unimplemented");
+        //             // Equal references will always have equal values here
+        //             // if (pat_match.pat_ptr != match.pat_ptr)
+        //             //     break :blk null;
+        //             // if (pat_match.query.eql(match.query))
 
-                },
-                .arrow => |_| @panic("unimplemented"),
-                .comma => |_| @panic("unimplemented, loop over list and match each app separately"),
-                .pattern => |pattern_term| blk: {
-                    _ = pattern_term;
-                    break :blk if (pattern.sub_pat) |sub_pat| {
-                        _ = sub_pat;
-                        // TODO: submatch
-                        @panic("unimplemented");
-                    } else null;
-                },
-            };
-        }
+        //         },
+        //         .arrow => |_| @panic("unimplemented"),
+        //         .comma => |_| @panic("unimplemented, loop over list and match each app separately"),
+        //         .pattern => |pattern_term| blk: {
+        //             _ = pattern_term;
+        //             break :blk if (pattern.sub_pat) |sub_pat| {
+        //                 _ = sub_pat;
+        //                 // TODO: submatch
+        //                 @panic("unimplemented");
+        //             } else null;
+        //         },
+        //     };
+        // }
 
         pub fn create(allocator: Allocator) !*Self {
             const result = try allocator.create(Self);
@@ -670,6 +627,7 @@ pub fn PatternWithContextAndFree(
                             continue;
                         }
                         // Otherwise add all entries in this pattern
+                        // TODO
                         // for (current.map.values()) |val|
                     },
                     // TODO: A match expression represents a subquery and subpattern
@@ -679,7 +637,7 @@ pub fn PatternWithContextAndFree(
                     // has a value. The values must be equal to match.
                     else => {
                         // Exact matches should preclude any var matches
-                        current = current.getNext(app) orelse blk: {
+                        current = panic("TODO: match", .{}) orelse blk: {
                             // If nothing matched, default to current's var, if any
                             if (current.option_var_next) |var_next| {
                                 const result = try var_map.getOrPut(
@@ -767,9 +725,6 @@ pub fn PatternWithContextAndFree(
 
         /// Given a pattern and a query to match against it, this function
         /// continously matches until no matches are found, or a match repeats.
-        /// For multiple matches, each match proceeds independently. First,
-        /// each match has its vars rewritten (if any aren't rewritten, the
-        /// expression is invalid).
         /// Match result cases:
         /// - a pattern of lower ordinal: continue
         /// - the same pattern: continue unless patterns are equivalent expressions
@@ -853,17 +808,17 @@ pub fn PatternWithContextAndFree(
             var result = try self.getOrPut(allocator, key);
             // TODO: overwrite existing variable names with any new ones
             // Clear existing value node
-            if (result.value_ptr.val) |prev_val| {
+            if (result.pattern_ptr.val) |prev_val| {
                 prev_val.destroy(allocator);
-                print("Deleting old val: {*}\n", .{result.value_ptr.val});
-                result.value_ptr.val = null;
+                print("Deleting old val: {*}\n", .{result.pattern_ptr.val});
+                result.pattern_ptr.val = null;
             }
             // Add new value node
             if (optional_val) |val| {
                 // TODO: check found existing
-                result.value_ptr.val = try val.clone(allocator);
+                result.pattern_ptr.val = try val.clone(allocator);
             }
-            return result.value_ptr;
+            return result.pattern_ptr;
         }
 
         /// Return a pointer to the last pattern in `pat` after the longest path
@@ -882,7 +837,7 @@ pub fn PatternWithContextAndFree(
             var current = pattern;
             // Follow the longest branch that exists
             const prefix_len = for (apps, 0..) |app, i| {
-                current = current.getNext(app) orelse
+                current = current.map.get(app) orelse
                     break i;
             } else apps.len;
 
@@ -914,93 +869,18 @@ pub fn PatternWithContextAndFree(
         ) Allocator.Error!GetOrPutResult {
             var prefix = pattern.getPrefix(keys);
             var current = prefix.end;
-            var key_ptr: *Node = undefined;
-            var found_existing = true;
             // Create the rest of the branches
-            // Create the rest of the branches
-            for (keys[prefix.len..]) |app| switch (app) {
-                .key => |key| {
-                    const put_result = try current.key_map.getOrPut(allocator, key);
-                    current = put_result.value_ptr;
-                    if (!put_result.found_existing) {
-                        found_existing = false;
-                        current.* = Self{};
-                    }
-                },
-                .variable => |variable| {
-                    _ = variable;
-                    // current.option_var_next =
-                    //  if (current.option_var_next) |var_next| blk: {
-                    //     var_next.variable = variable;
-                    //     break :blk &var_next.pattern;
-                    // } else blk: {
-                    //     found_existing = false;
-                    //     break :blk try allocator.create(VarNext);
-                    // };
-                    // current = try util.getOrInit(
-                    //     .var_next,
-                    //     current,
-                    //     allocator,
-                    // );
-                    @panic("unimplemented");
-                },
-                .apps => |apps| {
-                    if (current.sub_apps == null)
-                        found_existing = false;
-                    const sub_apps =
-                        try util.getOrInit(.sub_apps, current, allocator);
-                    const put_result = try sub_apps
-                        .getOrPut(allocator, apps);
-                    if (!put_result.found_existing)
-                        found_existing = false;
-
-                    const end_ptr = put_result.value_ptr;
-                    end_ptr.val = end_ptr.val orelse
-                        try Node.createPattern(allocator, Self{});
-
-                    current = &end_ptr.val.?.pattern;
-                },
-                .match => @panic("unimplemented"),
-                .arrow => @panic("unimplemented"),
-                .comma => @panic("unimplemented"),
-                .pattern => |pat_term| {
-                    _ = pat_term;
-                    var pat = try util.getOrInit(.sub_pat, current, allocator);
-                    _ = pat;
-                    // TODO: insert sub_pat into pat
-                    // Move to the next pattern
-                    @panic("unimplemented");
-                    // Initialize it if not already
-                    // found_existing = false;
-                },
-            };
-            return GetOrPutResult{
-                .key_ptr = key_ptr, // TODO
-                .value_ptr = current,
-                .found_existing = found_existing,
-                // TODO: use first match index at for top level
-                .index = 0,
-            };
-        }
-
-        pub fn getOrPutApps(
-            pattern: *Self,
-            allocator: Allocator,
-            query: []const Node,
-        ) Allocator.Error!GetOrPutResult {
-            const prefix = pattern.getPrefix(query);
-            var current = prefix.end;
-            var found_existing = true;
-
-            // Create the rest of the branches
-            for (query[prefix.len..]) |app| {
-                const result = try current.getOrPut(allocator, app);
-                found_existing = found_existing and result.found_existing;
-                current = result.end;
+            for (keys[prefix.len..]) |app| {
+                const next = try Self.create(allocator);
+                // Existing entries are already in the prefix
+                try current.map.putNoClobber(allocator, app, next);
+                current = next;
             }
             return GetOrPutResult{
-                .found_existing = found_existing,
-                .index = 0, // TODO
+                .pattern_ptr = current,
+                .found_existing = prefix.len == keys.len,
+                // TODO: use first match index at for top level
+                .index = 0,
             };
         }
 
@@ -1060,8 +940,8 @@ pub fn PatternWithContextAndFree(
             if (self.val) |val| {
                 try val.writeIndent(writer, null);
             }
-            try writer.writeAll("| {");
-            try writeMap(self.key_map, writer, null);
+            try writer.writeAll("| { ");
+            try writeMap(self.map, writer, null);
             try writer.writeAll("}");
         }
 
@@ -1076,19 +956,12 @@ pub fn PatternWithContextAndFree(
                 try val.writeIndent(writer, null);
                 try writer.writeAll("| ");
             }
-            try writer.writeByte('{');
-            try writer.writeAll(
-                if (optional_indent) |_|
-                    if (self.key_map.count() > 0) "\n" else ""
-                else
-                    " ",
-            );
             const optional_indent_inc = if (optional_indent) |indent|
                 indent + indent_increment
             else
                 null;
-
-            try writeMap(self.key_map, writer, optional_indent_inc);
+            try writer.writeByte('{');
+            try writeMap(self.map, writer, optional_indent_inc);
             try writer.writeByte('}');
             try writer.writeByte(if (optional_indent) |_| '\n' else ' ');
         }
@@ -1140,8 +1013,8 @@ test "Pattern: eql" {
     var val = Node{ .key = "123" };
     var val2 = Node{ .key = "123" };
     // Reverse order because patterns are values, not references
-    try p2.key_map.put(allocator, "Bb", Pat{ .val = &val });
-    try p1.key_map.put(allocator, "Aa", p2);
+    try p2.map.put(allocator, "Bb", Pat{ .val = &val });
+    try p1.map.put(allocator, "Aa", p2);
 
     var p_insert = Pat{};
     _ = try p_insert.insertApps(allocator, &.{
@@ -1171,7 +1044,7 @@ test "should behave like a set when given void" {
     // {
     //     var current = &expected;
     //     for (0..2) |i| {
-    //         current = current.key_map.Node.ofLit(i);
+    //         current = current.map.Node.ofLit(i);
     //     }
     // }
 
@@ -1192,7 +1065,7 @@ test "should behave like a set when given void" {
     // Empty pattern
     // try testing.expectEqual(@as(?void, {}), pattern.match(.{
     //     .val = {},
-    //     .kind = .{ .key_map = Pat.KeyMap{} },
+    //     .kind = .{ .map = Pat.KeyMap{} },
     // }));
 }
 
@@ -1210,7 +1083,7 @@ test "insert multiple lits" {
         &.{ Node{ .key = 1 }, Node{ .key = 2 }, Node{ .key = 3 } },
         null,
     );
-    try testing.expect(pattern.key_map.contains(1));
+    try testing.expect(pattern.map.contains(1));
 }
 
 test "compile: nested" {
@@ -1263,7 +1136,7 @@ test "Memory: nested pattern" {
     // No need to free this, because key pointers are destroyed
     var nested_pattern = try Pat.ofVal(testing.allocator, "Asdf");
 
-    try pattern.key_map.put(testing.allocator, Node{ .pattern = &nested_pattern }, val_pattern);
+    try pattern.map.put(testing.allocator, Node{ .pattern = &nested_pattern }, val_pattern);
 
     _ = try val_pattern.insertKeys(
         testing.allocator,
