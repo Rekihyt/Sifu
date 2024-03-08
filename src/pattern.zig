@@ -596,132 +596,23 @@ pub fn PatternWithContextAndFree(
             next: Self,
         };
 
-        /// Primarily used for matches to generate variable combinations, this
-        /// function returns a list of all possible paths from the root node to
-        /// the leaves.
-        // TODO: implement correctly
-        pub fn flattenPattern(
-            pattern: *Self,
-            allocator: Allocator,
-            var_map: *VarMap,
-            node: Node,
-        ) Allocator.Error![]PrefixResult {
-            var prefixes = std.ArrayListUnmanaged(PrefixResult){};
-            var current = pattern;
-            // Follow the longest branch that exists
-            const prefix_len = switch (node) {
-                .apps,
-                .match,
-                .arrow,
-                => |apps| for (apps, 0..) |app, i| switch (app) {
-                    // TODO: possible bug, not updating current node
-                    .variable => |variable| {
-                        const result = try var_map.getOrPut(allocator, variable);
-                        // If a var was already bound, just check its value is
-                        // equal to this one
-                        if (result.found_existing and result.value_ptr.*.eql(app)) {
-                            // If a var was bound, insert the actual value
-                            // instead of a var in the match result.
-                            // current.option_var_next = variable;
-                            // current.val = result.value_ptr;
-                            continue;
-                        }
-                        // Otherwise add all entries in this pattern
-                        // TODO
-                        // for (current.map.values()) |val|
-                    },
-                    // TODO: A match expression represents a subquery and subpattern
-                    // that should be matched. For each result of this submatch, the
-                    // main match continues.
-                    // An arrow expression, when matching, represents a into that
-                    // has a value. The values must be equal to match.
-                    else => {
-                        // Exact matches should preclude any var matches
-                        current = panic("TODO: match", .{}) orelse blk: {
-                            // If nothing matched, default to current's var, if any
-                            if (current.option_var_next) |var_next| {
-                                const result = try var_map.getOrPut(
-                                    allocator,
-                                    var_next.variable,
-                                );
-                                // If a previous var was bound, check that the
-                                // current key matches it
-                                if (result.found_existing) {
-                                    if (!result.value_ptr.*.eql(app))
-                                        continue;
-                                } else result.value_ptr.* = app;
-
-                                break :blk &var_next.pattern;
-                            }
-                            break i;
-                        };
-                        print("Current updated\n", .{});
-                    },
-                } else apps.len,
-                else => @panic("unimplemented"),
-            };
-            const prefix = PrefixResult{
-                .end = current,
-                .len = prefix_len,
-                // .var_map = var_map,
-            };
-            try prefixes.append(allocator, prefix);
-            print("Prefix len: {}\n", .{prefix_len});
-
-            return try prefixes.toOwnedSlice(allocator);
-        }
         const MatchResult = struct {
             matched_pattern: Self,
             var_map: VarMap,
         };
 
-        /// Follows `pattern` for each of its apps matching by value, or all apps
-        /// for var patterns.
-        /// The result is an array of all matches' value nodes.
-        ///
-        /// Caller should free the varmap and array with `allocator.free`, but
-        /// not the references (they belong to the pattern).
-        pub fn matchRef(
-            pattern: *Self,
-            allocator: Allocator,
-            node: Node,
-        ) ![]*Node {
-            print("matchref\n", .{});
-            var var_map = VarMap{};
-            var prefixes = try pattern.flattenPattern(allocator, &var_map, node);
-            defer allocator.free(prefixes);
-            // Filter list for complete matches
-            var matches = std.ArrayListUnmanaged(*Node){};
-            print("Prefixes : {}\n", .{prefixes.len});
-            for (prefixes) |prefix| {
-                print("\tEnd pointer value: ", .{});
-                if (prefix.end.val) |val| val.write(err_stream) catch
-                    unreachable else print("null", .{});
-                print("\n", .{});
-                // Unwrap the val as pattern, because it is always
-                // inserted as such
-                if (prefix.end.val) |val|
-                    switch (node) {
-                        .apps => |apps| if (prefix.len == apps.len)
-                            try matches.append(allocator, val),
-                        else => try matches.append(allocator, val),
-                    };
-            }
-
-            return try matches.toOwnedSlice(allocator);
-        }
-
         /// Same as `matchRef` but returns a copy of the value.
-        // pub fn match(
-        //     pattern: *Self,
-        //     allocator: Allocator,
-        //     into: ArrayListUnmanaged(Node),
-        // ) !?Node {
-        //     return if (pattern.matchRef(into)) |m|
-        //         m.copy(allocator)
-        //     else
-        //         null;
-        // }
+        pub fn match(
+            pattern: *Self,
+            node: Node,
+        ) !?*Self {
+            _ = node;
+            _ = pattern;
+            // TODO: switch on node type
+            // const maybe_pat = pattern.get(key);
+            // return maybe_pat;
+            @panic("unimplemented");
+        }
 
         /// Given a pattern and a query to match against it, this function
         /// continously matches until no matches are found, or a match repeats.
@@ -733,25 +624,10 @@ pub fn PatternWithContextAndFree(
             pattern: *const Self,
             // var_map: *VarMap,
             allocator: Allocator,
-            query: Node,
-        ) Allocator.Error!ArrayListUnmanaged(*Node) {
-            const result = std.ArrayListUnmanaged(*Node){};
-            _ = result;
-            const matches = try pattern.match(allocator, query);
-            defer matches.free();
-            // var scope_len  = pattern.map.;
-
-            var i = 0;
-            while (i < matches.len) : (i += 1) {
-                if (matches[i].equal()) {}
-            }
-
-            //     try results.appendSlice(
-            //         allocator,
-            //         try evaluate(pattern, allocator, matches[i].apps),
-            //     );
-            // }
-            return matches.toOwnedSlice(allocator);
+            query: []const Node,
+        ) Allocator.Error!?*Node {
+            _ = allocator;
+            return pattern.match(query);
         }
 
         /// Add a node to the pattern by following `keys`, wrapping them into an
@@ -847,13 +723,13 @@ pub fn PatternWithContextAndFree(
         /// Follows `pattern` for each app matching structure as well as value.
         /// Does not require allocation because variable branches are not
         /// explored, but rather followed.
-        pub fn matchUnique(
+        pub fn get(
             pattern: *Self,
             apps: []const Node,
-        ) ?*Node {
+        ) ?*Self {
             const prefix = &pattern.getPrefix(apps);
             return if (prefix.len == apps.len)
-                prefix.end.val
+                prefix.end
             else
                 null;
         }
