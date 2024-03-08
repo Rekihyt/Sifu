@@ -5,22 +5,31 @@
   
   - Computation is a pattern match
 
-  - No turing completeness, everything terminates by matching entries less than
-    (or recursive/equal, but with structural simplification) to themselves
+  - No turing completeness, everything terminates by matching entries whose
+    index in the map is less than (or recursive/equal, but with structural
+    simplification) until a fixed point (the value doesn't change after
+    matching).
 
   - Everything is a pattern map (like tries, but lookups have to deal with sub-lookups)
 
   - Core language is pattern-matching rewriter
-    - triemap entries (`->`) and triemap matches (`:`)
-    - multi triemap entries (`=>`) and multi triemap matches (`::`)
-    - keywords are `->`, `:`, `=>`, `::`, `,`, `;`, `()`, and `{}`
+    - pattern entries (`->`) and pattern matches (`:`)
+    - keywords are `->`, `:`, `,`, `()`, and `{}`
+    - keywords have lower precedence versions:  `-->`, `::`, `;`,
     - match / set membership / typeof is the same thing (`:`)
     - source files are just triemaps with entries separated by newlines
     - any characters are valid to the parser (punctuation chars are values, like
-in Forth)
+      in Forth)
+    - code can be quoted with backticks (`\``) like in Lisps, to treat it as
+data instead of evaluating it.
     - values are literals, i.e. upper-case idents, ints, and match only themselves
     - vars match anything (lower-case idents)
 
+  - Stdlib functions
+    - multi entries (`=>`) and multi triemap matches (`::`). These are
+      implemented by continuously appending a single var match of the current
+      scope until the top of the scope is reached (each key in the pattern is
+      matched)
   - Values and Variables
     - variables are just entries `x -> 2` and match anything
     - values are as well `Val1 -> 2` and are treated as literals (strings are just an escaped value)
@@ -69,6 +78,7 @@ Compare (b1 : Bool) (b2 : Bool) -> Case [
   - [x] Parser/Lexer
     - [x] Lexer (Text → Token)
     - [ ] Parser (Tokens → AST)
+      - [x] Non-recursive parsing
       - [ ] Newline delimited apps for top level and operators' rhs
       - [ ] Nested apps for parentheses
       - [ ] Patterns
