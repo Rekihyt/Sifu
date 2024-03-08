@@ -601,18 +601,17 @@ pub fn PatternWithContextAndFree(
             var_map: VarMap,
         };
 
-        /// Same as `matchRef` but returns a copy of the value.
-        pub fn match(
-            pattern: *Self,
-            node: Node,
-        ) !?*Self {
-            _ = node;
-            _ = pattern;
-            // TODO: switch on node type
-            // const maybe_pat = pattern.get(key);
-            // return maybe_pat;
-            @panic("unimplemented");
-        }
+        // pub fn match(
+        //     pattern: *Self,
+        //     node: Node,
+        // ) !?*Self {
+        //     switch (node)  {
+        //         .apps =>
+        //     }
+        //     const maybe_pat = pattern.get(key);
+        //     // return maybe_pat;
+        //     @panic("unimplemented");
+        // }
 
         /// Given a pattern and a query to match against it, this function
         /// continously matches until no matches are found, or a match repeats.
@@ -828,7 +827,7 @@ pub fn PatternWithContextAndFree(
             optional_indent: ?usize,
         ) @TypeOf(writer).Error!void {
             if (self.val) |val| {
-                try writer.writeAll("| ");
+                try writer.writeAll("|");
                 try val.writeIndent(writer, null);
                 try writer.writeAll("| ");
             }
@@ -837,7 +836,10 @@ pub fn PatternWithContextAndFree(
             else
                 null;
             try writer.writeByte('{');
+            try writer.writeByte('\n');
             try writeMap(self.map, writer, optional_indent_inc);
+            for (0..optional_indent orelse 0) |_|
+                try writer.writeByte(' ');
             try writer.writeByte('}');
             try writer.writeByte(if (optional_indent) |_| '\n' else ' ');
         }
@@ -858,7 +860,7 @@ pub fn PatternWithContextAndFree(
                 try entry.value_ptr.*.writeIndent(
                     writer,
                     if (optional_indent) |indent|
-                        indent + indent_increment
+                        indent
                     else
                         null,
                 );

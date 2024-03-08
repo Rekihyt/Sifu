@@ -85,24 +85,23 @@ pub fn main() !void {
         // TODO: insert with shell command like @insert instead of special
         // casing a top level insert
         if (ast == .arrow) {
-            const result = try repl_pat.insert(allocator, ast);
-            try stderr.print("New pat ptr: {*}\n", .{result});
+            _ = try repl_pat.insert(allocator, ast);
         } else {
             defer _ = match_gpa.detectLeaks();
             var var_map = Pat.VarMap{};
             defer var_map.deinit(match_allocator);
-            const match = try repl_pat.match(
-                // match_allocator,
-                // &var_map,
-                ast,
-            );
+            // const match = try repl_pat.match(
+            //     // match_allocator,
+            //     // &var_map,
+            //     ast,
+            // );
             // defer match_allocator.free(match);
             // If not inserting, then try to match the expression
-            if (match) |matched| {
-                print("Match: ", .{});
-                try matched.write(buff_stdout);
-                _ = try buff_writer.write("\n");
-            } else print("No match\n", .{});
+            // if (match) |matched| {
+            //     print("Match: ", .{});
+            //     try matched.write(buff_stdout);
+            //     _ = try buff_writer.write("\n");
+            // } else print("No match\n", .{});
             // const evaluation = try repl_pat.evaluate(
             //     match_allocator,
             //     ast,
