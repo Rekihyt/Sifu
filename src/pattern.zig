@@ -493,7 +493,7 @@ pub fn PatternWithContextAndFree(
         pub fn deinit(self: *Self, allocator: Allocator) void {
             defer self.map.deinit(allocator);
             for (self.map.values()) |pattern_ptr|
-                pattern_ptr.deinit(allocator);
+                pattern_ptr.destroy(allocator);
 
             if (self.val) |val|
                 // Value nodes are also allocated recursively
@@ -538,52 +538,6 @@ pub fn PatternWithContextAndFree(
             else
                 false else other.val == null;
         }
-
-        /// Like getPrefix but matches only a single node exactly (the
-        /// select part of the match is skipped).
-        // pub fn getNext(pattern: *Self, term: Node) ?*Self {
-        //     return switch (term) {
-        //         .key => |key| pattern.map.getPtr(key),
-
-        //         // vars with different names are "equal"
-        //         .variable => if (pattern.option_var_next) |var_next|
-        //             &var_next.pattern
-        //         else
-        //             null,
-
-        //         .apps => |apps| blk: {
-        //             // Check that the entire sub_apps matched sub_apps
-        //             // If there isn't a node for another pattern, this match
-        //             // fails. Match sub_apps, move to its value, which is also
-        //             // always a pattern even though it is wrapped in a Node
-        //             if (pattern.sub_apps) |sub_apps|
-        //                 if (sub_apps.matchUnique(apps)) |next|
-        //                     break :blk &next.pattern;
-
-        //             break :blk null;
-        //         },
-        //         .match => |match| {
-        //             _ = match;
-        //             // Do a submatch here
-        //             @panic("unimplemented");
-        //             // Equal references will always have equal values here
-        //             // if (pat_match.pat_ptr != match.pat_ptr)
-        //             //     break :blk null;
-        //             // if (pat_match.query.eql(match.query))
-
-        //         },
-        //         .arrow => |_| @panic("unimplemented"),
-        //         .comma => |_| @panic("unimplemented, loop over list and match each app separately"),
-        //         .pattern => |pattern_term| blk: {
-        //             _ = pattern_term;
-        //             break :blk if (pattern.sub_pat) |sub_pat| {
-        //                 _ = sub_pat;
-        //                 // TODO: submatch
-        //                 @panic("unimplemented");
-        //             } else null;
-        //         },
-        //     };
-        // }
 
         pub fn create(allocator: Allocator) !*Self {
             const result = try allocator.create(Self);
@@ -827,7 +781,7 @@ pub fn PatternWithContextAndFree(
             optional_indent: ?usize,
         ) @TypeOf(writer).Error!void {
             if (self.val) |val| {
-                try writer.writeAll("|");
+                try writer.writeByte('|');
                 try val.writeIndent(writer, null);
                 try writer.writeAll("| ");
             }

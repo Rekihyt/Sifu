@@ -90,18 +90,18 @@ pub fn main() !void {
             defer _ = match_gpa.detectLeaks();
             var var_map = Pat.VarMap{};
             defer var_map.deinit(match_allocator);
-            // const match = try repl_pat.match(
-            //     // match_allocator,
-            //     // &var_map,
-            //     ast,
-            // );
+            const match = try repl_pat.match(
+                // match_allocator,
+                // &var_map,
+                ast,
+            );
             // defer match_allocator.free(match);
             // If not inserting, then try to match the expression
-            // if (match) |matched| {
-            //     print("Match: ", .{});
-            //     try matched.write(buff_stdout);
-            //     _ = try buff_writer.write("\n");
-            // } else print("No match\n", .{});
+            if (match) |matched| {
+                print("Match: ", .{});
+                try matched.write(buff_stdout);
+                _ = try buff_writer.write("\n");
+            } else print("No match\n", .{});
             // const evaluation = try repl_pat.evaluate(
             //     match_allocator,
             //     ast,
