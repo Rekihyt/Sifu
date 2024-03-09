@@ -555,17 +555,29 @@ pub fn PatternWithContextAndFree(
             var_map: VarMap,
         };
 
-        // pub fn match(
-        //     pattern: *Self,
-        //     node: Node,
-        // ) !?*Self {
-        //     switch (node)  {
-        //         .apps =>
-        //     }
-        //     const maybe_pat = pattern.get(key);
-        //     // return maybe_pat;
-        //     @panic("unimplemented");
-        // }
+        /// Calculates the minimum index a subsequent match should use, which
+        /// is at least one greater than the current (except for structural
+        /// recursion).
+        pub fn match(
+            pattern: *Self,
+            node: Node,
+        ) !?*Self {
+            return switch (node) {
+                .key => @panic("unimplemented"),
+                .variable => @panic("unimplemented"),
+                .apps => |apps| pattern.get(apps),
+                .arrow => |arrow| blk: {
+                    const maybe_result = pattern.get(arrow[0 .. arrow.len - 1]);
+                    if (maybe_result) |result| if (result.val) |val|
+                        if (val.eql(arrow[arrow.len - 1]))
+                            break :blk result;
+                    break :blk null;
+                },
+                .match => @panic("unimplemented"),
+                .pattern => @panic("unimplemented"),
+                .comma => @panic("unimplemented"),
+            };
+        }
 
         /// Given a pattern and a query to match against it, this function
         /// continously matches until no matches are found, or a match repeats.
