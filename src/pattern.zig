@@ -413,7 +413,8 @@ pub fn PatternWithContextAndFree(
         /// instead of by building up a tree of their possible values)
         pub const ExactPrefixResult = struct {
             len: usize,
-            end: *Self, // Null if no prefix
+            index: ?usize, // Null if no prefix
+            end: *Self,
         };
         /// The longest prefix matching a pattern, where vars match all possible
         /// expressions.
@@ -545,56 +546,6 @@ pub fn PatternWithContextAndFree(
             return result;
         }
 
-        pub const VarResult = struct {
-            name: Var,
-            next: Self,
-        };
-
-        const MatchResult = struct {
-            matched_pattern: Self,
-            var_map: VarMap,
-        };
-
-        /// Calculates the minimum index a subsequent match should use, which
-        /// is at least one greater than the current (except for structural
-        /// recursion).
-        pub fn match(
-            pattern: *Self,
-            node: Node,
-        ) !?*Self {
-            return switch (node) {
-                .key => @panic("unimplemented"),
-                .variable => @panic("unimplemented"),
-                .apps => |apps| pattern.get(apps),
-                .arrow => |arrow| blk: {
-                    const maybe_result = pattern.get(arrow[0 .. arrow.len - 1]);
-                    if (maybe_result) |result| if (result.val) |val|
-                        if (val.eql(arrow[arrow.len - 1]))
-                            break :blk result;
-                    break :blk null;
-                },
-                .match => @panic("unimplemented"),
-                .pattern => @panic("unimplemented"),
-                .comma => @panic("unimplemented"),
-            };
-        }
-
-        /// Given a pattern and a query to match against it, this function
-        /// continously matches until no matches are found, or a match repeats.
-        /// Match result cases:
-        /// - a pattern of lower ordinal: continue
-        /// - the same pattern: continue unless patterns are equivalent expressions
-        /// - a pattern of higher ordinal: break
-        pub fn evaluate(
-            pattern: *const Self,
-            // var_map: *VarMap,
-            allocator: Allocator,
-            query: []const Node,
-        ) Allocator.Error!?*Node {
-            _ = allocator;
-            return pattern.match(query);
-        }
-
         /// Add a node to the pattern by following `keys`, wrapping them into an
         /// App of Nodes.
         /// Allocations:
@@ -622,6 +573,7 @@ pub fn PatternWithContextAndFree(
             node: Node,
         ) Allocator.Error!*Self {
             return switch (node) {
+                .apps => |apps| self.insertApps(allocator, apps, null),
                 .arrow => |arrow| self.insertApps(
                     allocator,
                     arrow[0 .. arrow.len - 1],
@@ -629,7 +581,6 @@ pub fn PatternWithContextAndFree(
                 ),
                 .match => @panic("unimplemented"),
                 .comma => @panic("unimplemented, insert each element in list"),
-                .apps => |apps| self.insertApps(allocator, apps, null),
                 else => @panic("Cannot insert non-slice Ast"),
             };
         }
@@ -663,31 +614,32 @@ pub fn PatternWithContextAndFree(
         }
 
         /// Return a pointer to the last pattern in `pat` after the longest path
-        /// matching `apps`. This is an exact match, so variables only match
-        /// variables and a subpattern will be returned. This pointer is valid
-        /// unless reassigned in `pat`.
-        /// If there is no last pattern (no apps matched) the same `pat` pointer
-        /// will be returned. If the entire `apps` is a prefix, a pointer to the
-        /// last pat will be returned.
-        /// Although `pat` isn't modified, the val (if any) returned from it
-        /// is modifiable by the caller
+        /// matching `apps`.
         pub fn getPrefix(
             pattern: *Self,
             apps: []const Node,
         ) ExactPrefixResult {
             var current = pattern;
+            var index: ?usize = null;
             // Follow the longest branch that exists
             const prefix_len = for (apps, 0..) |app, i| {
-                current = current.map.get(app) orelse
+                index = current.map.getIndex(app) orelse
                     break i;
+                current = current.map.values()[index.?];
             } else apps.len;
 
-            return .{ .len = prefix_len, .end = current };
+            return .{ .len = prefix_len, .index = index, .end = current };
         }
 
         /// Follows `pattern` for each app matching structure as well as value.
         /// Does not require allocation because variable branches are not
-        /// explored, but rather followed.
+        /// explored, but rather followed. This is an exact match, so variables
+        /// only match variables and a subpattern will be returned. This pointer
+        /// is valid unless reassigned in `pat`.
+        /// If apps is empty the same `pat` pointer will be returned. If
+        /// the entire `apps` is a prefix, a pointer to the last pat will be
+        /// returned instead of null.
+        /// `pattern` isn't modified.
         pub fn get(
             pattern: *Self,
             apps: []const Node,
@@ -725,50 +677,110 @@ pub fn PatternWithContextAndFree(
             };
         }
 
+        const MatchResult = struct {
+            result: ?*Node,
+            prefix_len: usize,
+            // var_map: VarMap,
+        };
+
         /// Matching a prefix where vars match anything in the pattern, and vars
         /// in the pattern match anything in the expression. Includes partial
         /// prefixes (ones that don't match all apps).
-        /// - Any Node matches a var pattern including a var
-        /// - A var Node doesn't match a non-var pattern (var matching is one
-        ///    way)
-        /// - A literal Node that matches a literal-var pattern matches the
-        ///    literal part, not the var
+        /// - Any node matches a var pattern including a var (the var node is
+        ///   then stored in the var map like any other node)
+        /// - A var node doesn't match a non-var pattern (var matching is one
+        ///   way)
+        /// - A literal node that matches a literal-var pattern matches the
+        /// literal part, not the var
         /// Returns a new pattern that only contains branches that matched `apps`.
-        // TODO: fix if function is even needed
-        pub fn prunePattern(
+        /// Calculates the minimum index a subsequent match should use, which
+        /// is at least one greater than the current (except for structural
+        /// recursion).
+        // TODO: move var_map from params to result
+        pub fn match(
             pattern: *Self,
-            var_map: *VarMap,
             allocator: Allocator,
-            apps: ArrayListUnmanaged(Node),
+            var_map: *VarMap,
+            query: Node,
         ) Allocator.Error!MatchResult {
-            var matched = Self{};
-            var current_matched = &matched;
-            _ = current_matched;
             var current = pattern;
             // Follow the longest branch that exists
-            const prefix_len = for (apps, 0..) |app, i| { // Exact matches should preclude any var matches
-                current = current.matchUnique(app) orelse blk: {
+            var maybe_val: ?Node = null;
+            var result: ?*Node = null;
+            // TODO: do a single get here on nodemap regardless of type. All
+            // nodes must hash to something just like when inserting. Remember,
+            // this is the opposite of insert.
+            // const apps = switch (query) {
+            //     .key => return MatchResult{},
+            //     .apps => |apps| apps,
+            //     .arrow => |arrow| blk: {
+            //         maybe_val = arrow[arrow.len - 1];
+            //         break :blk arrow[0 .. arrow.len - 1];
+            //     },
+            //     else => @panic("unimplemented"),
+            // };
+            const apps = current.map.get(query);
+            var index: usize = 0;
+            for (apps) |app| {
+                const sub_match = try pattern.match(allocator, var_map, app);
+                if (sub_match.result) |sub_matched| {
+                    _ = sub_matched;
+                } else {
+                    print("Var match updated\n", .{});
                     // If nothing matched, default to current's var, if any
-                    if (current.option_var_next) |v| {
-                        const result = try var_map.getOrPut(allocator, v);
+                    if (current.map.getKey(Node.ofVar(""))) |v| {
+                        const get_or_put =
+                            try var_map.getOrPut(allocator, v.variable);
                         // If a previous var was bound, check that the
                         // current key matches it
-                        if (result.found_existing) {
-                            if (!result.value_ptr.*.eql(app))
+                        if (get_or_put.found_existing) {
+                            if (!get_or_put.value_ptr.*.eql(app))
                                 continue;
-                        } else result.value_ptr.* = app;
-
-                        if (current.var_next) |var_next|
-                            break :blk var_next;
-
-                        break i + 1;
+                        } else get_or_put.value_ptr.* = app;
+                        // TODO: optimize
+                        current = current.map.get(Node.ofVar("")).?;
+                        index += 1;
                     }
-                    break i;
-                };
-                print("Current updated\n", .{});
+                }
+            }
+            if (index == apps.len)
+                if (current.val) |val| if (maybe_val) |query_val|
+                    if (val.eql(query_val)) {
+                        result = val;
+                    };
+            return MatchResult{
+                .result = result,
+                .prefix_len = index,
+                // .var_map = var_map,
             };
-            _ = prefix_len;
-            return MatchResult{ .matched_pattern = matched, .var_map = var_map };
+        }
+
+        /// A single step of evaluation. Rewrites all variable captures into the
+        /// matched expression.
+        pub fn rewrite(
+            pattern: *const Self,
+            allocator: Allocator,
+            query: []const Node,
+        ) Allocator.Error!?*Node {
+            _ = allocator;
+            const matched = pattern.match(query);
+            _ = matched;
+        }
+
+        /// Given a pattern and a query to match against it, this function
+        /// continously matches until no matches are found, or a match repeats.
+        /// Match result cases:
+        /// - a pattern of lower ordinal: continue
+        /// - the same pattern: continue unless patterns are equivalent expressions
+        /// - a pattern of higher ordinal: break
+        pub fn evaluate(
+            pattern: *const Self,
+            // var_map: *VarMap,
+            allocator: Allocator,
+            query: []const Node,
+        ) Allocator.Error!?*Node {
+            _ = allocator;
+            return pattern.rewrite(query);
         }
 
         /// Pretty print a pattern

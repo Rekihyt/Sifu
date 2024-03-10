@@ -90,10 +90,10 @@ pub fn main() !void {
             defer _ = match_gpa.detectLeaks();
             var var_map = Pat.VarMap{};
             defer var_map.deinit(match_allocator);
-            const match = try repl_pat.match(
+            const match = repl_pat.get(
                 // match_allocator,
                 // &var_map,
-                ast,
+                ast.apps,
             );
             // defer match_allocator.free(match);
             // If not inserting, then try to match the expression
