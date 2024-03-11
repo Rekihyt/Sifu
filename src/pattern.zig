@@ -546,71 +546,33 @@ pub fn PatternWithContextAndFree(
             return result;
         }
 
-        /// Add a node to the pattern by following `keys`, wrapping them into an
-        /// App of Nodes.
-        /// Allocations:
-        /// - The path followed by apps is allocated and copied recursively
-        /// - The node, if given, is allocated and copied recursively
-        /// Freeing should be done with `destroy` or `deinit`, depending
-        /// on how `self` was allocated
-        pub fn insertKeys(
-            self: *Self,
-            allocator: Allocator,
-            keys: []const Key,
-            optional_val: ?Node,
-        ) Allocator.Error!*Self {
-            var apps = ArrayListUnmanaged(Node){};
-            defer apps.deinit(allocator);
-            for (keys) |key|
-                try apps.append(allocator, Node.ofLit(key));
-
-            return self.insertApps(allocator, apps.items, optional_val);
-        }
-
-        pub fn insert(
-            self: *Self,
-            allocator: Allocator,
+        /// Follows `pattern` for each app matching structure as well as value.
+        /// Does not require allocation because variable branches are not
+        /// explored, but rather followed. This is an exact match, so variables
+        /// only match variables and a subpattern will be returned. This pointer
+        /// is valid unless reassigned in `pat`.
+        /// If apps is empty the same `pat` pointer will be returned. If
+        /// the entire `apps` is a prefix, a pointer to the last pat will be
+        /// returned instead of null.
+        /// `pattern` isn't modified.
+        pub fn get(
+            pattern: *Self,
             node: Node,
-        ) Allocator.Error!*Self {
+        ) ?*Self {
+            var index = pattern.map.getIndex(node) orelse
+                return null;
+            var next = pattern.map.values()[index];
             return switch (node) {
-                .apps => |apps| self.insertApps(allocator, apps, null),
-                .arrow => |arrow| self.insertApps(
-                    allocator,
-                    arrow[0 .. arrow.len - 1],
-                    arrow[arrow.len - 1],
-                ),
-                .match => @panic("unimplemented"),
-                .comma => @panic("unimplemented, insert each element in list"),
-                else => @panic("Cannot insert non-slice Ast"),
+                .key => next,
+                .apps => |sub_apps| blk: {
+                    const prefix = next.getPrefix(sub_apps);
+                    break :blk if (prefix.len == sub_apps.len)
+                        prefix.end
+                    else
+                        null;
+                },
+                else => @panic("unimplemented"),
             };
-        }
-
-        /// Add a node to the pattern by following `key`.
-        /// Allocations:
-        /// - The path followed by apps is allocated and copied recursively
-        /// - The node, if given, is allocated and copied recursively
-        /// Returns a pointer to the pattern directly containing `optional_val`.
-        // TODO: decide if this should just take one Node arg
-        pub fn insertApps(
-            self: *Self,
-            allocator: Allocator,
-            key: []const Node,
-            optional_val: ?Node,
-        ) Allocator.Error!*Self {
-            var result = try self.getOrPut(allocator, key);
-            // TODO: overwrite existing variable names with any new ones
-            // Clear existing value node
-            if (result.pattern_ptr.val) |prev_val| {
-                prev_val.destroy(allocator);
-                print("Deleting old val: {*}\n", .{result.pattern_ptr.val});
-                result.pattern_ptr.val = null;
-            }
-            // Add new value node
-            if (optional_val) |val| {
-                // TODO: check found existing
-                result.pattern_ptr.val = try val.clone(allocator);
-            }
-            return result.pattern_ptr;
         }
 
         /// Return a pointer to the last pattern in `pat` after the longest path
@@ -623,32 +585,11 @@ pub fn PatternWithContextAndFree(
             var index: ?usize = null;
             // Follow the longest branch that exists
             const prefix_len = for (apps, 0..) |app, i| {
-                index = current.map.getIndex(app) orelse
-                    break i;
-                current = current.map.values()[index.?];
+                _ = i;
+                _ = app;
             } else apps.len;
 
             return .{ .len = prefix_len, .index = index, .end = current };
-        }
-
-        /// Follows `pattern` for each app matching structure as well as value.
-        /// Does not require allocation because variable branches are not
-        /// explored, but rather followed. This is an exact match, so variables
-        /// only match variables and a subpattern will be returned. This pointer
-        /// is valid unless reassigned in `pat`.
-        /// If apps is empty the same `pat` pointer will be returned. If
-        /// the entire `apps` is a prefix, a pointer to the last pat will be
-        /// returned instead of null.
-        /// `pattern` isn't modified.
-        pub fn get(
-            pattern: *Self,
-            apps: []const Node,
-        ) ?*Self {
-            const prefix = &pattern.getPrefix(apps);
-            return if (prefix.len == apps.len)
-                prefix.end
-            else
-                null;
         }
 
         /// As a pattern is matched, a hashmap for vars is populated with
@@ -658,23 +599,85 @@ pub fn PatternWithContextAndFree(
         pub fn getOrPut(
             pattern: *Self,
             allocator: Allocator,
-            keys: []const Node,
+            key: Node,
         ) Allocator.Error!GetOrPutResult {
-            var prefix = pattern.getPrefix(keys);
-            var current = prefix.end;
-            // Create the rest of the branches
-            for (keys[prefix.len..]) |app| {
-                const next = try Self.create(allocator);
-                // Existing entries are already in the prefix
-                try current.map.putNoClobber(allocator, app, next);
-                current = next;
+            var found_existing = true;
+            var current = pattern;
+            switch (key) {
+                .apps => |apps| {
+                    const prefix = current.getPrefix(apps);
+                    found_existing = found_existing and prefix.len == apps.len;
+                    for (apps[prefix.len..]) |app| {
+                        const next = try Self.create(allocator);
+                        try current.map.putNoClobber(allocator, app, next);
+                        current = next;
+                    }
+                },
+                .arrow => |arrow| {
+                    const get_or_put = try current.getOrPut(
+                        allocator,
+                        Node.ofApps(arrow[0 .. arrow.len - 1]),
+                    );
+                    if (get_or_put.pattern_ptr.val) |val| {
+                        val.deinit(allocator);
+                        val.* = try arrow[arrow.len - 1].copy(allocator);
+                    } else {
+                        get_or_put.pattern_ptr.val =
+                            try arrow[arrow.len - 1].clone(allocator);
+                    }
+                },
+                else => @panic("unimplemented"),
             }
             return GetOrPutResult{
                 .pattern_ptr = current,
-                .found_existing = prefix.len == keys.len,
-                // TODO: use first match index at for top level
                 .index = 0,
+                .found_existing = found_existing,
             };
+        }
+
+        /// Add a node to the pattern by following `key`.
+        /// Allocations:
+        /// - The path followed by apps is allocated and copied recursively
+        /// - The node, if given, is allocated and copied recursively
+        /// Returns a pointer to the pattern directly containing `optional_val`.
+        pub fn put(
+            self: *Self,
+            allocator: Allocator,
+            key: Node,
+        ) Allocator.Error!*Self {
+            var result = try self.getOrPut(allocator, key);
+            // Clear existing value node
+            if (result.found_existing) {
+                print("Found existing\n", .{});
+                // print("Deleting old val: {*}\n", .{result.pattern_ptr.val});
+                // result.pattern_ptr.destroy(allocator);
+            }
+            return result.pattern_ptr;
+        }
+
+        /// Add a node to the pattern by following `keys`, wrapping them into an
+        /// App of Nodes.
+        /// Allocations:
+        /// - The path followed by apps is allocated and copied recursively
+        /// - The node, if given, is allocated and copied recursively
+        /// Freeing should be done with `destroy` or `deinit`, depending
+        /// on how `self` was allocated
+        pub fn putKeys(
+            self: *Self,
+            allocator: Allocator,
+            keys: []const Key,
+            optional_val: ?Node,
+        ) Allocator.Error!*Self {
+            var apps = allocator.alloc(Key, keys.len);
+            defer apps.free(allocator);
+            for (apps, keys) |*app, key|
+                app.* = Node.ofLit(key);
+
+            return self.put(
+                allocator,
+                Node.ofApps(apps),
+                optional_val,
+            );
         }
 
         const MatchResult = struct {
@@ -708,8 +711,8 @@ pub fn PatternWithContextAndFree(
             var maybe_val: ?Node = null;
             var result: ?*Node = null;
             // TODO: do a single get here on nodemap regardless of type. All
-            // nodes must hash to something just like when inserting. Remember,
-            // this is the opposite of insert.
+            // nodes must hash to something just like `put`. Remember,
+            // this is the opposite of put
             // const apps = switch (query) {
             //     .key => return MatchResult{},
             //     .apps => |apps| apps,
@@ -872,16 +875,16 @@ test "Pattern: eql" {
     try p2.map.put(allocator, "Bb", Pat{ .val = &val });
     try p1.map.put(allocator, "Aa", p2);
 
-    var p_insert = Pat{};
-    _ = try p_insert.insertApps(allocator, &.{
+    var p_put = Pat{};
+    _ = try p_put.putApps(allocator, &.{
         Node{ .key = "Aa" },
         Node{ .key = "Bb" },
     }, val2);
     try p1.write(err_stream);
     try err_stream.writeByte('\n');
-    try p_insert.write(err_stream);
+    try p_put.write(err_stream);
     try err_stream.writeByte('\n');
-    try testing.expect(p1.eql(p_insert));
+    try testing.expect(p1.eql(p_put));
 }
 
 test "should behave like a set when given void" {
@@ -893,9 +896,9 @@ test "should behave like a set when given void" {
 
     const nodes1 = &.{ Node{ .key = 123 }, Node{ .key = 456 } };
     var pattern = Pat{};
-    _ = try pattern.insertApps(al, nodes1, null);
+    _ = try pattern.putApps(al, nodes1, null);
 
-    // TODO: add to a test for insert
+    // TODO: add to a test for put
     // var expected = try Pat{};
     // {
     //     var current = &expected;
@@ -908,7 +911,7 @@ test "should behave like a set when given void" {
     try pattern.write(err_stream);
     print("\n", .{});
     const prefix = pattern.getPrefix(nodes1);
-    // Even though there is a match, the val is null because we didn't insert
+    // Even though there is a match, the val is null because we didn't put
     // a value
     try testing.expectEqual(
         @as(?*Node, null),
@@ -925,16 +928,16 @@ test "should behave like a set when given void" {
     // }));
 }
 
-test "insert single lit" {}
+test "put single lit" {}
 
-test "insert multiple lits" {
+test "put multiple lits" {
     // Multiple keys
     const Pat = AutoPattern(usize, void);
     const Node = Pat.Node;
     var pattern = Pat{};
     defer pattern.deinit(testing.allocator);
 
-    _ = try pattern.insertApps(
+    _ = try pattern.putApps(
         testing.allocator,
         &.{ Node{ .key = 1 }, Node{ .key = 2 }, Node{ .key = 3 } },
         null,
@@ -969,7 +972,7 @@ test "Memory: nesting" {
     defer nested_pattern.destroy(testing.allocator);
     nested_pattern.getOrPut(testing.allocator, Pat{}, "subpat's val");
 
-    _ = try nested_pattern.insertKeys(
+    _ = try nested_pattern.putKeys(
         testing.allocator,
         &.{ "cherry", "blossom", "tree" },
         Node.ofLit("beautiful"),
@@ -994,7 +997,7 @@ test "Memory: nested pattern" {
 
     try pattern.map.put(testing.allocator, Node{ .pattern = &nested_pattern }, val_pattern);
 
-    _ = try val_pattern.insertKeys(
+    _ = try val_pattern.putKeys(
         testing.allocator,
         &.{ "cherry", "blossom", "tree" },
         null,

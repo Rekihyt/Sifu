@@ -61,7 +61,6 @@ pub fn main() !void {
     // try stderr.print("Repl Pat Address: {*}", .{&repl_pat});
 
     while (stdin.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
-        try repl_pat.pretty(buff_stdout);
         try stderr.print("Allocated: {}\n", .{gpa.total_requested_bytes});
 
         var fbs_written = io.fixedBufferStream(fbs.getWritten());
@@ -82,10 +81,10 @@ pub fn main() !void {
         // for (ast.apps) |debug_ast|
         //     try debug_ast.write(buff_stdout);
 
-        // TODO: insert with shell command like @insert instead of special
+        // TODO: put with shell command like @put instead of special
         // casing a top level insert
         if (ast == .arrow) {
-            _ = try repl_pat.insert(allocator, ast);
+            _ = try repl_pat.put(allocator, ast);
         } else {
             defer _ = match_gpa.detectLeaks();
             var var_map = Pat.VarMap{};
@@ -93,7 +92,7 @@ pub fn main() !void {
             const match = repl_pat.get(
                 // match_allocator,
                 // &var_map,
-                ast.apps,
+                ast,
             );
             // defer match_allocator.free(match);
             // If not inserting, then try to match the expression
@@ -108,6 +107,7 @@ pub fn main() !void {
             // );
             // defer match_allocator.free(evaluation);
         }
+        try repl_pat.pretty(buff_stdout);
         try buff_writer.flush();
         fbs.reset();
     } else |e| switch (e) {
