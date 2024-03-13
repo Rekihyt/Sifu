@@ -129,7 +129,7 @@ pub fn PatternWithContext(
         /// It could also be a simple type for optimization purposes. Sifu maps
         /// the syntax described below to this data structure, but that syntax
         /// is otherwise irrelevant. Any infix operator that isn't a builtin
-        /// (match, arrow or comma) is parsed into an app.
+        /// (match, arrow or list) is parsed into an app.
         /// These are ordered in their precedence, which is used during parsing.
         pub const Node = union(enum) {
             /// A unique constant, literal values. Uniqueness when in a pattern
@@ -143,7 +143,7 @@ pub fn PatternWithContext(
             /// match something specific, so Vars always successfully match (if
             /// there is a Var) after a Key or Subpat match fails.
             variable: Var,
-            /// Spaces separated juxtaposition, or commas/parens for nested apps.
+            /// Spaces separated juxtaposition, or lists/parens for nested apps.
             /// Infix operators add their rhs as a nested apps after themselves.
             apps: []const Node,
             /// A postfix encoded match pattern, i.e. `x : Int -> x * 2` where
@@ -161,9 +161,9 @@ pub fn PatternWithContext(
             // long_match: []const Node,
             // long_arrow: []const Node,
             /// A single element in comma separated list, with the comma elided.
-            /// Commas are operators that are recognized as separators for
+            /// Lists are operators that are recognized as separators for
             /// patterns.
-            comma: []const Node,
+            list: []const Node,
             // A pointer here saves space depending on the size of `Key`
             /// An expression in braces.
             pattern: Self,
@@ -175,7 +175,7 @@ pub fn PatternWithContext(
                 return switch (self) {
                     .key, .variable => self,
                     .pattern => |p| Node.ofPattern(try p.copy(allocator)),
-                    inline .apps, .arrow, .match, .comma => |apps, tag| blk: {
+                    inline .apps, .arrow, .match, .list => |apps, tag| blk: {
                         var apps_copy = try allocator.alloc(Node, apps.len);
                         for (apps, apps_copy) |app, *app_copy|
                             app_copy.* = try app.copy(allocator);
@@ -200,7 +200,7 @@ pub fn PatternWithContext(
                 switch (self.*) {
                     .key, .variable => {},
                     .pattern => |*p| p.deinit(allocator),
-                    inline .apps, .match, .arrow, .comma => |apps, tag| {
+                    inline .apps, .match, .arrow, .list => |apps, tag| {
                         for (apps) |*app|
                             @constCast(app).deinit(allocator);
                         allocator.free(apps);
@@ -216,13 +216,13 @@ pub fn PatternWithContext(
             pub fn hasherUpdate(self: Node, hasher: anytype) void {
                 hasher.update(&mem.toBytes(@intFromEnum(self)));
                 switch (self) {
-                    inline .apps, .match, .arrow, .comma => |apps, tag| {
+                    inline .apps, .match, .arrow, .list => |apps, tag| {
                         for (apps) |app|
                             app.hasherUpdate(hasher);
                         switch (tag) {
                             .arrow => hasher.update("->"),
                             .match => hasher.update(":"),
-                            .comma => hasher.update(","),
+                            .list => hasher.update(","),
                             else => {},
                         }
                     },
@@ -247,7 +247,7 @@ pub fn PatternWithContext(
                         other.variable,
                         undefined,
                     ),
-                    inline .apps, .arrow, .match, .comma => |apps, tag| blk: {
+                    inline .apps, .arrow, .match, .list => |apps, tag| blk: {
                         const other_slice = @field(other, @tagName(tag));
                         break :blk apps.len == other_slice.len and
                             for (apps, other_slice) |app, other_app|
@@ -361,7 +361,7 @@ pub fn PatternWithContext(
             ) @TypeOf(writer).Error!void {
                 switch (self) {
                     // Ignore top level parens
-                    inline .apps, .arrow, .match, .comma => |apps, tag| {
+                    inline .apps, .arrow, .match, .list => |apps, tag| {
                         if (apps.len == 0)
                             return;
                         try apps[0].writeSExp(writer, optional_indent);
@@ -375,7 +375,7 @@ pub fn PatternWithContext(
                         switch (tag) {
                             .arrow => try writer.writeAll(" ->"),
                             .match => try writer.writeAll(" :"),
-                            .comma => try writer.writeAll(","),
+                            .list => try writer.writeAll(","),
                             else => {},
                         }
                         try writer.writeByte(' ');
@@ -562,12 +562,19 @@ pub fn PatternWithContext(
         pub fn getOrPut(
             pattern: *Self,
             allocator: Allocator,
-            key: Node,
+            node: Node,
             maybe_val: ?Node,
         ) Allocator.Error!GetOrPutResult {
+            const node_to_hash = switch (node) {
+                .key, .variable => node,
+                .pattern => Node{ .pattern = Self{} },
+                inline .apps, .match, .arrow, .list => |_, tag|
+                // All slice types hash to themselves
+                @unionInit(Node, @tagName(tag), &.{}),
+            };
             const get_or_put = try pattern.map.getOrPut(
                 allocator,
-                try key.copy(allocator),
+                node_to_hash, // No need to copy here because all slices have 0 length
             );
             var found_existing = get_or_put.found_existing;
             var current = if (found_existing)
@@ -577,20 +584,15 @@ pub fn PatternWithContext(
                 get_or_put.value_ptr.* = next;
                 break :blk next;
             };
-            switch (key) {
+            switch (node) {
+                .key => {},
                 // All slice types are encoded the same way after their top
                 // level hash
-                .apps, .arrow => |apps| {
-                    const prefix = current.getPrefix(apps);
-                    found_existing = found_existing and prefix.len == apps.len;
-                    for (apps[prefix.len..]) |app| {
-                        const next = try Self.create(allocator);
-                        try current.map.putNoClobber(
-                            allocator,
-                            try app.copy(allocator),
-                            next,
-                        );
-                        current = next;
+                .apps, .arrow, .match, .list => |apps| {
+                    for (apps) |app| {
+                        const sub_get_or_put =
+                            try current.getOrPut(allocator, app, null);
+                        current = sub_get_or_put.pattern_ptr;
                     }
                 },
                 else => @panic("unimplemented"),
@@ -599,7 +601,7 @@ pub fn PatternWithContext(
                 //  TODO: Clear existing value node
                 // print("Deleting old val: {*}\n", .{result.pattern_ptr.val});
                 // result.pattern_ptr.destroy(allocator);
-                print("Put Hash: {}\n", .{key.hash()});
+                print("Put Hash: {}\n", .{node.hash()});
                 current.val = try val.clone(allocator);
             }
             return GetOrPutResult{
