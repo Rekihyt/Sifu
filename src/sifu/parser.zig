@@ -81,8 +81,7 @@ pub fn parseAst(
     allocator: Allocator,
     lexer: anytype,
 ) !Ast {
-    print("parseAst\n", .{});
-    // (ParseError || @TypeOf(lexer).Error || Allocator.Error)
+    // TODO (ParseError || @TypeOf(lexer).Error || Allocator.Error)
     // No need to destroy asts, they will all be returned or cleaned up
     var levels = ArrayListUnmanaged(Level){};
     defer levels.deinit(allocator);
@@ -197,7 +196,7 @@ pub fn parseAppend(
                 // Add an apps for the trailing args
                 try lvl.next.append(allocator, Ast{ .apps = &.{} });
                 // Right hand args for previous op with higher precedence
-                print("Rhs Len: {}\n", .{lvl.next.items.len});
+                // print("Rhs Len: {}\n", .{lvl.next.items.len});
                 _ = try lvl.finalize(tag, allocator);
                 continue;
             },
@@ -221,8 +220,6 @@ pub fn parseAppend(
     }
     const result = try lvl.finalize(null, allocator);
     // TODO: return optional void and move to caller
-    print("Levels Len: {}\n", .{levels.items.len});
-    print("Result: {s}\n", .{@tagName(result)});
     return result;
 }
 

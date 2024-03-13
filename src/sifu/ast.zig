@@ -14,13 +14,11 @@ const Allocator = std.mem.Allocator;
 /// The Sifu-specific interpreter Ast, using Tokens as keys and strings as
 /// values.
 pub const Ast = Pat.Node;
-pub const Pat = @import("../pattern.zig").PatternWithContextAndFree(
+pub const Pat = @import("../pattern.zig").PatternWithContext(
     Token,
     []const u8,
     util.IntoArrayContext(Token),
     StringContext,
-    null,
-    null,
 );
 
 test "simple ast to pattern" {

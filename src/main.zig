@@ -54,15 +54,11 @@ pub fn main() !void {
     var buff: [buff_size]u8 = undefined;
     var fbs = io.fixedBufferStream(&buff);
     // TODO: Fix repl specific behavior
-    //    - restart parsing after 2 newlines
     //    - exit on EOF
     var repl_pat = Pat{};
     defer repl_pat.deinit(allocator);
-    // try stderr.print("Repl Pat Address: {*}", .{&repl_pat});
 
     while (stdin.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
-        try stderr.print("Allocated: {}\n", .{gpa.total_requested_bytes});
-
         var fbs_written = io.fixedBufferStream(fbs.getWritten());
         var fbs_written_reader = fbs_written.reader();
         var lexer = Lexer(@TypeOf(fbs_written_reader))
@@ -71,21 +67,26 @@ pub fn main() !void {
         // escape (from pressing alt+enter in most shells)
         // if (char == 0x1b) {}
         // }
+        // TODO: combine lexer and parser allocators, avoid token/parsing memory
+        // leaks when freeing asts in the loop
         var ast = try parseAst(parser_allocator, &lexer);
-        // defer _ = parser_gpa.detectLeaks();
+        defer _ = parser_gpa.detectLeaks();
         defer ast.deinit(parser_allocator);
 
-        try stderr.writeAll("Parsed: ");
+        try stderr.print("Parsed {s}:\n", .{@tagName(ast)});
         try ast.write(stderr);
         _ = try stderr.write("\n");
-        // for (ast.apps) |debug_ast|
-        //     try debug_ast.write(buff_stdout);
 
         // TODO: put with shell command like @put instead of special
         // casing a top level insert
         if (ast == .arrow) {
-            _ = try repl_pat.put(allocator, ast);
+            const arrow = ast.arrow;
+            const apps = Ast.ofApps(arrow[0 .. arrow.len - 1]);
+            const val = arrow[arrow.len - 1];
+            print("Parsed apps hash: {}\n", .{apps.hash()});
+            try repl_pat.put(allocator, apps, val);
         } else {
+            print("Parsed ast hash: {}\n", .{ast.hash()});
             defer _ = match_gpa.detectLeaks();
             var var_map = Pat.VarMap{};
             defer var_map.deinit(match_allocator);
@@ -97,9 +98,11 @@ pub fn main() !void {
             // defer match_allocator.free(match);
             // If not inserting, then try to match the expression
             if (match) |matched| {
-                print("Match: ", .{});
-                try matched.write(buff_stdout);
-                _ = try buff_writer.write("\n");
+                if (matched.val) |val| {
+                    print("Match: ", .{});
+                    try val.write(buff_stdout);
+                    _ = try buff_writer.write("\n");
+                } else print("Match, no val\n", .{});
             } else print("No match\n", .{});
             // const evaluation = try repl_pat.evaluate(
             //     match_allocator,
@@ -108,6 +111,7 @@ pub fn main() !void {
             // defer match_allocator.free(evaluation);
         }
         try repl_pat.pretty(buff_stdout);
+        try stderr.print("Allocated: {}\n", .{gpa.total_requested_bytes});
         try buff_writer.flush();
         fbs.reset();
     } else |e| switch (e) {

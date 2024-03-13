@@ -58,15 +58,6 @@ const meta = std.meta;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const t = @import("test.zig");
 
-pub fn PatternWithContext(
-    comptime Key: type,
-    comptime Var: type,
-    comptime KeyCtx: type,
-    comptime VarCtx: type,
-) type {
-    return PatternWithContextAndFree(Key, Var, KeyCtx, VarCtx, null, null);
-}
-
 ///
 /// A trie-like type based on the given term type. Each pattern contains zero or
 /// more children.
@@ -84,13 +75,11 @@ pub fn PatternWithContext(
 ///        void` that updates a hasher (instead of a direct hash function for
 ///        efficiency)
 ///    - `eql` a function to compare two `T`s, of type `fn (T, T) bool`
-pub fn PatternWithContextAndFree(
+pub fn PatternWithContext(
     comptime Key: type,
     comptime Var: type,
     comptime KeyCtx: type,
     comptime VarCtx: type,
-    comptime keyFreeFn: ?(fn (Allocator, anytype) void),
-    comptime varFreeFn: ?(fn (Allocator, anytype) void),
 ) type {
     return struct {
         pub const Self = @This();
@@ -129,7 +118,7 @@ pub fn PatternWithContextAndFree(
         map: NodeMap = NodeMap{},
         /// A null val represents an undefined pattern, for example in `Foo
         /// Bar -> 123`, the val at `Foo` would be null.
-        val: ?*Node = null, // TODO: check pointer still necessary
+        val: ?*Node = null,
 
         /// Nodes form the keys and values of a pattern type (its recursive
         /// structure forces both to be the same type). In Sifu, it is also the
@@ -184,7 +173,7 @@ pub fn PatternWithContextAndFree(
             /// The copy should be freed with `deinit`.
             pub fn copy(self: Node, allocator: Allocator) Allocator.Error!Node {
                 return switch (self) {
-                    .key, .variable => self, // TODO: comptime copy if pointer
+                    .key, .variable => self,
                     .pattern => |p| Node.ofPattern(try p.copy(allocator)),
                     inline .apps, .arrow, .match, .comma => |apps, tag| blk: {
                         var apps_copy = try allocator.alloc(Node, apps.len);
@@ -207,30 +196,22 @@ pub fn PatternWithContextAndFree(
                 allocator.destroy(self);
             }
 
-            pub fn destroySlice(
-                slice: []const Node,
-                allocator: Allocator,
-            ) void {
-                for (slice) |*app|
-                    @constCast(app).deinit(allocator);
-                allocator.free(slice);
-            }
-
             pub fn deinit(self: *Node, allocator: Allocator) void {
                 switch (self.*) {
-                    .key => |key| if (keyFreeFn) |free|
-                        free(allocator, key),
-                    .variable => |variable| if (varFreeFn) |free|
-                        free(allocator, variable),
+                    .key, .variable => {},
                     .pattern => |*p| p.deinit(allocator),
-                    .apps, .match, .arrow, .comma => |apps| destroySlice(
-                        apps,
-                        allocator,
-                    ),
+                    inline .apps, .match, .arrow, .comma => |apps, tag| {
+                        for (apps) |*app|
+                            @constCast(app).deinit(allocator);
+                        allocator.free(apps);
+                        // Overwrite the freed pointer
+                        self.* = @unionInit(Node, @tagName(tag), &.{});
+                    },
                 }
             }
 
             pub const hash = util.hashFromHasherUpdate(Node);
+            pub const varHash = Node.hash(Node{ .variable = "" });
 
             pub fn hasherUpdate(self: Node, hasher: anytype) void {
                 hasher.update(&mem.toBytes(@intFromEnum(self)));
@@ -346,9 +327,6 @@ pub fn PatternWithContextAndFree(
                 writer: anytype,
                 optional_indent: ?usize,
             ) !void {
-                // TODO: move most of this to writeIndent and just call
-                // writeIndent between writing parens. This function should
-                // always write parens.
                 if (optional_indent) |indent| for (0..indent) |_|
                     try writer.writeByte(' ');
                 switch (self) {
@@ -422,29 +400,6 @@ pub fn PatternWithContextAndFree(
             len: usize,
             end: *Self,
         };
-        pub const VarNext = struct {
-            variable: Var,
-            pattern: Self,
-
-            pub fn copy(self: VarNext, allocator: Allocator) !VarNext {
-                return VarNext{
-                    .variable = self.variable,
-                    .pattern = try self.pattern.copy(allocator),
-                };
-            }
-            pub fn clone(self: VarNext, allocator: Allocator) !*VarNext {
-                var self_copy = try allocator.create(VarNext);
-                self_copy.* = try self.copy(allocator);
-                return self_copy;
-            }
-            pub fn deinit(self: *VarNext, allocator: Allocator) void {
-                self.pattern.deinit(allocator);
-            }
-            pub fn destroy(self: *VarNext, allocator: Allocator) void {
-                self.destroy(allocator);
-                allocator.destroy(self);
-            }
-        };
 
         pub fn ofKey(
             allocator: Allocator,
@@ -465,12 +420,11 @@ pub fn PatternWithContextAndFree(
             while (map_iter.next()) |entry|
                 try result.map.putNoClobber(
                     allocator,
-                    // TODO: check if this is right and doesn't need copying too
-                    entry.key_ptr.*,
+                    try entry.key_ptr.copy(allocator),
                     try entry.value_ptr.*.clone(allocator),
                 );
             if (self.val) |val|
-                result.val.? = try val.clone(allocator);
+                result.val = try val.clone(allocator);
 
             return result;
         }
@@ -493,9 +447,11 @@ pub fn PatternWithContextAndFree(
         /// The opposite of `copy`.
         pub fn deinit(self: *Self, allocator: Allocator) void {
             defer self.map.deinit(allocator);
-            for (self.map.values()) |pattern_ptr|
-                pattern_ptr.destroy(allocator);
-
+            var iter = self.map.iterator();
+            while (iter.next()) |entry| {
+                entry.key_ptr.deinit(allocator);
+                entry.value_ptr.*.destroy(allocator);
+            }
             if (self.val) |val|
                 // Value nodes are also allocated recursively
                 val.destroy(allocator);
@@ -559,6 +515,12 @@ pub fn PatternWithContextAndFree(
             pattern: *Self,
             node: Node,
         ) ?*Self {
+            print("get: ", .{});
+            if (pattern.map.get(node)) |val|
+                val.write(err_stream) catch unreachable
+            else
+                print("null", .{});
+            print(" at index: {?}\n", .{pattern.map.getIndex(node)});
             var index = pattern.map.getIndex(node) orelse
                 return null;
             var next = pattern.map.values()[index];
@@ -585,8 +547,8 @@ pub fn PatternWithContextAndFree(
             var index: ?usize = null;
             // Follow the longest branch that exists
             const prefix_len = for (apps, 0..) |app, i| {
-                _ = i;
-                _ = app;
+                current = current.get(app) orelse
+                    break i;
             } else apps.len;
 
             return .{ .len = prefix_len, .index = index, .end = current };
@@ -596,37 +558,49 @@ pub fn PatternWithContextAndFree(
         /// each var's bound variable. These can the be used by the caller for
         /// rewriting.
         /// All nodes are copied, not moved, into the pattern.
+        ///
         pub fn getOrPut(
             pattern: *Self,
             allocator: Allocator,
             key: Node,
+            maybe_val: ?Node,
         ) Allocator.Error!GetOrPutResult {
-            var found_existing = true;
-            var current = pattern;
+            const get_or_put = try pattern.map.getOrPut(
+                allocator,
+                try key.copy(allocator),
+            );
+            var found_existing = get_or_put.found_existing;
+            var current = if (found_existing)
+                get_or_put.value_ptr.*
+            else blk: {
+                const next = try Self.create(allocator);
+                get_or_put.value_ptr.* = next;
+                break :blk next;
+            };
             switch (key) {
-                .apps => |apps| {
+                // All slice types are encoded the same way after their top
+                // level hash
+                .apps, .arrow => |apps| {
                     const prefix = current.getPrefix(apps);
                     found_existing = found_existing and prefix.len == apps.len;
                     for (apps[prefix.len..]) |app| {
                         const next = try Self.create(allocator);
-                        try current.map.putNoClobber(allocator, app, next);
+                        try current.map.putNoClobber(
+                            allocator,
+                            try app.copy(allocator),
+                            next,
+                        );
                         current = next;
                     }
                 },
-                .arrow => |arrow| {
-                    const get_or_put = try current.getOrPut(
-                        allocator,
-                        Node.ofApps(arrow[0 .. arrow.len - 1]),
-                    );
-                    if (get_or_put.pattern_ptr.val) |val| {
-                        val.deinit(allocator);
-                        val.* = try arrow[arrow.len - 1].copy(allocator);
-                    } else {
-                        get_or_put.pattern_ptr.val =
-                            try arrow[arrow.len - 1].clone(allocator);
-                    }
-                },
                 else => @panic("unimplemented"),
+            }
+            if (maybe_val) |val| {
+                //  TODO: Clear existing value node
+                // print("Deleting old val: {*}\n", .{result.pattern_ptr.val});
+                // result.pattern_ptr.destroy(allocator);
+                print("Put Hash: {}\n", .{key.hash()});
+                current.val = try val.clone(allocator);
             }
             return GetOrPutResult{
                 .pattern_ptr = current,
@@ -644,15 +618,9 @@ pub fn PatternWithContextAndFree(
             self: *Self,
             allocator: Allocator,
             key: Node,
-        ) Allocator.Error!*Self {
-            var result = try self.getOrPut(allocator, key);
-            // Clear existing value node
-            if (result.found_existing) {
-                print("Found existing\n", .{});
-                // print("Deleting old val: {*}\n", .{result.pattern_ptr.val});
-                // result.pattern_ptr.destroy(allocator);
-            }
-            return result.pattern_ptr;
+            maybe_val: ?Node,
+        ) Allocator.Error!void {
+            _ = try self.getOrPut(allocator, key, maybe_val);
         }
 
         /// Add a node to the pattern by following `keys`, wrapping them into an
@@ -710,18 +678,6 @@ pub fn PatternWithContextAndFree(
             // Follow the longest branch that exists
             var maybe_val: ?Node = null;
             var result: ?*Node = null;
-            // TODO: do a single get here on nodemap regardless of type. All
-            // nodes must hash to something just like `put`. Remember,
-            // this is the opposite of put
-            // const apps = switch (query) {
-            //     .key => return MatchResult{},
-            //     .apps => |apps| apps,
-            //     .arrow => |arrow| blk: {
-            //         maybe_val = arrow[arrow.len - 1];
-            //         break :blk arrow[0 .. arrow.len - 1];
-            //     },
-            //     else => @panic("unimplemented"),
-            // };
             const apps = current.map.get(query);
             var index: usize = 0;
             for (apps) |app| {
@@ -740,7 +696,6 @@ pub fn PatternWithContextAndFree(
                             if (!get_or_put.value_ptr.*.eql(app))
                                 continue;
                         } else get_or_put.value_ptr.* = app;
-                        // TODO: optimize
                         current = current.map.get(Node.ofVar("")).?;
                         index += 1;
                     }
@@ -797,7 +752,7 @@ pub fn PatternWithContextAndFree(
                 try val.writeIndent(writer, null);
             }
             try writer.writeAll("| { ");
-            try writeMap(self.map, writer, null);
+            try writeEntries(self.map, writer, null);
             try writer.writeAll("}");
         }
 
@@ -817,15 +772,15 @@ pub fn PatternWithContextAndFree(
             else
                 null;
             try writer.writeByte('{');
-            try writer.writeByte('\n');
-            try writeMap(self.map, writer, optional_indent_inc);
+            try writer.writeByte(if (optional_indent) |_| '\n' else ' ');
+            try writeEntries(self.map, writer, optional_indent_inc);
             for (0..optional_indent orelse 0) |_|
                 try writer.writeByte(' ');
             try writer.writeByte('}');
             try writer.writeByte(if (optional_indent) |_| '\n' else ' ');
         }
 
-        fn writeMap(
+        fn writeEntries(
             map: anytype,
             writer: anytype,
             optional_indent: ?usize,
@@ -835,8 +790,8 @@ pub fn PatternWithContextAndFree(
                 for (0..optional_indent orelse 0) |_|
                     try writer.writeByte(' ');
 
-                const key = entry.key_ptr.*;
-                _ = try util.genericWrite(key, writer);
+                const node = entry.key_ptr.*;
+                try node.writeSExp(writer, null);
                 try writer.writeAll(" -> ");
                 try entry.value_ptr.*.writeIndent(
                     writer,
