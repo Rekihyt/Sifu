@@ -502,6 +502,20 @@ pub fn PatternWithContext(
             return result;
         }
 
+        /// Returns a copy of the node pointer variants are set to empty. This
+        /// is used for two reasons: it helps ensure that a pattern never stores
+        /// a Node's allocations, and allows granular matching while perserving
+        /// order between different node kinds.
+        fn asEmpty(node: Node) Node {
+            return switch (node) {
+                .key, .variable => node,
+                .pattern => Node{ .pattern = Self{} },
+                inline .apps, .match, .arrow, .list => |_, tag|
+                // All slice types hash to themselves
+                @unionInit(Node, @tagName(tag), &.{}),
+            };
+        }
+
         /// Follows `pattern` for each app matching structure as well as value.
         /// Does not require allocation because variable branches are not
         /// explored, but rather followed. This is an exact match, so variables
@@ -516,12 +530,13 @@ pub fn PatternWithContext(
             node: Node,
         ) ?*Self {
             print("get: ", .{});
-            if (pattern.map.get(node)) |val|
+            const empty_node = asEmpty(node);
+            if (pattern.map.get(empty_node)) |val|
                 val.write(err_stream) catch unreachable
             else
                 print("null", .{});
-            print(" at index: {?}\n", .{pattern.map.getIndex(node)});
-            var index = pattern.map.getIndex(node) orelse
+            print(" at index: {?}\n", .{pattern.map.getIndex(empty_node)});
+            var index = pattern.map.getIndex(empty_node) orelse
                 return null;
             var next = pattern.map.values()[index];
             return switch (node) {
@@ -565,16 +580,10 @@ pub fn PatternWithContext(
             node: Node,
             maybe_val: ?Node,
         ) Allocator.Error!GetOrPutResult {
-            const node_to_hash = switch (node) {
-                .key, .variable => node,
-                .pattern => Node{ .pattern = Self{} },
-                inline .apps, .match, .arrow, .list => |_, tag|
-                // All slice types hash to themselves
-                @unionInit(Node, @tagName(tag), &.{}),
-            };
             const get_or_put = try pattern.map.getOrPut(
                 allocator,
-                node_to_hash, // No need to copy here because all slices have 0 length
+                // No need to copy here because all slices have 0 length
+                asEmpty(node),
             );
             var found_existing = get_or_put.found_existing;
             var current = if (found_existing)
