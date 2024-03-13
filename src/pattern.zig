@@ -196,22 +196,22 @@ pub fn PatternWithContext(
                 allocator.destroy(self);
             }
 
-            pub fn deinit(self: *Node, allocator: Allocator) void {
-                switch (self.*) {
+            pub fn deinit(self: Node, allocator: Allocator) void {
+                switch (self) {
                     .key, .variable => {},
-                    .pattern => |*p| p.deinit(allocator),
+                    .pattern => |*p| @constCast(p).deinit(allocator),
                     inline .apps, .match, .arrow, .list => |apps, tag| {
+                        _ = tag;
                         for (apps) |*app|
                             @constCast(app).deinit(allocator);
                         allocator.free(apps);
                         // Overwrite the freed pointer
-                        self.* = @unionInit(Node, @tagName(tag), &.{});
+                        // self = @unionInit(Node, @tagName(tag), &.{});
                     },
                 }
             }
 
             pub const hash = util.hashFromHasherUpdate(Node);
-            pub const varHash = Node.hash(Node{ .variable = "" });
 
             pub fn hasherUpdate(self: Node, hasher: anytype) void {
                 hasher.update(&mem.toBytes(@intFromEnum(self)));
@@ -302,6 +302,20 @@ pub fn PatternWithContext(
                 pattern: Self,
             ) Node {
                 return Node{ .pattern = pattern };
+            }
+
+            /// Returns a copy of the node pointer variants are set to empty. This
+            /// is used for two reasons: it helps ensure that a pattern never stores
+            /// a Node's allocations, and allows granular matching while perserving
+            /// order between different node kinds.
+            fn asEmpty(node: Node) Node {
+                return switch (node) {
+                    .key, .variable => node,
+                    .pattern => Node{ .pattern = Self{} },
+                    inline .apps, .match, .arrow, .list => |_, tag|
+                    // All slice types hash to themselves
+                    @unionInit(Node, @tagName(tag), &.{}),
+                };
             }
 
             /// Compares by value, not by len, pos, or pointers.
@@ -502,17 +516,18 @@ pub fn PatternWithContext(
             return result;
         }
 
-        /// Returns a copy of the node pointer variants are set to empty. This
-        /// is used for two reasons: it helps ensure that a pattern never stores
-        /// a Node's allocations, and allows granular matching while perserving
-        /// order between different node kinds.
-        fn asEmpty(node: Node) Node {
-            return switch (node) {
-                .key, .variable => node,
-                .pattern => Node{ .pattern = Self{} },
-                inline .apps, .match, .arrow, .list => |_, tag|
-                // All slice types hash to themselves
-                @unionInit(Node, @tagName(tag), &.{}),
+        pub const VarNext = struct {
+            variable: Var,
+            next: *Self,
+        };
+
+        pub fn getVar(pattern: *Self) ?VarNext {
+            const index = pattern.map.getIndex(Node{ .variable = "" }) orelse
+                return null;
+
+            return VarNext{
+                .variable = pattern.map.keys()[index].variable,
+                .next = pattern.map.values()[index],
             };
         }
 
@@ -530,7 +545,7 @@ pub fn PatternWithContext(
             node: Node,
         ) ?*Self {
             print("get: ", .{});
-            const empty_node = asEmpty(node);
+            const empty_node = node.asEmpty();
             if (pattern.map.get(empty_node)) |val|
                 val.write(err_stream) catch unreachable
             else
@@ -583,7 +598,7 @@ pub fn PatternWithContext(
             const get_or_put = try pattern.map.getOrPut(
                 allocator,
                 // No need to copy here because all slices have 0 length
-                asEmpty(node),
+                node.asEmpty(),
             );
             var found_existing = get_or_put.found_existing;
             var current = if (found_existing)
@@ -661,6 +676,7 @@ pub fn PatternWithContext(
 
         const MatchResult = struct {
             result: ?*Node,
+            pattern: *Self,
             prefix_len: usize,
             // var_map: VarMap,
         };
@@ -683,42 +699,60 @@ pub fn PatternWithContext(
             pattern: *Self,
             allocator: Allocator,
             var_map: *VarMap,
-            query: Node,
-        ) Allocator.Error!MatchResult {
-            var current = pattern;
+            node: Node,
+        ) Allocator.Error!?MatchResult {
             // Follow the longest branch that exists
-            var maybe_val: ?Node = null;
-            var result: ?*Node = null;
-            const apps = current.map.get(query);
-            var index: usize = 0;
-            for (apps) |app| {
-                const sub_match = try pattern.match(allocator, var_map, app);
-                if (sub_match.result) |sub_matched| {
-                    _ = sub_matched;
-                } else {
-                    print("Var match updated\n", .{});
-                    // If nothing matched, default to current's var, if any
-                    if (current.map.getKey(Node.ofVar(""))) |v| {
-                        const get_or_put =
-                            try var_map.getOrPut(allocator, v.variable);
-                        // If a previous var was bound, check that the
-                        // current key matches it
-                        if (get_or_put.found_existing) {
-                            if (!get_or_put.value_ptr.*.eql(app))
-                                continue;
-                        } else get_or_put.value_ptr.* = app;
-                        current = current.map.get(Node.ofVar("")).?;
-                        index += 1;
+            print("match: ", .{});
+            const empty_node = node.asEmpty();
+
+            var next = if (pattern.map.get(empty_node)) |next|
+                next
+            else if (pattern.getVar()) |var_next| blk: {
+                print("\tvar next", .{});
+                break :blk var_next.next;
+            } else {
+                print("\tnull", .{});
+                return null;
+            };
+            print(" at index: {?}\n", .{pattern.map.getIndex(empty_node)});
+            var index = pattern.map.getIndex(empty_node) orelse
+                return null;
+            // var next = pattern.map.values()[index];
+            switch (node) {
+                .key => {},
+                .apps => |sub_apps| {
+                    for (sub_apps) |sub_app| {
+                        const sub_match_result =
+                            try next.match(allocator, var_map, sub_app);
+                        if (sub_match_result) |sub_match| {
+                            next = sub_match.pattern;
+                            print("\tsub match\n", .{});
+                        } else {
+                            print("\tsub match failed\n", .{});
+                            return null;
+                        }
                     }
-                }
+                },
+                else => @panic("unimplemented"),
             }
-            if (index == apps.len)
-                if (current.val) |val| if (maybe_val) |query_val|
-                    if (val.eql(query_val)) {
-                        result = val;
-                    };
+            // If nothing matched, default to current's var, if any
+            if (next.map.getKey(Node.ofVar(""))) |v| {
+                print("\tVar match updated\n", .{});
+                const get_or_put =
+                    try var_map.getOrPut(allocator, v.variable);
+                // If a previous var was bound, check that the
+                // current key matches it
+                if (get_or_put.found_existing) {
+                    if (!get_or_put.value_ptr.*.eql(node)) {
+                        print("\tfound equal existing match\n", .{});
+                    }
+                } else get_or_put.value_ptr.* = node;
+                next = next.map.get(Node.ofVar("")).?;
+                index += 1;
+            }
             return MatchResult{
-                .result = result,
+                .result = next.val,
+                .pattern = next,
                 .prefix_len = index,
                 // .var_map = var_map,
             };

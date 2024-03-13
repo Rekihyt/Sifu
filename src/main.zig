@@ -90,20 +90,22 @@ pub fn main() !void {
             defer _ = match_gpa.detectLeaks();
             var var_map = Pat.VarMap{};
             defer var_map.deinit(match_allocator);
-            const match = repl_pat.get(
-                // match_allocator,
-                // &var_map,
+            const maybe_match = try repl_pat.match(
+                match_allocator,
+                &var_map,
                 ast,
             );
-            // defer match_allocator.free(match);
+            // defer if (maybe_match) |match|
+            //     match.result.deinit(allocator);
             // If not inserting, then try to match the expression
-            if (match) |matched| {
-                if (matched.val) |val| {
+            if (maybe_match) |match|
+                if (match.result) |result| {
                     print("Match: ", .{});
-                    try val.write(buff_stdout);
+                    try result.write(buff_stdout);
                     _ = try buff_writer.write("\n");
-                } else print("Match, no val\n", .{});
-            } else print("No match\n", .{});
+                } else print("Match, but no result\n", .{})
+            else
+                print("No match\n", .{});
             // const evaluation = try repl_pat.evaluate(
             //     match_allocator,
             //     ast,
