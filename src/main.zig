@@ -48,8 +48,8 @@ pub fn main() !void {
     const stdin = io.getStdIn().reader();
     const stdout = io.getStdOut().writer();
     const stderr = io.getStdErr().writer();
-    var buff_writer = io.bufferedWriter(stdout);
-    const buff_stdout = buff_writer.writer();
+    var buff_writer_stdout = io.bufferedWriter(stdout);
+    const buff_stdout = buff_writer_stdout.writer();
     const buff_size = 4096;
     var buff: [buff_size]u8 = undefined;
     var fbs = io.fixedBufferStream(&buff);
@@ -102,19 +102,24 @@ pub fn main() !void {
                 if (match.result) |result| {
                     print("Match: ", .{});
                     try result.write(buff_stdout);
-                    _ = try buff_writer.write("\n");
+                    try buff_stdout.writeByte('\n');
                 } else print("Match, but no result\n", .{})
             else
                 print("No match\n", .{});
-            // const evaluation = try repl_pat.evaluate(
-            //     match_allocator,
-            //     ast,
-            // );
+            const rewrite = try repl_pat.rewrite(match_allocator, ast);
+            defer rewrite.deinit(match_allocator);
+            print("Rewrite: ", .{});
+            try rewrite.write(buff_stdout);
+            try buff_stdout.writeByte('\n');
+            // const evaluation = try repl_pat.evaluate(match_allocator, ast);
             // defer match_allocator.free(evaluation);
+            // print("Eval: ", .{});
+            // if (evaluation) |eval|
+            //     eval.pretty(buff_stdout);
         }
         try repl_pat.pretty(buff_stdout);
         try stderr.print("Allocated: {}\n", .{gpa.total_requested_bytes});
-        try buff_writer.flush();
+        try buff_writer_stdout.flush();
         fbs.reset();
     } else |e| switch (e) {
         error.EndOfStream => return {},

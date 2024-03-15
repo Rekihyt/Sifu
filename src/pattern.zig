@@ -427,7 +427,7 @@ pub fn PatternWithContext(
             };
         }
 
-        /// Deep copy a pattern by value.
+        /// Deep copy a pattern by value. Use deinit to free.
         pub fn copy(self: Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self{};
             var map_iter = self.map.iterator();
@@ -443,7 +443,8 @@ pub fn PatternWithContext(
             return result;
         }
 
-        /// Deep copy a pattern pointer, returning a pointer to new memory.
+        /// Deep copy a pattern pointer, returning a pointer to new memory. Use
+        /// destroy to free.
         pub fn clone(self: *Self, allocator: Allocator) !*Self {
             const clone_ptr = try allocator.create(Self);
             clone_ptr.* = try self.copy(allocator);
@@ -521,7 +522,7 @@ pub fn PatternWithContext(
             next: *Self,
         };
 
-        pub fn getVar(pattern: *Self) ?VarNext {
+        pub fn getVar(pattern: *const Self) ?VarNext {
             const index = pattern.map.getIndex(Node{ .variable = "" }) orelse
                 return null;
 
@@ -681,9 +682,10 @@ pub fn PatternWithContext(
             // var_map: VarMap,
         };
 
-        /// Matching a prefix where vars match anything in the pattern, and vars
-        /// in the pattern match anything in the expression. Includes partial
-        /// prefixes (ones that don't match all apps).
+        /// The first half of evaluation. The variables in the node match
+        /// anything in the pattern, and vars in the pattern match anything in
+        /// the expression. Includes partial prefixes (ones that don't match
+        /// all apps).
         /// - Any node matches a var pattern including a var (the var node is
         ///   then stored in the var map like any other node)
         /// - A var node doesn't match a non-var pattern (var matching is one
@@ -696,7 +698,7 @@ pub fn PatternWithContext(
         /// recursion).
         // TODO: move var_map from params to result
         pub fn match(
-            pattern: *Self,
+            pattern: *const Self,
             allocator: Allocator,
             var_map: *VarMap,
             node: Node,
@@ -758,32 +760,66 @@ pub fn PatternWithContext(
             };
         }
 
-        /// A single step of evaluation. Rewrites all variable captures into the
-        /// matched expression.
+        /// The second half of an evaluation step. Rewrites all variable
+        /// captures into the matched expression. Copies any variables in node
+        /// if they are keys in var_map with their values. If there are no
+        /// matches in var_map, this functions is equivalent to copy. Result
+        /// should be freed with deinit.
         pub fn rewrite(
-            pattern: *const Self,
+            pattern: Self,
             allocator: Allocator,
-            query: []const Node,
-        ) Allocator.Error!?*Node {
-            _ = allocator;
-            const matched = pattern.match(query);
-            _ = matched;
+            node: Node,
+        ) Allocator.Error!Node {
+            var var_map = VarMap{};
+            defer var_map.deinit(allocator);
+            const matched = try pattern.match(allocator, &var_map, node) orelse
+                return try node.copy(allocator);
+            const rewritten = if (matched.result) |result| switch (result.*) {
+                .key => result.*,
+                .variable => |variable| try (var_map.get(variable) orelse
+                    result.*).copy(allocator),
+                inline .apps, .arrow, .match, .list => |apps, tag| blk: {
+                    var apps_copy = try allocator.alloc(Node, apps.len);
+                    for (apps, apps_copy) |app, *app_copy|
+                        app_copy.* = try pattern.rewrite(allocator, app);
+
+                    break :blk @unionInit(Node, @tagName(tag), apps_copy);
+                },
+                // .pattern => |sub_pat| {
+                //     _ = sub_pat;
+                // },
+                else => @panic("unimplemented"),
+            } else try node.copy(allocator);
+            return rewritten;
         }
 
         /// Given a pattern and a query to match against it, this function
         /// continously matches until no matches are found, or a match repeats.
         /// Match result cases:
         /// - a pattern of lower ordinal: continue
-        /// - the same pattern: continue unless patterns are equivalent expressions
+        /// - the same pattern: continue unless patterns are equivalent
+        ///   expressions (fixed point)
         /// - a pattern of higher ordinal: break
         pub fn evaluate(
-            pattern: *const Self,
+            pattern: Self,
             // var_map: *VarMap,
             allocator: Allocator,
-            query: []const Node,
-        ) Allocator.Error!?*Node {
+            node: Node,
+        ) Allocator.Error!Node {
+            _ = node;
+            _ = pattern;
             _ = allocator;
-            return pattern.rewrite(query);
+            // switch (node) {
+            //     .apps => {
+            //         // TODO: match longest prefix instead of exactly
+
+            //     },
+            //     else => @panic("unimplemented"),
+            // }
+            // const rewrite = pattern.rewrite(query);
+            // rewrite.
+            // while ()
+            return;
         }
 
         /// Pretty print a pattern
