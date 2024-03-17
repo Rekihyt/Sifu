@@ -57,27 +57,6 @@ pub fn main() !void {
     //    - exit on EOF
     var repl_pat = Pat{};
     defer repl_pat.deinit(allocator);
-    try repl_pat.map.put(
-        allocator,
-        Ast.ofVar("x"),
-        try Pat.ofKey(allocator, .{ .lit = "1", .type = .I, .context = undefined }),
-    );
-    try repl_pat.map.put(
-        allocator,
-        Ast.ofVar("y"),
-        try Pat.ofKey(allocator, .{ .lit = "2", .type = .I, .context = undefined }),
-    );
-    try repl_pat.pretty(stderr);
-    if (repl_pat.get(Ast.ofVar(""))) |got| {
-        print("Got: ", .{});
-        try got.write(stderr);
-        print("\n", .{});
-    } else print("Got null\n", .{});
-    if (repl_pat.get(Ast.ofVar("x"))) |got| {
-        print("Got: ", .{});
-        try got.write(stderr);
-        print("\n", .{});
-    } else print("Got null\n", .{});
 
     while (stdin.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
         var fbs_written = io.fixedBufferStream(fbs.getWritten());

@@ -10,6 +10,7 @@ const Wyhash = std.hash.Wyhash;
 const mem = std.mem;
 const StringContext = std.array_hash_map.StringContext;
 const Allocator = std.mem.Allocator;
+const print = std.debug.print;
 
 /// The Sifu-specific interpreter Ast, using Tokens as keys and strings as
 /// values.
@@ -20,6 +21,13 @@ pub const Pat = @import("../pattern.zig").PatternWithContext(
     util.IntoArrayContext(Token),
     StringContext,
 );
+
+// for debugging with zig test --test-filter, comment this import
+// const stderr = if (true)
+const err_stream = if (@import("build_options").verbose_tests)
+    std.io.getStdErr().writer()
+else
+    std.io.null_writer;
 
 test "simple ast to pattern" {
     const term = Token{
@@ -53,4 +61,28 @@ test "Token equality" {
 
     try testing.expect(t1.eql(t2));
     try testing.expectEqual(t1.hash(), t2.hash());
+}
+
+test "var hashing" {
+    var pat = Pat{};
+    defer pat.deinit(testing.allocator);
+    try pat.map.put(testing.allocator, Ast.ofVar("x"), try Pat.ofKey(
+        testing.allocator,
+        .{ .lit = "1", .type = .I, .context = undefined },
+    ));
+    try pat.map.put(testing.allocator, Ast.ofVar("y"), try Pat.ofKey(
+        testing.allocator,
+        .{ .lit = "2", .type = .I, .context = undefined },
+    ));
+    try pat.pretty(err_stream);
+    if (pat.get(Ast.ofVar(""))) |got| {
+        print("Got: ", .{});
+        try got.write(err_stream);
+        print("\n", .{});
+    } else print("Got null\n", .{});
+    if (pat.get(Ast.ofVar("x"))) |got| {
+        print("Got: ", .{});
+        try got.write(err_stream);
+        print("\n", .{});
+    } else print("Got null\n", .{});
 }

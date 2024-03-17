@@ -241,12 +241,7 @@ pub fn PatternWithContext(
                     false
                 else switch (node) {
                     .key => |k| KeyCtx.eql(undefined, k, other.key, undefined),
-                    .variable => |v| VarCtx.eql(
-                        undefined,
-                        v,
-                        other.variable,
-                        undefined,
-                    ),
+                    .variable => other == .variable,
                     inline .apps, .arrow, .match, .list => |apps, tag| blk: {
                         const other_slice = @field(other, @tagName(tag));
                         break :blk apps.len == other_slice.len and
@@ -708,7 +703,7 @@ pub fn PatternWithContext(
             // Follow the longest branch that exists
             const empty_node = node.asEmpty();
 
-            print("Node as Empty: `", .{});
+            print("Emptied Node: `", .{});
             node.asEmpty().writeSExp(err_stream, null) catch unreachable;
             print("` ", .{});
             print("Matched pattern: ", .{});
