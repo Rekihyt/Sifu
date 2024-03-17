@@ -83,44 +83,44 @@ pub fn main() !void {
             const arrow = ast.arrow;
             const apps = Ast.ofApps(arrow[0 .. arrow.len - 1]);
             const val = arrow[arrow.len - 1];
-            print("Parsed apps hash: {}\n", .{apps.hash()});
+            // print("Parsed apps hash: {}\n", .{apps.hash()});
             try repl_pat.put(allocator, apps, val);
         } else {
-            print("Parsed ast hash: {}\n", .{ast.hash()});
-            if (repl_pat.get(ast)) |got| {
-                print("Got: ", .{});
-                try got.write(stderr);
-                print("\n", .{});
-            } else print("Got null\n", .{});
-            defer _ = match_gpa.detectLeaks();
-            var var_map = Pat.VarMap{};
-            defer var_map.deinit(match_allocator);
-            const maybe_match = try repl_pat.match(
-                match_allocator,
-                &var_map,
-                ast,
-            );
-            // defer if (maybe_match) |match|
-            //     match.result.deinit(allocator);
-            // If not inserting, then try to match the expression
-            if (maybe_match) |match|
-                if (match.result) |result| {
-                    print("Match: ", .{});
-                    try result.write(buff_stdout);
-                    try buff_stdout.writeByte('\n');
-                } else print("Match, but no result\n", .{})
-            else
-                print("No match\n", .{});
+            // // print("Parsed ast hash: {}\n", .{ast.hash()});
+            // if (repl_pat.get(ast)) |got| {
+            //     print("Got: ", .{});
+            //     try got.write(stderr);
+            //     print("\n", .{});
+            // } else print("Got null\n", .{});
+            // defer _ = match_gpa.detectLeaks();
+            // var var_map = Pat.VarMap{};
+            // defer var_map.deinit(match_allocator);
+            // const maybe_match = try repl_pat.match(
+            //     match_allocator,
+            //     &var_map,
+            //     ast,
+            // );
+            // // defer if (maybe_match) |match|
+            // //     match.result.deinit(allocator);
+            // // If not inserting, then try to match the expression
+            // if (maybe_match) |match|
+            //     if (match.result) |result| {
+            //         print("Match: ", .{});
+            //         try result.write(buff_stdout);
+            //         try buff_stdout.writeByte('\n');
+            //     } else print("Match, but no result\n", .{})
+            // else
+            //     print("No match\n", .{});
             // const rewrite = try repl_pat.rewrite(match_allocator, ast);
             // defer rewrite.deinit(match_allocator);
             // print("Rewrite: ", .{});
             // try rewrite.write(buff_stdout);
             // try buff_stdout.writeByte('\n');
-            // const evaluation = try repl_pat.evaluate(match_allocator, ast);
-            // defer match_allocator.free(evaluation);
-            // print("Eval: ", .{});
-            // if (evaluation) |eval|
-            //     eval.pretty(buff_stdout);
+            const eval = try repl_pat.evaluate(match_allocator, ast);
+            defer eval.deinit(match_allocator);
+            print("Eval: ", .{});
+            try eval.write(buff_stdout);
+            try buff_stdout.writeByte('\n');
         }
         try repl_pat.pretty(buff_stdout);
         try stderr.print("Allocated: {}\n", .{gpa.total_requested_bytes});

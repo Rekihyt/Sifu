@@ -91,13 +91,12 @@ pub fn PatternWithContext(
         );
         /// This is a pointer to the pattern at the end of some path of nodes,
         /// and an index to the start of the path.
-        const GetOrPutResult = struct {
-            // the value in the node map (the value is a pointer, this isn't a
-            // pointer to memory managed by the node map)
-            pattern_ptr: *Self,
-            index: usize, // the index in the top level node map
-            found_existing: bool,
-        };
+        const GetOrPutResult = NodeMap.GetOrPutResult;
+        // struct {
+        //     pattern_ptr: *Self,
+        //     index: usize, // the index in the top level node map
+        //     found_existing: bool,
+        // };
         /// Used to store the children, which are the next patterns pointed to
         /// by literal keys.
         pub const PatternList = std.ArrayListUnmanaged(Self);
@@ -591,20 +590,19 @@ pub fn PatternWithContext(
             node: Node,
             maybe_val: ?Node,
         ) Allocator.Error!GetOrPutResult {
-            const get_or_put = try pattern.map.getOrPut(
+            var result = try pattern.map.getOrPut(
                 allocator,
                 // No need to copy here because all slices have 0 length
                 node.asEmpty(),
             );
-            var found_existing = get_or_put.found_existing;
-            var current = if (found_existing) blk: {
+            var current = if (result.found_existing) blk: {
                 // TODO delete existing
-                print("Found existing\n", .{});
-                break :blk get_or_put.value_ptr;
+                // print("Found existing\n", .{});
+                break :blk result.value_ptr;
             } else blk: {
                 // const next = try Self.create(allocator);
-                get_or_put.value_ptr.* = Self{};
-                break :blk get_or_put.value_ptr;
+                result.value_ptr.* = Self{};
+                break :blk result.value_ptr;
             };
             switch (node) {
                 .key, .variable => {},
@@ -612,9 +610,13 @@ pub fn PatternWithContext(
                 // level hash
                 .apps, .arrow, .match, .list => |apps| {
                     for (apps) |app| {
-                        const sub_get_or_put =
+                        const sub_result =
                             try current.getOrPut(allocator, app, null);
-                        current = sub_get_or_put.pattern_ptr;
+
+                        result.found_existing = result.found_existing and
+                            sub_result.found_existing;
+                        current = sub_result.value_ptr;
+                        result.index = sub_result.index;
                     }
                 },
                 else => @panic("unimplemented"),
@@ -623,14 +625,10 @@ pub fn PatternWithContext(
                 // TODO: Clear existing value node
                 // print("Deleting old val: {*}\n", .{result.pattern_ptr.val});
                 // result.pattern_ptr.destroy(allocator);
-                print("Put Hash: {}\n", .{node.hash()});
+                // print("Put Hash: {}\n", .{node.hash()});
                 current.val = try val.clone(allocator);
             }
-            return GetOrPutResult{
-                .pattern_ptr = current,
-                .index = 0,
-                .found_existing = found_existing,
-            };
+            return result;
         }
 
         /// Add a node to the pattern by following `key`.
@@ -741,15 +739,15 @@ pub fn PatternWithContext(
             // If nothing matched, default to current's var, if any
             if (next.map.getKey(Node.ofVar(""))) |v| {
                 print("\tVar match updated\n", .{});
-                const get_or_put =
+                const result =
                     try var_map.getOrPut(allocator, v.variable);
                 // If a previous var was bound, check that the
                 // current key matches it
-                if (get_or_put.found_existing) {
-                    if (!get_or_put.value_ptr.*.eql(node)) {
+                if (result.found_existing) {
+                    if (!result.value_ptr.*.eql(node)) {
                         print("\tfound equal existing match\n", .{});
                     }
-                } else get_or_put.value_ptr.* = node;
+                } else result.value_ptr.* = node;
                 next = next.map.get(Node.ofVar("")).?;
                 index += 1;
             }
@@ -775,6 +773,11 @@ pub fn PatternWithContext(
             defer var_map.deinit(allocator);
             const matched = try pattern.match(allocator, &var_map, node) orelse
                 return try node.copy(allocator);
+            if (matched.result) |result| {
+                print("Rewrite matched {s}: ", .{@tagName(result.*)});
+                result.write(err_stream) catch unreachable;
+                err_stream.writeByte('\n') catch unreachable;
+            } else print("null\n", .{});
             const rewritten = if (matched.result) |result| switch (result.*) {
                 .key => result.*,
                 .variable => |variable| try (var_map.get(variable) orelse
@@ -790,7 +793,10 @@ pub fn PatternWithContext(
                 //     _ = sub_pat;
                 // },
                 else => @panic("unimplemented"),
-            } else try node.copy(allocator);
+            } else blk: {
+                print("No rewrite\n", .{});
+                break :blk try node.copy(allocator);
+            };
             return rewritten;
         }
 
@@ -807,9 +813,6 @@ pub fn PatternWithContext(
             allocator: Allocator,
             node: Node,
         ) Allocator.Error!Node {
-            _ = node;
-            _ = pattern;
-            _ = allocator;
             // switch (node) {
             //     .apps => {
             //         // TODO: match longest prefix instead of exactly
@@ -817,10 +820,15 @@ pub fn PatternWithContext(
             //     },
             //     else => @panic("unimplemented"),
             // }
-            // const rewrite = pattern.rewrite(query);
-            // rewrite.
-            // while ()
-            return;
+            var previous = try node.copy(allocator);
+            var eval = try pattern.rewrite(allocator, previous);
+            while (!previous.eql(eval)) {
+                previous.deinit(allocator);
+                previous = eval;
+                eval = try pattern.rewrite(allocator, previous);
+            }
+            previous.deinit(allocator);
+            return eval;
         }
 
         /// Pretty print a pattern on multiple lines
