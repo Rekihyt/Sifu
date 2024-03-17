@@ -57,6 +57,27 @@ pub fn main() !void {
     //    - exit on EOF
     var repl_pat = Pat{};
     defer repl_pat.deinit(allocator);
+    try repl_pat.map.put(
+        allocator,
+        Ast.ofVar("x"),
+        try Pat.ofKey(allocator, .{ .lit = "1", .type = .I, .context = undefined }),
+    );
+    try repl_pat.map.put(
+        allocator,
+        Ast.ofVar("y"),
+        try Pat.ofKey(allocator, .{ .lit = "2", .type = .I, .context = undefined }),
+    );
+    try repl_pat.pretty(stderr);
+    if (repl_pat.get(Ast.ofVar(""))) |got| {
+        print("Got: ", .{});
+        try got.write(stderr);
+        print("\n", .{});
+    } else print("Got null\n", .{});
+    if (repl_pat.get(Ast.ofVar("x"))) |got| {
+        print("Got: ", .{});
+        try got.write(stderr);
+        print("\n", .{});
+    } else print("Got null\n", .{});
 
     while (stdin.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
         var fbs_written = io.fixedBufferStream(fbs.getWritten());
@@ -87,6 +108,11 @@ pub fn main() !void {
             try repl_pat.put(allocator, apps, val);
         } else {
             print("Parsed ast hash: {}\n", .{ast.hash()});
+            if (repl_pat.get(ast)) |got| {
+                print("Got: ", .{});
+                try got.write(stderr);
+                print("\n", .{});
+            } else print("Got null\n", .{});
             defer _ = match_gpa.detectLeaks();
             var var_map = Pat.VarMap{};
             defer var_map.deinit(match_allocator);
@@ -106,11 +132,11 @@ pub fn main() !void {
                 } else print("Match, but no result\n", .{})
             else
                 print("No match\n", .{});
-            const rewrite = try repl_pat.rewrite(match_allocator, ast);
-            defer rewrite.deinit(match_allocator);
-            print("Rewrite: ", .{});
-            try rewrite.write(buff_stdout);
-            try buff_stdout.writeByte('\n');
+            // const rewrite = try repl_pat.rewrite(match_allocator, ast);
+            // defer rewrite.deinit(match_allocator);
+            // print("Rewrite: ", .{});
+            // try rewrite.write(buff_stdout);
+            // try buff_stdout.writeByte('\n');
             // const evaluation = try repl_pat.evaluate(match_allocator, ast);
             // defer match_allocator.free(evaluation);
             // print("Eval: ", .{});
