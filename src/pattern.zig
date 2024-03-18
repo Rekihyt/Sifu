@@ -715,10 +715,25 @@ pub fn PatternWithContext(
                 print(" at index: {?}\n", .{index});
                 break :blk next_pat;
             } else if (pattern.getVar()) |var_next| blk: {
+                // index += 1; TODO use as limit
                 index = var_next.index;
-                print("into var `{s}` ", .{var_next.variable});
+                print("as var `{s}` ", .{var_next.variable});
                 var_next.next.write(err_stream) catch unreachable;
                 print(" at index: {?}\n", .{index});
+                const var_result =
+                    try var_map.getOrPut(allocator, var_next.variable);
+                // If a previous var was bound, check that the
+                // current key matches it
+                if (var_result.found_existing) {
+                    if (!var_result.value_ptr.*.eql(node)) {
+                        print("found equal existing var mapping\n", .{});
+                    } else {
+                        print("found existing non-equal var mapping", .{});
+                    }
+                } else {
+                    print("New Var: {s}\n", .{var_result.key_ptr.*});
+                    var_result.value_ptr.* = node;
+                }
                 break :blk var_next.next;
             } else {
                 print(" null\n", .{});
@@ -739,21 +754,6 @@ pub fn PatternWithContext(
                 },
                 else => @panic("unimplemented"),
             }
-            // If nothing matched, default to current's var, if any
-            if (next.map.getKey(Node.ofVar(""))) |v| {
-                print("\tVar match updated\n", .{});
-                const result =
-                    try var_map.getOrPut(allocator, v.variable);
-                // If a previous var was bound, check that the
-                // current key matches it
-                if (result.found_existing) {
-                    if (!result.value_ptr.*.eql(node)) {
-                        print("\tfound equal existing match\n", .{});
-                    }
-                } else result.value_ptr.* = node;
-                next = next.map.get(Node.ofVar("")).?;
-                // index += 1; TODO use as limit
-            }
             return MatchResult{
                 .result = next.val,
                 .pattern = next,
@@ -769,25 +769,25 @@ pub fn PatternWithContext(
         pub fn rewrite(
             pattern: Self,
             allocator: Allocator,
+            var_map: VarMap,
             node: Node,
         ) Allocator.Error!Node {
-            var var_map = VarMap{};
-            defer var_map.deinit(allocator);
-            const matched = try pattern.match(allocator, &var_map, node) orelse
-                return try node.copy(allocator);
-            if (matched.result) |result| {
-                print("Rewrite matched {s}: ", .{@tagName(result.*)});
-                result.write(err_stream) catch unreachable;
-                err_stream.writeByte('\n') catch unreachable;
-            } else print("null\n", .{});
-            const rewritten = if (matched.result) |result| switch (result.*) {
-                .key => result.*,
-                .variable => |variable| try (var_map.get(variable) orelse
-                    result.*).copy(allocator),
+            const rewritten = switch (node) {
+                .key => node,
+                .variable => |variable| blk: {
+                    print("Var get: ", .{});
+                    if (var_map.get(variable)) |var_node|
+                        var_node.write(err_stream) catch unreachable
+                    else
+                        print("null", .{});
+                    print("\n", .{});
+                    break :blk try (var_map.get(variable) orelse
+                        node).copy(allocator);
+                },
                 inline .apps, .arrow, .match, .list => |apps, tag| blk: {
                     var apps_copy = try allocator.alloc(Node, apps.len);
                     for (apps, apps_copy) |app, *app_copy|
-                        app_copy.* = try pattern.rewrite(allocator, app);
+                        app_copy.* = try pattern.rewrite(allocator, var_map, app);
 
                     break :blk @unionInit(Node, @tagName(tag), apps_copy);
                 },
@@ -795,9 +795,6 @@ pub fn PatternWithContext(
                 //     _ = sub_pat;
                 // },
                 else => @panic("unimplemented"),
-            } else blk: {
-                print("No rewrite\n", .{});
-                break :blk try node.copy(allocator);
             };
             return rewritten;
         }
@@ -822,15 +819,27 @@ pub fn PatternWithContext(
             //     },
             //     else => @panic("unimplemented"),
             // }
+            var var_map = VarMap{};
+            defer var_map.deinit(allocator);
             var previous = try node.copy(allocator);
-            var eval = try pattern.rewrite(allocator, previous);
-            while (!previous.eql(eval)) {
+            // defer previous.deinit(allocator);
+            return while (try pattern.match(allocator, &var_map, previous)) |matched| {
+                const eval = if (matched.result) |result| blk: {
+                    print("Rewrite matched {s}: ", .{@tagName(result.*)});
+                    result.write(err_stream) catch unreachable;
+                    err_stream.writeByte('\n') catch unreachable;
+                    break :blk try pattern.rewrite(allocator, var_map, result.*);
+                } else {
+                    print("null\n", .{});
+                    break previous;
+                };
+                print("vars in map: {}\n", .{var_map.entries.len});
+                if (previous.eql(eval)) {
+                    break eval;
+                }
                 previous.deinit(allocator);
                 previous = eval;
-                eval = try pattern.rewrite(allocator, previous);
-            }
-            previous.deinit(allocator);
-            return eval;
+            } else previous;
         }
 
         /// Pretty print a pattern on multiple lines
