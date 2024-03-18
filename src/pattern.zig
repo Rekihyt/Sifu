@@ -590,47 +590,23 @@ pub fn PatternWithContext(
             pattern: *Self,
             allocator: Allocator,
             node: Node,
-            maybe_val: ?Node,
         ) Allocator.Error!GetOrPutResult {
-            var result = try pattern.map.getOrPut(
-                allocator,
-                // No need to copy here because all slices have 0 length
-                node.asEmpty(),
-            );
-            var current = if (result.found_existing) blk: {
-                // TODO delete existing
-                // print("Found existing\n", .{});
-                break :blk result.value_ptr;
-            } else blk: {
-                // const next = try Self.create(allocator);
+            // No need to copy here because all slices have 0 length
+            var result = try pattern.map.getOrPut(allocator, node.asEmpty());
+            if (result.found_existing) {
+                print("Found existing\n", .{});
+            } else {
                 result.value_ptr.* = Self{};
-                break :blk result.value_ptr;
-            };
+            }
             switch (node) {
                 .key, .variable => {},
                 // All slice types are encoded the same way after their top
                 // level hash
                 .apps, .arrow, .match, .list => |apps| {
-                    for (apps) |app| {
-                        const sub_result =
-                            try current.map.getOrPut(allocator, app);
-                        if (!sub_result.found_existing) {
-                            sub_result.value_ptr.* = Self{};
-                            result.found_existing = false;
-                        }
-                        current = sub_result.value_ptr;
-                        result.index = sub_result.index;
-                    }
+                    for (apps) |app|
+                        result = try result.value_ptr.getOrPut(allocator, app);
                 },
                 else => @panic("unimplemented"),
-            }
-            if (maybe_val) |val| {
-                if (current.val) |prev_val| {
-                    print("Deleting old val: {*}\n", .{current.val});
-                    prev_val.destroy(allocator);
-                }
-                // print("Put Hash: {}\n", .{node.hash()});
-                current.val = try val.clone(allocator);
             }
             return result;
         }
@@ -646,7 +622,15 @@ pub fn PatternWithContext(
             key: Node,
             maybe_val: ?Node,
         ) Allocator.Error!void {
-            _ = try self.getOrPut(allocator, key, maybe_val);
+            const get_or_put = try self.getOrPut(allocator, key);
+            if (maybe_val) |val| {
+                if (get_or_put.value_ptr.*.val) |prev_val| {
+                    print("Deleting old val: {*}\n", .{prev_val});
+                    prev_val.destroy(allocator);
+                }
+                // print("Put Hash: {}\n", .{node.hash()});
+                get_or_put.value_ptr.*.val = try val.clone(allocator);
+            }
         }
 
         /// Add a node to the pattern by following `keys`, wrapping them into an
