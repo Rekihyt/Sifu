@@ -513,6 +513,7 @@ pub fn PatternWithContext(
 
         pub const VarNext = struct {
             variable: Var,
+            index: usize,
             next: Self,
         };
 
@@ -522,6 +523,7 @@ pub fn PatternWithContext(
 
             return VarNext{
                 .variable = pattern.map.keys()[index].variable,
+                .index = index,
                 .next = pattern.map.values()[index],
             };
         }
@@ -701,26 +703,27 @@ pub fn PatternWithContext(
             // Follow the longest branch that exists
             const empty_node = node.asEmpty();
 
-            print("Emptied Node: `", .{});
+            print("Matched: `", .{});
             node.asEmpty().writeSExp(err_stream, null) catch unreachable;
             print("` ", .{});
-            print("Matched pattern: ", .{});
-            var next = if (pattern.map.get(empty_node)) |next| blk: {
-                next.write(err_stream) catch unreachable;
-                print(" at index: {?}\n", .{pattern.map.getIndex(empty_node)});
-                break :blk next;
+            var index: usize = undefined;
+            var next = if (pattern.map.getIndex(empty_node)) |next_index| blk: {
+                index = next_index;
+                print("exactly: ", .{});
+                const next_pat = pattern.map.values()[index];
+                next_pat.write(err_stream) catch unreachable;
+                print(" at index: {?}\n", .{index});
+                break :blk next_pat;
             } else if (pattern.getVar()) |var_next| blk: {
-                print("defaulting to var `{s}` at index: {?}\n", .{
-                    var_next.variable, pattern.map.getIndex(Node.ofVar("")),
-                });
+                index = var_next.index;
+                print("into var `{s}` ", .{var_next.variable});
+                var_next.next.write(err_stream) catch unreachable;
+                print(" at index: {?}\n", .{index});
                 break :blk var_next.next;
             } else {
-                print("null\n", .{});
+                print(" null\n", .{});
                 return null;
             };
-            var index = pattern.map.getIndex(empty_node) orelse
-                return null;
-            // var next = pattern.map.values()[index];
             switch (node) {
                 .key, .variable => {},
                 .apps, .match, .arrow, .list => |sub_apps| {
@@ -749,13 +752,12 @@ pub fn PatternWithContext(
                     }
                 } else result.value_ptr.* = node;
                 next = next.map.get(Node.ofVar("")).?;
-                index += 1;
+                // index += 1; TODO use as limit
             }
             return MatchResult{
                 .result = next.val,
                 .pattern = next,
                 .prefix_len = index,
-                // .var_map = var_map,
             };
         }
 
