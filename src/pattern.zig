@@ -613,10 +613,11 @@ pub fn PatternWithContext(
                 .apps, .arrow, .match, .list => |apps| {
                     for (apps) |app| {
                         const sub_result =
-                            try current.getOrPut(allocator, app, null);
-
-                        result.found_existing = result.found_existing and
-                            sub_result.found_existing;
+                            try current.map.getOrPut(allocator, app);
+                        if (!sub_result.found_existing) {
+                            sub_result.value_ptr.* = Self{};
+                            result.found_existing = false;
+                        }
                         current = sub_result.value_ptr;
                         result.index = sub_result.index;
                     }
@@ -624,9 +625,10 @@ pub fn PatternWithContext(
                 else => @panic("unimplemented"),
             }
             if (maybe_val) |val| {
-                // TODO: Clear existing value node
-                // print("Deleting old val: {*}\n", .{result.pattern_ptr.val});
-                // result.pattern_ptr.destroy(allocator);
+                if (current.val) |prev_val| {
+                    print("Deleting old val: {*}\n", .{current.val});
+                    prev_val.destroy(allocator);
+                }
                 // print("Put Hash: {}\n", .{node.hash()});
                 current.val = try val.clone(allocator);
             }
@@ -812,17 +814,9 @@ pub fn PatternWithContext(
             allocator: Allocator,
             node: Node,
         ) Allocator.Error!Node {
-            // switch (node) {
-            //     .apps => {
-            //         // TODO: match longest prefix instead of exactly
-
-            //     },
-            //     else => @panic("unimplemented"),
-            // }
             var var_map = VarMap{};
             defer var_map.deinit(allocator);
             var previous = try node.copy(allocator);
-            // defer previous.deinit(allocator);
             return while (try pattern.match(allocator, &var_map, previous)) |matched| {
                 const eval = if (matched.result) |result| blk: {
                     print("Rewrite matched {s}: ", .{@tagName(result.*)});
