@@ -7,8 +7,8 @@
 
   - No turing completeness, everything terminates by matching entries whose
     index in the map is less than (or recursive/equal, but with structural
-    simplification) until a fixed point (the value doesn't change after
-    matching).
+    simplification) until a fixed point (any remaining indices contain no more
+    matches).
 
   - Everything is a pattern map (like tries, but lookups have to deal with sub-lookups)
 
