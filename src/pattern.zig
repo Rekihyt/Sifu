@@ -601,10 +601,22 @@ pub fn PatternWithContext(
             switch (node) {
                 .key, .variable => {},
                 // All slice types are encoded the same way after their top
-                // level hash
+                // level hash. Their pattern's values will always be patterns
+                // too, which will map nested apps to the next top level app.
                 .apps, .arrow, .match, .list => |apps| {
                     for (apps) |app|
                         result = try result.value_ptr.getOrPut(allocator, app);
+                    if (!result.found_existing)
+                        result.value_ptr.* = Self{};
+                    // This value will always be a pat, corresponding to the
+                    // next node after all subapps
+                    result.value_ptr = if (result.value_ptr.*.value) |pat_value|
+                        &pat_value.pattern
+                    else blk: {
+                        const next_ptr = try Node.createPattern(allocator, Self{});
+                        result.value_ptr.*.value = next_ptr;
+                        break :blk &next_ptr.pattern;
+                    };
                 },
                 else => @panic("unimplemented"),
             }
@@ -832,9 +844,9 @@ pub fn PatternWithContext(
             optional_indent: ?usize,
         ) @TypeOf(writer).Error!void {
             if (self.value) |value| {
-                try writer.writeByte('|');
+                try writer.writeAll("❬");
                 try value.writeIndent(writer, null);
-                try writer.writeAll("| ");
+                try writer.writeAll("❭ ");
             }
             const optional_indent_inc = if (optional_indent) |indent|
                 indent + indent_increment
