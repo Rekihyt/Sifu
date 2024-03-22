@@ -225,13 +225,15 @@ pub fn PatternWithContext(
                             else => {},
                         }
                     },
-                    // All var asts hash to the same value,
-                    // which is just their enum
-                    .variable => {},
-                    .key => |k| hasher.update(
-                        &mem.toBytes(KeyCtx.hash(undefined, k)),
+                    // Variables must be unique because otherwise patterns with
+                    // multiple equal variables cannot be encoded separately
+                    .variable => |variable| hasher.update(
+                        &mem.toBytes(VarCtx.hash(undefined, variable)),
                     ),
-                    .pattern => |p| p.hasherUpdate(hasher),
+                    .key => |key| hasher.update(
+                        &mem.toBytes(KeyCtx.hash(undefined, key)),
+                    ),
+                    .pattern => |pattern| pattern.hasherUpdate(hasher),
                 }
             }
 
@@ -606,17 +608,6 @@ pub fn PatternWithContext(
                 .apps, .arrow, .match, .list => |apps| {
                     for (apps) |app|
                         result = try result.value_ptr.getOrPut(allocator, app);
-                    if (!result.found_existing)
-                        result.value_ptr.* = Self{};
-                    // This value will always be a pat, corresponding to the
-                    // next node after all subapps
-                    result.value_ptr = if (result.value_ptr.*.value) |pat_value|
-                        &pat_value.pattern
-                    else blk: {
-                        const next_ptr = try Node.createPattern(allocator, Self{});
-                        result.value_ptr.*.value = next_ptr;
-                        break :blk &next_ptr.pattern;
-                    };
                 },
                 else => @panic("unimplemented"),
             }
@@ -1034,3 +1025,8 @@ test "Memory: nested pattern" {
         null,
     );
 }
+
+// TODO: test for multiple patterns with different variables, and with multiple
+// equal variables
+// TODO: test for patterns with equal keys but different structure, like A (B)
+// and (A B)
