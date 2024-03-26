@@ -115,6 +115,11 @@ pub fn PatternWithContext(
         /// storing things by value. Nested apps and patterns are encoded by
         /// a layer of pointer indirection.
         map: NodeMap = NodeMap{},
+        /// This is for encoding/matching nested apps. Each layer of pointer
+        /// redirection encodes a level of app nesting (parens).
+        sub_apps: ?*Self = null,
+        /// This is for encoding/matching nested patterns
+        sub_pat: ?*Self = null,
         /// A null value represents an undefined pattern, for example in `Foo
         /// Bar -> 123`, the value at `Foo` would be null.
         value: ?*Node = null,
@@ -457,6 +462,12 @@ pub fn PatternWithContext(
 
         /// The opposite of `copy`.
         pub fn deinit(self: *Self, allocator: Allocator) void {
+            if (self.sub_apps) |sub_apps|
+                sub_apps.destroy(allocator);
+
+            if (self.sub_pat) |sub_pat|
+                sub_pat.destroy(allocator);
+
             defer self.map.deinit(allocator);
             var iter = self.map.iterator();
             while (iter.next()) |entry| {
@@ -519,17 +530,6 @@ pub fn PatternWithContext(
             next: Self,
         };
 
-        pub fn getVar(pattern: *const Self) ?VarNext {
-            const index = pattern.map.getIndex(Node{ .variable = "" }) orelse
-                return null;
-
-            return VarNext{
-                .variable = pattern.map.keys()[index].variable,
-                .index = index,
-                .next = pattern.map.values()[index],
-            };
-        }
-
         /// Follows `pattern` for each app matching structure as well as value.
         /// Does not require allocation because variable branches are not
         /// explored, but rather followed. This is an exact match, so variables
@@ -543,22 +543,17 @@ pub fn PatternWithContext(
             pattern: Self,
             node: Node,
         ) ?Self {
-            print("get: ", .{});
-            const empty_node = node.asEmpty();
-            if (pattern.map.get(empty_node)) |value|
-                value.write(err_stream) catch unreachable
-            else
-                print("null", .{});
-            print(" at index: {?}\n", .{pattern.map.getIndex(empty_node)});
-            var index = pattern.map.getIndex(empty_node) orelse
-                return null;
-            var next = pattern.map.values()[index];
             return switch (node) {
-                .key, .variable => next,
+                .key, .variable => pattern.map.get(node),
                 .apps, .arrow, .match, .list => |sub_apps| blk: {
+                    var next = pattern.sub_apps orelse
+                        break :blk null;
                     const prefix = next.getPrefix(sub_apps);
                     break :blk if (prefix.len == sub_apps.len)
-                        prefix.end
+                        if (prefix.end.value) |val_next|
+                            val_next.pattern
+                        else
+                            null
                     else
                         null;
                 },
@@ -592,22 +587,41 @@ pub fn PatternWithContext(
             pattern: *Self,
             allocator: Allocator,
             node: Node,
-        ) Allocator.Error!GetOrPutResult {
-            // No need to copy here because empty slices have 0 length
-            var result = try pattern.map.getOrPut(allocator, node.asEmpty());
-            if (result.found_existing) {
-                print("Found existing\n", .{});
-            } else {
-                result.value_ptr.* = Self{};
-            }
+        ) Allocator.Error!*Self {
+            var result = pattern;
             switch (node) {
-                .key, .variable => {},
-                // All slice types are encoded the same way after their top
-                // level hash. Their pattern's values will always be patterns
-                // too, which will map nested apps to the next top level app.
-                .apps, .arrow, .match, .list => |apps| {
+                .key, .variable => {
+                    // No need to copy here because empty slices have 0 length
+                    const get_or_put = try pattern.map.getOrPut(allocator, node);
+                    if (get_or_put.found_existing) {
+                        print("Found existing\n", .{});
+                    } else {
+                        get_or_put.value_ptr.* = Self{};
+                    }
+                    result = get_or_put.value_ptr;
+                },
+                // App pattern's values will always be patterns too, which will
+                // map nested apps to the next top level app.
+                .apps => |apps| {
+                    result =
+                        try util.getOrInit(.sub_apps, result, allocator);
+                    assert(result != pattern);
                     for (apps) |app|
-                        result = try result.value_ptr.getOrPut(allocator, app);
+                        result = try result.getOrPut(allocator, app);
+
+                    const next = result.value orelse blk: {
+                        const new_pat = try Node.createPattern(allocator, Self{});
+                        result.value = new_pat;
+                        break :blk new_pat;
+                    };
+                    result = &next.pattern;
+                },
+                // All op types are encoded the same way after their top level
+                // hash. These don't need special treatment because their
+                // structure is simple.
+                .arrow, .match, .list => |apps| {
+                    for (apps) |app|
+                        result = try result.getOrPut(allocator, app);
                 },
                 else => @panic("unimplemented"),
             }
@@ -625,14 +639,16 @@ pub fn PatternWithContext(
             key: Node,
             maybe_value: ?Node,
         ) Allocator.Error!void {
-            const get_or_put = try self.getOrPut(allocator, key);
+            const result = try self.getOrPut(allocator, key);
             if (maybe_value) |value| {
-                if (get_or_put.value_ptr.*.value) |prev_value| {
+                if (result.value) |prev_value| {
                     print("Deleting old value: {*}\n", .{prev_value});
+                    prev_value.writeIndent(err_stream, null) catch unreachable;
+                    print("\n", .{});
                     prev_value.destroy(allocator);
                 }
                 // print("Put Hash: {}\n", .{node.hash()});
-                get_or_put.value_ptr.*.value = try value.clone(allocator);
+                result.value = try value.clone(allocator);
             }
         }
 
@@ -659,6 +675,17 @@ pub fn PatternWithContext(
                 Node.ofApps(apps),
                 optional_value,
             );
+        }
+
+        pub fn getVar(pattern: *const Self) ?VarNext {
+            const index = pattern.map.getIndex(Node{ .variable = "" }) orelse
+                return null;
+
+            return VarNext{
+                .variable = pattern.map.keys()[index].variable,
+                .index = index,
+                .next = pattern.map.values()[index],
+            };
         }
 
         /// The resulting pattern and its value from successful matching
@@ -693,18 +720,45 @@ pub fn PatternWithContext(
             node: Node,
         ) Allocator.Error!?MatchResult {
             const empty_node = node.asEmpty();
-
-            print("Matched: `", .{});
+            print("Matching `", .{});
             node.asEmpty().writeSExp(err_stream, null) catch unreachable;
             print("` ", .{});
-            var result: MatchResult = undefined;
-            if (pattern.map.getIndex(empty_node)) |next_index| {
-                result.index = next_index;
-                result.pattern = pattern.map.values()[next_index];
-                print("exactly: ", .{});
-                result.pattern.write(err_stream) catch unreachable;
-                print(" at index: {?}\n", .{result.index});
-            } else if (pattern.getVar()) |var_next| {
+            var result = MatchResult{
+                .pattern = pattern,
+                .next = null,
+                .index = pattern.map.entries.len,
+            };
+            switch (node) {
+                .key, .variable => if (pattern.map.getIndex(empty_node)) |next_index| {
+                    result.index = next_index;
+                    result.pattern = pattern.map.values()[next_index];
+                    print("exactly: ", .{});
+                    result.pattern.write(err_stream) catch unreachable;
+                    print(" at index: {?}\n", .{result.index});
+                },
+                .match, .arrow, .list => |sub_apps| {
+                    // TODO: Follow the longest branch that exists
+                    for (sub_apps) |sub_app| result = try result.pattern.match(
+                        allocator,
+                        var_map,
+                        sub_app,
+                    ) orelse break;
+                },
+                .apps => |apps| {
+                    if (result.pattern.sub_apps) |sub_apps| {
+                        result.pattern = sub_apps.*;
+                        for (apps) |app| result = try result.pattern.match(
+                            allocator,
+                            var_map,
+                            app,
+                        ) orelse break;
+                        if (result.pattern.value) |next|
+                            result.pattern = next.pattern;
+                    }
+                },
+                else => @panic("unimplemented"),
+            }
+            if (result.next == null) if (pattern.getVar()) |var_next| {
                 // index += 1; // TODO use as limit
                 result.index = var_next.index;
                 print("as var `{s}` ", .{var_next.variable});
@@ -728,20 +782,7 @@ pub fn PatternWithContext(
             } else {
                 print(" null\n", .{});
                 return null;
-            }
-            switch (node) {
-                .key, .variable => {},
-                .apps, .match, .arrow, .list => |sub_apps| {
-                    // TODO: Follow the longest branch that exists
-                    for (sub_apps) |sub_app|
-                        result = try result.pattern.match(
-                            allocator,
-                            var_map,
-                            sub_app,
-                        ) orelse break;
-                },
-                else => @panic("unimplemented"),
-            }
+            };
             return result;
         }
 
@@ -850,6 +891,14 @@ pub fn PatternWithContext(
                 try writer.writeByte(' ');
             try writer.writeByte('}');
             try writer.writeAll(if (optional_indent) |_| "\n" else "");
+            if (self.sub_apps) |sub_apps| {
+                for (0..optional_indent_inc orelse 0) |_|
+                    try writer.writeByte(' ');
+                try writer.writeAll("() -> ");
+                try sub_apps.writeIndent(writer, optional_indent_inc);
+            }
+            if (self.sub_pat) |sub_pat|
+                try sub_pat.writeIndent(writer, optional_indent_inc);
         }
 
         fn writeEntries(
