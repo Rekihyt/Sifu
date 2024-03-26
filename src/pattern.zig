@@ -694,7 +694,6 @@ pub fn PatternWithContext(
         /// `index` - where in the last node map matched
         const MatchResult = struct {
             pattern: Self,
-            next: ?Self = null,
             index: usize,
         };
 
@@ -725,7 +724,6 @@ pub fn PatternWithContext(
             print("` ", .{});
             var result = MatchResult{
                 .pattern = pattern,
-                .next = null,
                 .index = pattern.map.entries.len,
             };
             switch (node) {
@@ -758,31 +756,31 @@ pub fn PatternWithContext(
                 },
                 else => @panic("unimplemented"),
             }
-            if (result.next == null) if (pattern.getVar()) |var_next| {
-                // index += 1; // TODO use as limit
-                result.index = var_next.index;
-                print("as var `{s}` ", .{var_next.variable});
-                var_next.next.write(err_stream) catch unreachable;
-                print(" at index: {?}\n", .{result.index});
-                const var_result =
-                    try var_map.getOrPut(allocator, var_next.variable);
-                // If a previous var was bound, check that the
-                // current key matches it
-                if (var_result.found_existing) {
-                    if (!var_result.value_ptr.*.eql(node)) {
-                        print("found equal existing var mapping\n", .{});
-                    } else {
-                        print("found existing non-equal var mapping", .{});
-                    }
-                } else {
-                    print("New Var: {s}\n", .{var_result.key_ptr.*});
-                    var_result.value_ptr.* = node;
-                }
-                result.pattern = var_next.next;
-            } else {
-                print(" null\n", .{});
-                return null;
-            };
+            // if (pattern.getVar()) |var_next| {
+            //     // index += 1; // TODO use as limit
+            //     result.index = var_next.index;
+            //     print("as var `{s}` ", .{var_next.variable});
+            //     var_next.next.write(err_stream) catch unreachable;
+            //     print(" at index: {?}\n", .{result.index});
+            //     const var_result =
+            //         try var_map.getOrPut(allocator, var_next.variable);
+            //     // If a previous var was bound, check that the
+            //     // current key matches it
+            //     if (var_result.found_existing) {
+            //         if (!var_result.value_ptr.*.eql(node)) {
+            //             print("found equal existing var mapping\n", .{});
+            //         } else {
+            //             print("found existing non-equal var mapping", .{});
+            //         }
+            //     } else {
+            //         print("New Var: {s}\n", .{var_result.key_ptr.*});
+            //         var_result.value_ptr.* = node;
+            //     }
+            //     result.pattern = var_next.next;
+            // } else {
+            //     print(" null\n", .{});
+            //     return null;
+            // }
             return result;
         }
 

@@ -44,7 +44,6 @@ pub fn main() !void {
     ){};
     defer _ = match_gpa.deinit();
     const match_allocator = match_gpa.allocator();
-    _ = match_allocator;
 
     const stdin = io.getStdIn().reader();
     const stdout = io.getStdOut().writer();
@@ -88,12 +87,12 @@ pub fn main() !void {
             try repl_pat.put(allocator, apps, val);
         } else {
             // // print("Parsed ast hash: {}\n", .{ast.hash()});
-            if (repl_pat.get(ast)) |got| {
-                print("Got: ", .{});
-                try got.write(stderr);
-                print("\n", .{});
-            } else print("Got null\n", .{});
-            defer _ = match_gpa.detectLeaks();
+            // if (repl_pat.get(ast)) |got| {
+            //     print("Got: ", .{});
+            //     try got.write(stderr);
+            //     print("\n", .{});
+            // } else print("Got null\n", .{});
+            // defer _ = match_gpa.detectLeaks();
             // var var_map = Pat.VarMap{};
             // defer var_map.deinit(match_allocator);
             // const maybe_match = try repl_pat.match(
@@ -105,7 +104,7 @@ pub fn main() !void {
             // //     match.result.deinit(allocator);
             // // If not inserting, then try to match the expression
             // if (maybe_match) |match|
-            //     if (match.result) |result| {
+            //     if (match.pattern.value) |result| {
             //         print("Match: ", .{});
             //         try result.write(buff_stdout);
             //         try buff_stdout.writeByte('\n');
@@ -117,11 +116,11 @@ pub fn main() !void {
             // print("Rewrite: ", .{});
             // try rewrite.write(buff_stdout);
             // try buff_stdout.writeByte('\n');
-            // const eval = try repl_pat.evaluate(match_allocator, ast);
-            // defer eval.deinit(match_allocator);
-            // print("Eval: ", .{});
-            // try eval.write(buff_stdout);
-            // try buff_stdout.writeByte('\n');
+            const eval = try repl_pat.evaluate(match_allocator, ast);
+            defer eval.deinit(match_allocator);
+            print("Eval: ", .{});
+            try eval.write(buff_stdout);
+            try buff_stdout.writeByte('\n');
         }
         try repl_pat.pretty(buff_stdout);
         try stderr.print("Allocated: {}\n", .{gpa.total_requested_bytes});
