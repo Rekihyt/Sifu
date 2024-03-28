@@ -30,7 +30,9 @@ const debug = std.debug;
 const meta = std.meta;
 const print = util.print;
 
-// TODO: add indentation tracking, and separate based on newlines+indent
+// TODO add indentation tracking, and separate based on newlines+indent
+// TODO revert parsing to assume apps at all levels, with ops as appended,
+// single terms to apps (add a new branch for the current way of parsing)
 
 /// Convert this token to a term by parsing its literal value.
 pub fn parseTerm(term: Token) Oom!Term {
@@ -127,12 +129,12 @@ const Level = struct {
     /// kinds (`.Infix`, `.Match` etc.) will be apps. Returns a pointer to the
     /// op if one was finalized.
     fn finalize(
-        lvl: *Level,
+        level: *Level,
         op_tag: ?Type,
         allocator: Allocator,
     ) !Ast {
-        const next_slice = try lvl.next.toOwnedSlice(allocator);
-        const maybe_op_tail = lvl.maybe_op_tail;
+        const next_slice = try level.next.toOwnedSlice(allocator);
+        const maybe_op_tail = level.maybe_op_tail;
         // After we set this pointer, next_slice cannot be freed.
         var ast = if (op_tag) |tag| blk: {
             const op = switch (tag) {
@@ -145,7 +147,7 @@ const Level = struct {
                     .{@tagName(tag)},
                 ),
             };
-            lvl.maybe_op_tail = getOpTail(op);
+            level.maybe_op_tail = getOpTail(op);
             break :blk op;
         } else Ast{ .apps = next_slice };
         if (maybe_op_tail) |tail| {
@@ -153,9 +155,9 @@ const Level = struct {
             print("\n", .{});
             tail.* = ast;
         } else {
-            lvl.current = ast;
+            level.current = ast;
         }
-        return lvl.current;
+        return level.current;
     }
 };
 
@@ -171,7 +173,7 @@ pub fn parseAppend(
     line: []const Token,
 ) !?Ast {
     // These variables are relative to the current level of nesting being parsed
-    var lvl = levels.pop();
+    var level = levels.pop();
     for (line) |token| {
         const next_ast = switch (token.type) {
             .Name => Ast.ofLit(token),
@@ -183,42 +185,42 @@ pub fn parseAppend(
                     .Comma => .list,
                     else => unreachable,
                 };
-                if (lvl.maybe_op_tail) |tail|
-                    if (@intFromEnum(op_tag) < @intFromEnum(lvl.current)) {
+                if (level.maybe_op_tail) |tail|
+                    if (@intFromEnum(op_tag) < @intFromEnum(level.current)) {
                         print("Parsing lower precedence\n", .{});
                         print("Op: ", .{});
-                        lvl.current.write(stderr) catch unreachable;
+                        level.current.write(stderr) catch unreachable;
                         print("\n", .{});
                         _ = tail;
                     };
                 if (tag == .Infix)
-                    try lvl.next.append(allocator, Ast.ofLit(token));
+                    try level.next.append(allocator, Ast.ofLit(token));
                 // Add an apps for the trailing args
-                try lvl.next.append(allocator, Ast{ .apps = &.{} });
+                try level.next.append(allocator, Ast{ .apps = &.{} });
                 // Right hand args for previous op with higher precedence
-                // print("Rhs Len: {}\n", .{lvl.next.items.len});
-                _ = try lvl.finalize(tag, allocator);
+                // print("Rhs Len: {}\n", .{level.next.items.len});
+                _ = try level.finalize(tag, allocator);
                 continue;
             },
             .LeftParen => {
                 // Save index of the nested app to write to later
-                try levels.append(allocator, lvl);
+                try levels.append(allocator, level);
                 // Reset vars for new nesting level
-                lvl = Level{};
+                level = Level{};
                 continue;
             },
             .RightParen => blk: {
-                defer lvl = levels.pop();
-                break :blk try lvl.finalize(null, allocator);
+                defer level = levels.pop();
+                break :blk try level.finalize(null, allocator);
             },
             .Var => Ast.ofVar(token.lit),
             .Str, .I, .F, .U => Ast.ofLit(token),
             .Comment, .NewLine => Ast.ofLit(token),
             else => @panic("unimplemented"),
         };
-        try lvl.next.append(allocator, next_ast);
+        try level.next.append(allocator, next_ast);
     }
-    const result = try lvl.finalize(null, allocator);
+    const result = try level.finalize(null, allocator);
     // TODO: return optional void and move to caller
     return result;
 }

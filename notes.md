@@ -46,6 +46,8 @@ Complexity = Information ^ 2
 
 Programming languages today try to do two separate things at once: they model a form of computation (bit ops, memory, Non-network IO), and they talk about these computations (function calls, types, Network IO). But these are two separate things and they require two separate tools. A great example of this is the Python ecosystem: all the computation is done by a language good at it (C or C++), and the talking about these computations is left to a language good at that, namely Python. It is easier to have to separate languages than trying to do both even though both languages were designed as general purpose.
 
+A computation model that facilitates language, not vice-versa.
+
 ### Ideas
 
 - core language is just a rewrite engine
