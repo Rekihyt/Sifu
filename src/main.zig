@@ -44,7 +44,6 @@ pub fn main() !void {
     ){};
     defer _ = match_gpa.deinit();
     const match_allocator = match_gpa.allocator();
-    _ = match_allocator;
 
     const stdin = io.getStdIn().reader();
     const stdout = io.getStdOut().writer();
@@ -88,30 +87,27 @@ pub fn main() !void {
             try repl_pat.put(allocator, apps, val);
         } else {
             // // print("Parsed ast hash: {}\n", .{ast.hash()});
-            if (repl_pat.get(ast.apps)) |got| {
-                print("Got: ", .{});
-                try got.write(stderr);
-                print("\n", .{});
-            } else print("Got null\n", .{});
-            // defer _ = match_gpa.detectLeaks();
-            // var var_map = Pat.VarMap{};
-            // defer var_map.deinit(match_allocator);
-            // const maybe_match = try repl_pat.match(
-            //     match_allocator,
-            //     &var_map,
-            //     ast.apps,
-            // );
-            // // defer if (maybe_match) |match|
-            // //     match.result.deinit(allocator);
-            // // If not inserting, then try to match the expression
-            // if (maybe_match.leaf) |match|
-            //     if (match.pattern.value) |result| {
-            //         print("Match: ", .{});
-            //         try result.write(buff_stdout);
-            //         try buff_stdout.writeByte('\n');
-            //     } else print("Match, but no result\n", .{})
-            // else
-            //     print("No match\n", .{});
+            // if (repl_pat.get(ast.apps)) |got| {
+            //     print("Got: ", .{});
+            //     try got.write(stderr);
+            //     print("\n", .{});
+            // } else print("Got null\n", .{});
+            defer _ = match_gpa.detectLeaks();
+            const maybe_match = try repl_pat.match(
+                match_allocator,
+                ast.apps,
+            );
+            // defer if (maybe_match) |match|
+            //     match.result.deinit(allocator);
+            // If not inserting, then try to match the expression
+            if (maybe_match.leaf) |match|
+                if (match.pattern.value) |result| {
+                    print("Match: ", .{});
+                    try result.write(buff_stdout);
+                    try buff_stdout.writeByte('\n');
+                } else print("Match, but no result\n", .{})
+            else
+                print("No match\n", .{});
             // const rewrite = try repl_pat.rewrite(match_allocator, ast);
             // defer rewrite.deinit(match_allocator);
             // print("Rewrite: ", .{});

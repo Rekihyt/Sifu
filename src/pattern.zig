@@ -693,12 +693,12 @@ pub fn PatternWithContext(
             };
         }
 
-        /// The length of a match of apps against a pattern. If a non-zero apps
+        /// The longest length of a match of apps against a pattern. If an apps
         /// matched, leaf will be the last match term result that wasn't null.
         const MatchResult = struct {
             leaf: ?Match = null,
             len: usize = 0,
-            value: *Node,
+            var_map: VarMap = VarMap{},
         };
 
         /// The resulting pattern and match index (if any) from successful
@@ -706,26 +706,29 @@ pub fn PatternWithContext(
         /// `pattern` is always a child of the root.
         const Match = struct {
             pattern: *Self,
-            // where this term matched in the node map, if it wasn't an apps
-            // or pattern otherwise null
-            index: ?usize = null,
+            value: *Node,
+            // where this term matched in the node map
+            index: usize,
         };
 
         /// The first half of evaluation. The variables in the node match
         /// anything in the pattern, and vars in the pattern match anything in
         /// the expression. Includes partial prefixes (ones that don't match all
-        /// apps). This function returns a pattern's branch node even if it's
+        /// apps). This function returns a pattern's node even if it's
         /// value is null, unlike `match`.
         /// - Any node matches a var pattern including a var (the var node is
         ///   then stored in the var map like any other node)
         /// - A var node doesn't match a non-var pattern (var matching is one
         ///   way)
-        /// - A literal node that matches a literal-var pattern matches the
-        /// literal part, not the var
-        /// Returns a new pattern that only contains branches that matched `apps`.
-        /// Calculates the minimum index a subsequent match should use, which
-        /// is at least one greater than the current (except for structural
-        /// recursion).
+        /// - A literal node that matches a pattern of both literals and vars
+        /// matches the literal part, not the var
+        /// Returns a nullable struct describing a successful match containing:
+        /// - the value for that match in the pattern
+        /// - the minimum index a subsequent match should use, which is one
+        /// greater than the previous (except for structural recursion).
+        /// - null if no match
+        /// Caller owns the slice.
+        ///
         // TODO: move var_map from params to result
         pub fn matchTerm(
             self: *Self,
@@ -733,36 +736,28 @@ pub fn PatternWithContext(
             var_map: *VarMap,
             node: Node,
         ) Allocator.Error!?Match {
+            _ = var_map;
             const empty_node = node.asEmpty();
             print("Matching `", .{});
             node.asEmpty().writeSExp(err_stream, null) catch unreachable;
             print("` ", .{});
-            var result = Match{ .pattern = undefined };
             switch (node) {
                 .key, .variable => if (self.map.getIndex(empty_node)) |next_index| {
-                    result.index = next_index;
-                    result.pattern = &self.map.values()[next_index];
                     print("exactly: ", .{});
-                    result.pattern.write(err_stream) catch unreachable;
-                    print(" at index: {?}\n", .{result.index});
+                    self.map.values()[next_index].write(err_stream) catch
+                        unreachable;
+                    print(" at index: {?}\n", .{next_index});
+                    return Match{
+                        .index = next_index,
+                        .pattern = &self.map.values()[next_index],
+                    };
                 },
-                .match, .arrow, .list => |sub_apps| {
-                    result = try self.matchAll(
+                .apps, .match, .arrow, .list => |sub_apps| {
+                    var next = try self.matchTerm(
                         allocator,
-                        var_map,
-                        sub_apps,
+                        Node.ofApps(&.{}),
                     ) orelse return null;
-                },
-                .apps => |apps| {
-                    const sub_apps = result.pattern.sub_apps orelse
-                        return null;
-                    result = try sub_apps.matchAll(
-                        allocator,
-                        var_map,
-                        apps,
-                    ) orelse return null;
-                    if (result.pattern.value) |next|
-                        result.pattern = &next.pattern;
+                    return try next.pattern.matchAll(allocator, sub_apps);
                 },
                 else => @panic("unimplemented"),
             }
@@ -791,18 +786,18 @@ pub fn PatternWithContext(
             //     print(" null\n", .{});
             //     return null;
             // }
-            return result;
+            return null;
         }
 
         /// Same as match, but with matchTerm's signature. Returns a complete
         /// match of all apps or else null.
+        /// Caller owns.
         pub fn matchAll(
             self: *Self,
             allocator: Allocator,
-            var_map: *VarMap,
             apps: []const Node,
         ) Allocator.Error!?Match {
-            const match_result = try self.match(allocator, var_map, apps);
+            const match_result = try self.match(allocator, apps);
             return if (match_result.len == apps.len)
                 match_result.leaf
             else
@@ -810,30 +805,31 @@ pub fn PatternWithContext(
         }
 
         /// Follow `apps` in `self` until no matches. Then returns the furthest
-        /// pattern node and its corresponding number of matched apps that was
-        /// in the trie.
+        /// pattern node and its corresponding number of matched apps that
+        /// was in the trie. Starts matching at [index, ..) inclusive, in the
+        /// longest path otherwise any index for a shorter path.
         pub fn match(
             self: *Self,
             allocator: Allocator,
-            var_map: *VarMap,
+            indices: []usize,
             apps: []const Node,
-        ) Allocator.Error!?MatchResult {
-            var matched_leaf: ?Match = null;
-            _ = matched_leaf;
+        ) Allocator.Error!MatchResult {
             var current = self;
-            var matched_len = 0;
-            _ = matched_len;
+
             var result = MatchResult{};
             for (apps, 1..) |app, len| {
-                if (try current.matchTerm(allocator, var_map, app)) |matched| {
+                if (try current.matchTerm(
+                    allocator,
+                    &result.var_map,
+                    app,
+                )) |matched| {
                     current = matched.pattern;
                     if (current.value) |value| {
                         result.len = len;
-                        result.value = value;
+                        result.leaf = matched;
                     }
                 } else break;
-            } else apps.len;
-
+            }
             return result;
         }
 

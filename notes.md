@@ -848,3 +848,11 @@ Sifu is a lisp, but the syntax treats everything as a list by default.
 Syntax is important for any language. The choice between syntax implementations
 isn't, but rather the fact that there are multiple possible ones
 to begin with for some feature is a possible code smell of that feature.
+
+---
+
+Matching
+- Only once, uniquely
+- Indices table, vars match the longest length (last entry), going down to 0
+- No backtracking
+- Computation must flow upwards for streaming execution
