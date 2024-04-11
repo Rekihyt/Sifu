@@ -73,6 +73,7 @@ pub fn main() !void {
         defer _ = parser_gpa.detectLeaks();
         defer ast.deinit(parser_allocator);
 
+        // Future parsing will always return apps
         try stderr.print("Parsed {s}:\n", .{@tagName(ast)});
         try ast.write(stderr);
         _ = try stderr.write("\n");
@@ -93,21 +94,23 @@ pub fn main() !void {
             //     print("\n", .{});
             // } else print("Got null\n", .{});
             defer _ = match_gpa.detectLeaks();
-            const maybe_match = try repl_pat.match(
+            // var indices = try match_allocator.alloc(usize, ast.apps.len);
+            // defer match_allocator.free(indices);
+            const match = try repl_pat.match(
                 match_allocator,
+                // indices,
                 ast.apps,
             );
             // defer if (maybe_match) |match|
             //     match.result.deinit(allocator);
             // If not inserting, then try to match the expression
-            if (maybe_match.leaf) |match|
-                if (match.pattern.value) |result| {
-                    print("Match: ", .{});
-                    try result.write(buff_stdout);
-                    try buff_stdout.writeByte('\n');
-                } else print("Match, but no result\n", .{})
-            else
+            if (match.value) |value| {
+                print("Match: ", .{});
+                try value.write(buff_stdout);
+                try buff_stdout.writeByte('\n');
+            } else {
                 print("No match\n", .{});
+            }
             // const rewrite = try repl_pat.rewrite(match_allocator, ast);
             // defer rewrite.deinit(match_allocator);
             // print("Rewrite: ", .{});

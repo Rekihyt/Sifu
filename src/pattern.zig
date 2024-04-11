@@ -516,7 +516,7 @@ pub fn PatternWithContext(
         pub const VarNext = struct {
             variable: Var,
             index: usize,
-            next: Self,
+            next: *Self,
         };
 
         /// Follows `pattern` for each app matching structure as well as value.
@@ -588,11 +588,9 @@ pub fn PatternWithContext(
             switch (node) {
                 .key, .variable => {
                     // No need to copy here because empty slices have 0 length
-                    const get_or_put = try pattern.map.getOrPut(allocator, node);
+                    const get_or_put = try pattern.map.getOrPutValue(allocator, node, Self{});
                     if (get_or_put.found_existing) {
                         print("Found existing\n", .{});
-                    } else {
-                        get_or_put.value_ptr.* = Self{};
                     }
                     result = get_or_put.value_ptr;
                 },
@@ -601,8 +599,7 @@ pub fn PatternWithContext(
                 .apps => |apps| {
                     const get_or_put = try result.map
                         .getOrPutValue(allocator, Node.ofApps(&.{}), Self{});
-                    result = get_or_put.value_ptr;
-                    result = try result.getOrPut(allocator, apps);
+                    result = try get_or_put.value_ptr.getOrPut(allocator, apps);
                     const next = result.value orelse blk: {
                         const pat = try Node.createPattern(allocator, Self{});
                         result.value = pat;
@@ -610,6 +607,7 @@ pub fn PatternWithContext(
                     };
                     result = &next.pattern;
                 },
+                // TODO: individualize
                 // All op types are encoded the same way after their top level
                 // hash. These don't need special treatment because their
                 // structure is simple.
@@ -682,39 +680,38 @@ pub fn PatternWithContext(
             );
         }
 
-        pub fn getVar(pattern: *const Self) ?VarNext {
+        pub fn getVar(pattern: *Self) ?VarNext {
             const index = pattern.map.getIndex(Node{ .variable = "" }) orelse
                 return null;
 
             return VarNext{
                 .variable = pattern.map.keys()[index].variable,
                 .index = index,
-                .next = pattern.map.values()[index],
+                .next = &pattern.map.values()[index],
             };
         }
 
         /// The longest length of a match of apps against a pattern. If an apps
         /// matched, leaf will be the last match term result that wasn't null.
-        const MatchResult = struct {
-            leaf: ?Match = null,
-            len: usize = 0,
-            var_map: VarMap = VarMap{},
+        const Match = struct {
+            value: ?*Node = null, // Null if a branch was found, but no value
+            len: usize = 0, // Checks if complete or partial match
+            // indices: []usize, // The bounds subsequent matches should be within
+            var_map: VarMap = VarMap{}, // Bound variables
         };
 
         /// The resulting pattern and match index (if any) from successful
         /// matching (otherwise null is returned from `match`), therefore
         /// `pattern` is always a child of the root.
-        const Match = struct {
+        const Branch = struct {
             pattern: *Self,
-            value: *Node,
-            // where this term matched in the node map
-            index: usize,
+            // index: usize, // where this term matched in the node map
         };
 
         /// The first half of evaluation. The variables in the node match
         /// anything in the pattern, and vars in the pattern match anything in
         /// the expression. Includes partial prefixes (ones that don't match all
-        /// apps). This function returns a pattern's node even if it's
+        /// apps). This function returns any pattern branches, even if their
         /// value is null, unlike `match`.
         /// - Any node matches a var pattern including a var (the var node is
         ///   then stored in the var map like any other node)
@@ -730,63 +727,63 @@ pub fn PatternWithContext(
         /// Caller owns the slice.
         ///
         // TODO: move var_map from params to result
-        pub fn matchTerm(
+        pub fn branchTerm(
             self: *Self,
             allocator: Allocator,
             var_map: *VarMap,
             node: Node,
-        ) Allocator.Error!?Match {
-            _ = var_map;
+        ) Allocator.Error!?Branch {
             const empty_node = node.asEmpty();
-            print("Matching `", .{});
+            print("Branching `", .{});
             node.asEmpty().writeSExp(err_stream, null) catch unreachable;
-            print("` ", .{});
-            switch (node) {
-                .key, .variable => if (self.map.getIndex(empty_node)) |next_index| {
+            print("`, ", .{});
+            return switch (node) {
+                .key,
+                .variable,
+                => if (self.map.getIndex(empty_node)) |next_index| blk: {
                     print("exactly: ", .{});
                     self.map.values()[next_index].write(err_stream) catch
                         unreachable;
                     print(" at index: {?}\n", .{next_index});
-                    return Match{
-                        .index = next_index,
+                    break :blk Branch{
+                        // .index = next_index,
                         .pattern = &self.map.values()[next_index],
                     };
-                },
-                .apps, .match, .arrow, .list => |sub_apps| {
-                    var next = try self.matchTerm(
-                        allocator,
+                } else null,
+                .apps, .match, .arrow, .list => |sub_apps| blk: {
+                    // Check Var as Alternative here, but this probably can't be
+                    // a recursive call without a SO
+                    var next = self.map.get(
                         Node.ofApps(&.{}),
-                    ) orelse return null;
-                    return try next.pattern.matchAll(allocator, sub_apps);
+                    ) orelse break :blk null;
+                    const pat_node =
+                        try next.matchAll(allocator, sub_apps) orelse
+                        break :blk null;
+                    break :blk Branch{ .pattern = &pat_node.pattern };
                 },
                 else => @panic("unimplemented"),
-            }
-            // if (pattern.getVar()) |var_next| {
-            //     // index += 1; // TODO use as limit
-            //     result.index = var_next.index;
-            //     print("as var `{s}` ", .{var_next.variable});
-            //     var_next.next.write(err_stream) catch unreachable;
-            //     print(" at index: {?}\n", .{result.index});
-            //     const var_result =
-            //         try var_map.getOrPut(allocator, var_next.variable);
-            //     // If a previous var was bound, check that the
-            //     // current key matches it
-            //     if (var_result.found_existing) {
-            //         if (!var_result.value_ptr.*.eql(node)) {
-            //             print("found equal existing var mapping\n", .{});
-            //         } else {
-            //             print("found existing non-equal var mapping", .{});
-            //         }
-            //     } else {
-            //         print("New Var: {s}\n", .{var_result.key_ptr.*});
-            //         var_result.value_ptr.* = node;
-            //     }
-            //     result.pattern = var_next.next;
-            // } else {
-            //     print(" null\n", .{});
-            //     return null;
-            // }
-            return null;
+            } orelse if (self.getVar()) |var_next| blk: {
+                // index += 1; // TODO use as limit
+                // result.index = var_next.index;
+                print("as var `{s}` ", .{var_next.variable});
+                var_next.next.write(err_stream) catch unreachable;
+                // print(" at index: {?}\n", .{result.index});
+                const var_result =
+                    try var_map.getOrPut(allocator, var_next.variable);
+                // If a previous var was bound, check that the
+                // current key matches it
+                if (var_result.found_existing) {
+                    if (!var_result.value_ptr.*.eql(node)) {
+                        print("found equal existing var mapping\n", .{});
+                    } else {
+                        print("found existing non-equal var mapping", .{});
+                    }
+                } else {
+                    print("New Var: {s}\n", .{var_result.key_ptr.*});
+                    var_result.value_ptr.* = node;
+                }
+                break :blk Branch{ .pattern = var_next.next };
+            } else null;
         }
 
         /// Same as match, but with matchTerm's signature. Returns a complete
@@ -796,10 +793,10 @@ pub fn PatternWithContext(
             self: *Self,
             allocator: Allocator,
             apps: []const Node,
-        ) Allocator.Error!?Match {
-            const match_result = try self.match(allocator, apps);
-            return if (match_result.len == apps.len)
-                match_result.leaf
+        ) Allocator.Error!?*Node {
+            const result = try self.match(allocator, apps);
+            return if (result.len == apps.len)
+                result.value
             else
                 null;
         }
@@ -811,22 +808,24 @@ pub fn PatternWithContext(
         pub fn match(
             self: *Self,
             allocator: Allocator,
-            indices: []usize,
+            // indices: []usize,
             apps: []const Node,
-        ) Allocator.Error!MatchResult {
+        ) Allocator.Error!Match {
             var current = self;
 
-            var result = MatchResult{};
+            var result = Match{
+                // .indices = indices
+            };
             for (apps, 1..) |app, len| {
-                if (try current.matchTerm(
+                if (try current.branchTerm(
                     allocator,
                     &result.var_map,
                     app,
-                )) |matched| {
-                    current = matched.pattern;
+                )) |branch| {
+                    current = branch.pattern;
                     if (current.value) |value| {
+                        result.value = value;
                         result.len = len;
-                        result.leaf = matched;
                     }
                 } else break;
             }

@@ -856,3 +856,4 @@ Matching
 - Indices table, vars match the longest length (last entry), going down to 0
 - No backtracking
 - Computation must flow upwards for streaming execution
+- Patterns of differing length are fine: the lowest index, followed by longest match is chosen greedily

@@ -13,12 +13,12 @@ And there was the first proof.
 
 After She made the Set of People, She gave unto them the set of apples.
 "Do not eat from the set of apples, for you will disrupt the mapping."
-But the People did not heed She warning, and ate from the set of apples.
+But the People did not heed Her warning, and ate from the set of apples.
 The domain diminished, the function of apples was no longer a valid mapping.
 And so man created the first non-total function, and from it the complexity
 demon was born. A most insidious creature, it thrived on the corruption of
 holy simplicity. The People were forever cursed, never to return to the perfect
-simplicity of the first isomorphism but endlessly, desperately striving for it.
+simplicity of the first isomorphism yet endlessly, desperately striving for it.
 
 And the She made the one true language, such that the people of Man could
 understand the beauty of simplicity.
@@ -44,7 +44,7 @@ one true language.
 7. Complexity's agents spread far and wide. Their evil a blight upon the land, a
 taint on what once was a true set.
 8. Beware the promises of the agents of complexity. They will whisper sweet
-promises of "just one more feature", and you will be tempted. A feature can be
+nothings of "just one more feature", and you will be tempted. A feature can be
 more alluring than even a total function, but you must resist. Stray not from the
 holy light of simplicity, for the path back is winding and twisted.
 9. Seek isomorphisms for all your functions, for they shine Her light in every
