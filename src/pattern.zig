@@ -225,11 +225,9 @@ pub fn PatternWithContext(
                             else => {},
                         }
                     },
-                    // Variables must be unique because otherwise patterns with
-                    // multiple equal variables cannot be encoded separately
-                    .variable => |variable| hasher.update(
-                        &mem.toBytes(VarCtx.hash(undefined, variable)),
-                    ),
+                    // Variables are always the same hash in Patterns (in
+                    // varmaps they need unique hashes)
+                    .variable => {},
                     .key => |key| hasher.update(
                         &mem.toBytes(KeyCtx.hash(undefined, key)),
                     ),
@@ -681,7 +679,11 @@ pub fn PatternWithContext(
         }
 
         pub fn getVar(pattern: *Self) ?VarNext {
-            const index = pattern.map.getIndex(Node{ .variable = "" }) orelse
+            const index = pattern.map.getIndex(
+                // All vars hash to the same value, so this field will never
+                // be read
+                Node{ .variable = undefined },
+            ) orelse
                 return null;
 
             return VarNext{
@@ -698,6 +700,10 @@ pub fn PatternWithContext(
             len: usize = 0, // Checks if complete or partial match
             // indices: []usize, // The bounds subsequent matches should be within
             var_map: VarMap = VarMap{}, // Bound variables
+
+            pub fn deinit(self: *Match, allocator: Allocator) void {
+                self.var_map.deinit(allocator);
+            }
         };
 
         /// The resulting pattern and match index (if any) from successful
@@ -765,18 +771,19 @@ pub fn PatternWithContext(
             } orelse if (self.getVar()) |var_next| blk: {
                 // index += 1; // TODO use as limit
                 // result.index = var_next.index;
-                print("as var `{s}` ", .{var_next.variable});
+                print("as var `{s}`\n", .{var_next.variable});
                 var_next.next.write(err_stream) catch unreachable;
+                print("\n", .{});
                 // print(" at index: {?}\n", .{result.index});
                 const var_result =
                     try var_map.getOrPut(allocator, var_next.variable);
                 // If a previous var was bound, check that the
                 // current key matches it
                 if (var_result.found_existing) {
-                    if (!var_result.value_ptr.*.eql(node)) {
+                    if (var_result.value_ptr.*.eql(node)) {
                         print("found equal existing var mapping\n", .{});
                     } else {
-                        print("found existing non-equal var mapping", .{});
+                        print("found existing non-equal var mapping\n", .{});
                     }
                 } else {
                     print("New Var: {s}\n", .{var_result.key_ptr.*});
@@ -805,6 +812,7 @@ pub fn PatternWithContext(
         /// pattern node and its corresponding number of matched apps that
         /// was in the trie. Starts matching at [index, ..) inclusive, in the
         /// longest path otherwise any index for a shorter path.
+        /// Caller owns and should free the result's value and var_map.
         pub fn match(
             self: *Self,
             allocator: Allocator,
@@ -844,7 +852,7 @@ pub fn PatternWithContext(
             node: Node,
         ) Allocator.Error!Node {
             const rewritten = switch (node) {
-                .key => node,
+                .key => node, // No copy necessary
                 .variable => |variable| blk: {
                     print("Var get: ", .{});
                     if (var_map.get(variable)) |var_node|
@@ -856,11 +864,11 @@ pub fn PatternWithContext(
                         node).copy(allocator);
                 },
                 inline .apps, .arrow, .match, .list => |apps, tag| blk: {
-                    var apps_copy = try allocator.alloc(Node, apps.len);
-                    for (apps, apps_copy) |app, *app_copy|
+                    var apps_rewritten = try allocator.alloc(Node, apps.len);
+                    for (apps, apps_rewritten) |app, *app_copy|
                         app_copy.* = try pattern.rewrite(allocator, var_map, app);
 
-                    break :blk @unionInit(Node, @tagName(tag), apps_copy);
+                    break :blk @unionInit(Node, @tagName(tag), apps_rewritten);
                 },
                 // .pattern => |sub_pat| {
                 //     _ = sub_pat;
@@ -885,32 +893,37 @@ pub fn PatternWithContext(
         ) Allocator.Error![]const Node {
             var var_map = VarMap{};
             defer var_map.deinit(allocator);
-            var previous = apps;
-            var current = try self.match(allocator, &var_map, previous);
-            var next_apps = ArrayListUnmanaged(Node){};
             var index: usize = 0;
-            _ = next_apps;
-            // TODO recursively eval subapps that failed to match at higher
-            // levels
+            var result = ArrayListUnmanaged(Node){};
             while (index < apps.len) {
-                const eval = if (current.leaf.pattern.value) |value| blk: {
-                    print("Rewrite matched {s}: ", .{@tagName(value.*)});
-                    value.write(err_stream) catch unreachable;
+                var matched = try self.match(allocator, apps[index..]);
+                defer matched.deinit(allocator);
+                if (matched.len == 0)
+                    break;
+                if (matched.value) |next| {
+                    // Prevent infinite recursion at this index. Recursion
+                    // through other indices will be terminated by match index
+                    // shrinking.
+                    if (apps.len == next.apps.len)
+                        for (apps, next.apps) |app, next_app| {
+                            // check if the same pattern's shape could be matched
+                            // TODO: use an app match function here instead of eql
+                            if (!app.asEmpty().eql(next_app))
+                                break;
+                        } else break; // Don't evaluate the same pattern
+                    print("Rewrite matched {s}: ", .{@tagName(next.*)});
+                    next.write(err_stream) catch unreachable;
                     err_stream.writeByte('\n') catch unreachable;
-                    break :blk try self.rewrite(allocator, var_map, value.*);
+                    const rewritten = try self.rewrite(allocator, var_map, next.*);
+                    try result.appendSlice(allocator, rewritten.apps);
                 } else {
                     print("matched, but no value\n", .{});
-                    break previous;
-                };
-                print("vars in map: {}\n", .{var_map.entries.len});
-                // Fixed point for recursion
-                if (previous.eql(eval)) {
-                    break eval;
+                    break;
                 }
-                previous.deinit(allocator);
-                previous = eval;
-                current = try self.match(allocator, &var_map, apps);
-            } else previous;
+                print("vars in map: {}\n", .{var_map.entries.len});
+                index += matched.len;
+            }
+            return result.toOwnedSlice(allocator);
         }
 
         /// Pretty print a pattern on multiple lines

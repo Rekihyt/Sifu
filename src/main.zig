@@ -96,31 +96,39 @@ pub fn main() !void {
             defer _ = match_gpa.detectLeaks();
             // var indices = try match_allocator.alloc(usize, ast.apps.len);
             // defer match_allocator.free(indices);
-            const match = try repl_pat.match(
+            var match = try repl_pat.match(
                 match_allocator,
                 // indices,
                 ast.apps,
             );
-            // defer if (maybe_match) |match|
-            //     match.result.deinit(allocator);
-            // If not inserting, then try to match the expression
-            if (match.value) |value| {
-                print("Match: ", .{});
-                try value.write(buff_stdout);
-                try buff_stdout.writeByte('\n');
-            } else {
-                print("No match\n", .{});
-            }
+            defer match.deinit(match_allocator);
+            // // If not inserting, then try to match the expression
+            // if (match.value) |value| {
+            //     try buff_stdout.writeAll(
+            //         if (match.len == ast.apps.len)
+            //             "Match "
+            //         else
+            //             "Partial Match ",
+            //     );
+            //     try buff_stdout.print("of len {}: ", .{match.len});
+            //     try value.write(buff_stdout);
+            //     try buff_stdout.writeByte('\n');
+            // } else {
+            //     try buff_stdout.print(
+            //         "No match, after {} nodes followed\n",
+            //         .{match.len},
+            //     );
+            // }
             // const rewrite = try repl_pat.rewrite(match_allocator, ast);
             // defer rewrite.deinit(match_allocator);
             // print("Rewrite: ", .{});
             // try rewrite.write(buff_stdout);
             // try buff_stdout.writeByte('\n');
-            // const eval = try repl_pat.evaluate(match_allocator, ast.apps);
-            // defer for (eval) |app| app.deinit(match_allocator);
-            // print("Eval: ", .{});
-            // try eval.write(buff_stdout);
-            // try buff_stdout.writeByte('\n');
+            const eval = try repl_pat.evaluate(match_allocator, ast.apps);
+            defer for (eval) |app| app.deinit(match_allocator);
+            print("Eval: ", .{});
+            try Ast.ofApps(eval).write(buff_stdout);
+            try buff_stdout.writeByte('\n');
         }
         try repl_pat.pretty(buff_stdout);
         try stderr.print("Allocated: {}\n", .{gpa.total_requested_bytes});
