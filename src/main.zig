@@ -125,7 +125,10 @@ pub fn main() !void {
             // try rewrite.write(buff_stdout);
             // try buff_stdout.writeByte('\n');
             const eval = try repl_pat.evaluate(match_allocator, ast.apps);
-            defer for (eval) |app| app.deinit(match_allocator);
+            defer {
+                for (eval) |app| app.deinit(match_allocator);
+                match_allocator.free(eval);
+            }
             print("Eval: ", .{});
             try Ast.ofApps(eval).write(buff_stdout);
             try buff_stdout.writeByte('\n');

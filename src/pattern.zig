@@ -896,6 +896,7 @@ pub fn PatternWithContext(
             var index: usize = 0;
             var result = ArrayListUnmanaged(Node){};
             while (index < apps.len) {
+                print("Matching from index: {}\n", .{index});
                 var matched = try self.match(allocator, apps[index..]);
                 defer matched.deinit(allocator);
                 if (matched.len == 0)
@@ -911,10 +912,11 @@ pub fn PatternWithContext(
                             if (!app.asEmpty().eql(next_app))
                                 break;
                         } else break; // Don't evaluate the same pattern
-                    print("Rewrite matched {s}: ", .{@tagName(next.*)});
+                    print("Eval matched {s}: ", .{@tagName(next.*)});
                     next.write(err_stream) catch unreachable;
                     err_stream.writeByte('\n') catch unreachable;
                     const rewritten = try self.rewrite(allocator, var_map, next.*);
+                    defer allocator.free(rewritten.apps);
                     try result.appendSlice(allocator, rewritten.apps);
                 } else {
                     print("matched, but no value\n", .{});
