@@ -96,12 +96,12 @@ pub fn main() !void {
             defer _ = match_gpa.detectLeaks();
             // var indices = try match_allocator.alloc(usize, ast.apps.len);
             // defer match_allocator.free(indices);
-            var match = try repl_pat.match(
-                match_allocator,
-                // indices,
-                ast.apps,
-            );
-            defer match.deinit(match_allocator);
+            // var match = try repl_pat.match(
+            //     match_allocator,
+            //     // indices,
+            //     ast.apps,
+            // );
+            // defer match.deinit(match_allocator);
             // // If not inserting, then try to match the expression
             // if (match.value) |value| {
             //     try buff_stdout.writeAll(
@@ -129,7 +129,7 @@ pub fn main() !void {
                 for (eval) |app| app.deinit(match_allocator);
                 match_allocator.free(eval);
             }
-            print("Eval: ", .{});
+            try buff_stdout.print("Eval: ", .{});
             try Ast.ofApps(eval).write(buff_stdout);
             try buff_stdout.writeByte('\n');
         }

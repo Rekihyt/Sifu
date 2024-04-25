@@ -810,7 +810,7 @@ pub fn PatternWithContext(
 
         /// Follow `apps` in `self` until no matches. Then returns the furthest
         /// pattern node and its corresponding number of matched apps that
-        /// was in the trie. Starts matching at [index, ..) inclusive, in the
+        /// was in the trie. Starts matching at [index, ..), in the
         /// longest path otherwise any index for a shorter path.
         /// Caller owns and should free the result's value and var_map.
         pub fn match(
@@ -897,16 +897,21 @@ pub fn PatternWithContext(
             var result = ArrayListUnmanaged(Node){};
             while (index < apps.len) {
                 print("Matching from index: {}\n", .{index});
-                var matched = try self.match(allocator, apps[index..]);
+                var query = apps[index..];
+                var matched = try self.match(allocator, query);
                 defer matched.deinit(allocator);
-                if (matched.len == 0)
-                    break;
+                if (matched.len == 0) {
+                    print("No match, skipping index {}. ", .{index});
+                    try result.append(allocator, apps[index]);
+                    index += 1;
+                    continue;
+                }
                 if (matched.value) |next| {
                     // Prevent infinite recursion at this index. Recursion
                     // through other indices will be terminated by match index
                     // shrinking.
-                    if (apps.len == next.apps.len)
-                        for (apps, next.apps) |app, next_app| {
+                    if (query.len == next.apps.len)
+                        for (query, next.apps) |app, next_app| {
                             // check if the same pattern's shape could be matched
                             // TODO: use an app match function here instead of eql
                             if (!app.asEmpty().eql(next_app))
@@ -919,8 +924,8 @@ pub fn PatternWithContext(
                     defer allocator.free(rewritten.apps);
                     try result.appendSlice(allocator, rewritten.apps);
                 } else {
+                    try result.appendSlice(allocator, query);
                     print("matched, but no value\n", .{});
-                    break;
                 }
                 print("vars in map: {}\n", .{var_map.entries.len});
                 index += matched.len;
