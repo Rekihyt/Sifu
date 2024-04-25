@@ -40,7 +40,7 @@ pub fn main() !void {
 
     var match_gpa =
         std.heap.GeneralPurposeAllocator(
-        .{ .safety = true, .verbose_log = true },
+        .{ .safety = true, .verbose_log = false },
     ){};
     defer _ = match_gpa.deinit();
     const match_allocator = match_gpa.allocator();

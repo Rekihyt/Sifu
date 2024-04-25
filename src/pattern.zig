@@ -891,8 +891,6 @@ pub fn PatternWithContext(
             allocator: Allocator,
             apps: []const Node,
         ) Allocator.Error![]const Node {
-            var var_map = VarMap{};
-            defer var_map.deinit(allocator);
             var index: usize = 0;
             var result = ArrayListUnmanaged(Node){};
             while (index < apps.len) {
@@ -902,7 +900,17 @@ pub fn PatternWithContext(
                 defer matched.deinit(allocator);
                 if (matched.len == 0) {
                     print("No match, skipping index {}. ", .{index});
-                    try result.append(allocator, apps[index]);
+                    try result.append(
+                        allocator,
+                        // Evaluate nested apps that failed to match
+                        if (apps[index] == .apps)
+                            Node.ofApps(try self.evaluate(
+                                allocator,
+                                apps[index].apps,
+                            ))
+                        else
+                            apps[index],
+                    );
                     index += 1;
                     continue;
                 }
@@ -920,14 +928,18 @@ pub fn PatternWithContext(
                     print("Eval matched {s}: ", .{@tagName(next.*)});
                     next.write(err_stream) catch unreachable;
                     err_stream.writeByte('\n') catch unreachable;
-                    const rewritten = try self.rewrite(allocator, var_map, next.*);
+                    const rewritten = try self.rewrite(
+                        allocator,
+                        matched.var_map,
+                        next.*,
+                    );
                     defer allocator.free(rewritten.apps);
                     try result.appendSlice(allocator, rewritten.apps);
                 } else {
                     try result.appendSlice(allocator, query);
-                    print("matched, but no value\n", .{});
+                    print("Match, but no value\n", .{});
                 }
-                print("vars in map: {}\n", .{var_map.entries.len});
+                print("vars in map: {}\n", .{matched.var_map.entries.len});
                 index += matched.len;
             }
             return result.toOwnedSlice(allocator);
