@@ -733,6 +733,7 @@ pub fn PatternWithContext(
         /// Caller owns the slice.
         ///
         // TODO: move var_map from params to result
+        // TODO: match vars with first available index and increment it
         pub fn branchTerm(
             self: *Self,
             allocator: Allocator,
@@ -802,6 +803,8 @@ pub fn PatternWithContext(
             apps: []const Node,
         ) Allocator.Error!?*Node {
             const result = try self.match(allocator, apps);
+            // print("Result and Query len equal: {}\n", .{result.len == apps.len});
+            // print("Result value null: {}\n", .{result.value == null});
             return if (result.len == apps.len)
                 result.value
             else
@@ -822,6 +825,7 @@ pub fn PatternWithContext(
             var current = self;
 
             var result = Match{
+                .value = self.value,
                 // .indices = indices
             };
             for (apps, 1..) |app, len| {
@@ -899,7 +903,7 @@ pub fn PatternWithContext(
                 var matched = try self.match(allocator, query);
                 defer matched.deinit(allocator);
                 if (matched.len == 0) {
-                    print("No match, skipping index {}. ", .{index});
+                    print("No match, skipping index {}.\n", .{index});
                     try result.append(
                         allocator,
                         // Evaluate nested apps that failed to match
@@ -909,7 +913,7 @@ pub fn PatternWithContext(
                                 apps[index].apps,
                             ))
                         else
-                            apps[index],
+                            try apps[index].copy(allocator),
                     );
                     index += 1;
                     continue;

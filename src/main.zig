@@ -130,7 +130,10 @@ pub fn main() !void {
                 match_allocator.free(eval);
             }
             try buff_stdout.print("Eval: ", .{});
-            try Ast.ofApps(eval).write(buff_stdout);
+            for (eval) |app| {
+                try app.writeSExp(buff_stdout, 0);
+                try buff_stdout.writeByte(' ');
+            }
             try buff_stdout.writeByte('\n');
         }
         try repl_pat.pretty(buff_stdout);
