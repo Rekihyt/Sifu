@@ -76,7 +76,7 @@ test "Pattern: simple vals" {
     var expected = Pat{};
     var expected_a = Pat{};
     var expected_b = Pat{};
-    var expected_c = Pat{
+    const expected_c = Pat{
         .val = val,
     };
     const token_aa = Token{ .lit = "Aa", .type = .Name, .context = 0 };

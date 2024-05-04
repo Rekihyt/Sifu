@@ -1,5 +1,4 @@
 const std = @import("std");
-const FileSource = std.build.FileSource;
 
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
@@ -50,7 +49,7 @@ pub fn build(b: *std.Build) void {
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const unit_tests = b.addTest(.{
-        .root_source_file = FileSource.relative("src/test.zig"),
+        .root_source_file = b.path("src/test.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -63,8 +62,8 @@ pub fn build(b: *std.Build) void {
     const verbose_tests = b.option(bool, "VerboseTests", "VerboseTests") orelse false;
     const build_options = b.addOptions();
     build_options.addOption(bool, "verbose_tests", verbose_tests);
-    unit_tests.addOptions("build_options", build_options);
-    exe.addOptions("build_options", build_options);
+    unit_tests.root_module.addOptions("build_options", build_options);
+    exe.root_module.addOptions("build_options", build_options);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);

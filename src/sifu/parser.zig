@@ -82,7 +82,7 @@ const ParseError = error{
 pub fn parseAst(
     allocator: Allocator,
     lexer: anytype,
-) !Ast {
+) ![]const Ast {
     // TODO (ParseError || @TypeOf(lexer).Error || Allocator.Error)
     // No need to destroy asts, they will all be returned or cleaned up
     var levels = ArrayListUnmanaged(Level){};
@@ -90,10 +90,10 @@ pub fn parseAst(
     try levels.append(allocator, Level{});
     errdefer { // TODO: add test coverage
         for (levels.items) |*level| {
-            level.current.deinit(allocator);
-            for (level.next.items) |*ast|
+            Ast.ofApps(level.root).deinit(allocator);
+            for (level.current.items) |*ast|
                 ast.deinit(allocator);
-            level.next.deinit(allocator);
+            level.current.deinit(allocator);
         }
         levels.deinit(allocator);
     }
@@ -104,17 +104,17 @@ pub fn parseAst(
         else
             continue;
     }
-    return Ast.ofApps(&.{});
+    return &.{};
 }
 
 /// This encodes the values needed to parse a specific level of nesting. These
 /// fields would be the parameters in a recursive algorithm.
 const Level = struct {
     // This contains the current Ast being parsed.
-    current: Ast = Ast.ofApps(&.{}),
+    root: []const Ast = &.{},
     // This is temporary storage for an op's rhs so that they don't need to be
     // removed from the current list when done
-    next: ArrayListUnmanaged(Ast) = ArrayListUnmanaged(Ast){},
+    current: ArrayListUnmanaged(Ast) = ArrayListUnmanaged(Ast){},
     // This points to the last op parsed for a level of nesting. This tracks
     // infixes for each level of nesting, in congruence with the parse stack.
     // These are nullable because each level of nesting gets a new relative
@@ -130,34 +130,26 @@ const Level = struct {
     /// op if one was finalized.
     fn finalize(
         level: *Level,
-        op_tag: ?Type,
+        is_op: bool,
         allocator: Allocator,
-    ) !Ast {
-        const next_slice = try level.next.toOwnedSlice(allocator);
-        const maybe_op_tail = level.maybe_op_tail;
-        // After we set this pointer, next_slice cannot be freed.
-        var ast = if (op_tag) |tag| blk: {
-            const op = switch (tag) {
-                .Match => Ast{ .match = next_slice },
-                .Arrow => Ast{ .arrow = next_slice },
-                .Infix => Ast{ .apps = next_slice },
-                .Comma => Ast{ .list = next_slice },
-                else => panic(
-                    "Invalid op tag: {s}, pass null for non-ops\n",
-                    .{@tagName(tag)},
-                ),
-            };
-            level.maybe_op_tail = getOpTail(op);
-            break :blk op;
-        } else Ast{ .apps = next_slice };
-        if (maybe_op_tail) |tail| {
-            ast.write(stderr) catch unreachable;
-            print("\n", .{});
-            tail.* = ast;
+    ) ![]const Ast {
+        const current_slice = try level.current.toOwnedSlice(allocator);
+        if (level.maybe_op_tail) |tail| switch (tail.*) {
+            // After we set this pointer, current_slice cannot be freed.
+            .key, .variable, .pattern => @panic(
+                "cannot finalize non-slice type\n",
+            ),
+            inline else => |_, tag| tail.* =
+                @unionInit(Ast, @tagName(tag), current_slice),
         } else {
-            level.current = ast;
+            // No tail yet means we need to init root
+            level.root = current_slice;
         }
-        return level.current;
+        // Set the next tail, if needed
+        if (is_op)
+            level.maybe_op_tail = &current_slice[current_slice.len - 1];
+
+        return level.root;
     }
 };
 
@@ -171,11 +163,11 @@ pub fn parseAppend(
     allocator: Allocator,
     levels: *ArrayListUnmanaged(Level),
     line: []const Token,
-) !?Ast {
+) !?[]const Ast {
     // These variables are relative to the current level of nesting being parsed
     var level = levels.pop();
     for (line) |token| {
-        const next_ast = switch (token.type) {
+        const current_ast = switch (token.type) {
             .Name => Ast.ofLit(token),
             inline .Infix, .Match, .Arrow, .Comma => |tag| {
                 const op_tag: meta.Tag(Ast) = switch (tag) {
@@ -185,21 +177,27 @@ pub fn parseAppend(
                     .Comma => .list,
                     else => unreachable,
                 };
-                if (level.maybe_op_tail) |tail|
-                    if (@intFromEnum(op_tag) < @intFromEnum(level.current)) {
-                        print("Parsing lower precedence\n", .{});
-                        print("Op: ", .{});
-                        level.current.write(stderr) catch unreachable;
-                        print("\n", .{});
-                        _ = tail;
-                    };
+                // if (level.maybe_op_tail) |tail|
+                // if (@intFromEnum(op_tag) < @intFromEnum(level.root)) {
+                //     print("Parsing lower precedence\n", .{});
+                //     print("Op: ", .{});
+                //     level.root.write(stderr) catch unreachable;
+                //     print("\n", .{});
+                //     _ = tail;
+                // };
                 if (tag == .Infix)
-                    try level.next.append(allocator, Ast.ofLit(token));
+                    try level.current.append(allocator, Ast.ofLit(token));
                 // Add an apps for the trailing args
-                try level.next.append(allocator, Ast{ .apps = &.{} });
+                try level.current.append(
+                    allocator,
+                    @unionInit(Ast, @tagName(op_tag), &.{}),
+                );
                 // Right hand args for previous op with higher precedence
-                // print("Rhs Len: {}\n", .{level.next.items.len});
-                _ = try level.finalize(tag, allocator);
+                // print("Rhs Len: {}\n", .{level.current.items.len});
+                _ = try level.finalize(true, allocator);
+                print("Root: ", .{});
+                Ast.ofApps(level.root).write(stderr) catch unreachable;
+                print("\n", .{});
                 continue;
             },
             .LeftParen => {
@@ -211,16 +209,16 @@ pub fn parseAppend(
             },
             .RightParen => blk: {
                 defer level = levels.pop();
-                break :blk try level.finalize(null, allocator);
+                break :blk Ast.ofApps(try level.finalize(false, allocator));
             },
             .Var => Ast.ofVar(token.lit),
             .Str, .I, .F, .U => Ast.ofLit(token),
             .Comment, .NewLine => Ast.ofLit(token),
             else => @panic("unimplemented"),
         };
-        try level.next.append(allocator, next_ast);
+        try level.current.append(allocator, current_ast);
     }
-    const result = try level.finalize(null, allocator);
+    const result = try level.finalize(false, allocator);
     // TODO: return optional void and move to caller
     return result;
 }
@@ -245,7 +243,7 @@ pub fn intoNode(
 }
 
 // Assumes apps are Infix encoded (they have at least one element).
-fn getOpTail(ast: Ast) ?*Ast {
+fn getOpTailOrNull(ast: Ast) ?*Ast {
     return switch (ast) {
         .apps, .arrow, .match, .list => |apps| @constCast(&apps[apps.len - 1]),
         else => null,

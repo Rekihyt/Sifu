@@ -60,7 +60,7 @@ pub fn main() !void {
 
     while (stdin.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
         var fbs_written = io.fixedBufferStream(fbs.getWritten());
-        var fbs_written_reader = fbs_written.reader();
+        const fbs_written_reader = fbs_written.reader();
         var lexer = Lexer(@TypeOf(fbs_written_reader))
             .init(token_allocator, fbs_written_reader);
         // for (fbs.getWritten()) |char| {
@@ -69,23 +69,23 @@ pub fn main() !void {
         // }
         // TODO: combine lexer and parser allocators, avoid token/parsing memory
         // leaks when freeing asts in the loop
-        var ast = try parseAst(parser_allocator, &lexer);
+        var apps = try parseAst(parser_allocator, &lexer);
+        const ast = Ast.ofApps(apps);
         defer _ = parser_gpa.detectLeaks();
         defer ast.deinit(parser_allocator);
 
         // Future parsing will always return apps
-        try stderr.print("Parsed {s}:\n", .{@tagName(ast)});
+        try stderr.print("Parsed:\n", .{});
         try ast.write(stderr);
         _ = try stderr.write("\n");
 
         // TODO: put with shell command like @put instead of special
         // casing a top level insert
-        if (ast == .arrow) {
-            const arrow = ast.arrow;
-            const apps = arrow[0 .. arrow.len - 1];
-            const val = arrow[arrow.len - 1];
+        if (apps.len > 0 and apps[apps.len - 1] == .arrow) {
+            const key = apps[0 .. apps.len - 1];
+            const val = apps[apps.len - 1];
             // print("Parsed apps hash: {}\n", .{apps.hash()});
-            try repl_pat.put(allocator, apps, val);
+            try repl_pat.put(allocator, key, val);
         } else {
             // // print("Parsed ast hash: {}\n", .{ast.hash()});
             // if (repl_pat.get(ast.apps)) |got| {
@@ -124,7 +124,7 @@ pub fn main() !void {
             // print("Rewrite: ", .{});
             // try rewrite.write(buff_stdout);
             // try buff_stdout.writeByte('\n');
-            const eval = try repl_pat.evaluate(match_allocator, ast.apps);
+            const eval = try repl_pat.evaluate(match_allocator, apps);
             defer {
                 for (eval) |app| app.deinit(match_allocator);
                 match_allocator.free(eval);

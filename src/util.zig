@@ -65,7 +65,7 @@ pub fn getOrInit(
     const FieldPtrType = @typeInfo(@TypeOf(field_option)).Optional.child;
     const FieldType = @typeInfo(FieldPtrType).Pointer.child;
     const field = field_option orelse blk: {
-        var new_field = try allocator.create(FieldType);
+        const new_field = try allocator.create(FieldType);
         new_field.* = FieldType{};
         break :blk new_field;
     };

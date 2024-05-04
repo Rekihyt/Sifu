@@ -90,7 +90,6 @@ pub fn Lexer(comptime Reader: type) type {
                 ')' => .RightParen,
                 '{' => .LeftBrace,
                 '}' => .RightBrace,
-                ':' => .Match,
                 '+', '-' => if (try self.peekChar()) |next_char|
                     if (isDigit(next_char))
                         try self.integer()

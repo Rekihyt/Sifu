@@ -175,7 +175,7 @@ pub fn PatternWithContext(
                     .key, .variable => self,
                     .pattern => |p| Node.ofPattern(try p.copy(allocator)),
                     inline .apps, .arrow, .match, .list => |apps, tag| blk: {
-                        var apps_copy = try allocator.alloc(Node, apps.len);
+                        const apps_copy = try allocator.alloc(Node, apps.len);
                         for (apps, apps_copy) |app, *app_copy|
                             app_copy.* = try app.copy(allocator);
 
@@ -185,7 +185,7 @@ pub fn PatternWithContext(
             }
 
             pub fn clone(self: Node, allocator: Allocator) !*Node {
-                var self_copy = try allocator.create(Node);
+                const self_copy = try allocator.create(Node);
                 self_copy.* = try self.copy(allocator);
                 return self_copy;
             }
@@ -268,7 +268,7 @@ pub fn PatternWithContext(
                 allocator: Allocator,
                 key: Key,
             ) Allocator.Error!*Node {
-                var node = try allocator.create(Node);
+                const node = try allocator.create(Node);
                 node.* = Node{ .key = key };
                 return node;
             }
@@ -278,7 +278,7 @@ pub fn PatternWithContext(
                 allocator: Allocator,
                 apps: []const Node,
             ) Allocator.Error!*Node {
-                var node = try allocator.create(Node);
+                const node = try allocator.create(Node);
                 node.* = Node{ .apps = apps };
                 return node;
             }
@@ -347,9 +347,15 @@ pub fn PatternWithContext(
                         writer,
                         optional_indent,
                     ),
-                    else => {
+                    inline else => |slice, tag| {
                         try writer.writeByte('(');
-                        try self.writeIndent(writer, optional_indent);
+                        switch (tag) {
+                            .arrow => try writer.writeAll("-> "),
+                            .match => try writer.writeAll(": "),
+                            .list => try writer.writeAll(", "),
+                            else => {},
+                        }
+                        try Node.ofApps(slice).writeIndent(writer, optional_indent);
                         try writer.writeByte(')');
                     },
                 }
@@ -369,24 +375,20 @@ pub fn PatternWithContext(
             ) @TypeOf(writer).Error!void {
                 switch (self) {
                     // Ignore top level parens
-                    inline .apps, .arrow, .match, .list => |apps, tag| {
+                    inline .apps => |apps| {
                         if (apps.len == 0)
                             return;
+                        // print("tag: {s}\n", .{@tagName(apps[0])});
                         try apps[0].writeSExp(writer, optional_indent);
                         if (apps.len == 1) {
                             return;
                         } else for (apps[1 .. apps.len - 1]) |app| {
+                            // print("tag: {s}\n", .{@tagName(app)});
                             try writer.writeByte(' ');
                             try app.writeSExp(writer, optional_indent);
                         }
-
-                        switch (tag) {
-                            .arrow => try writer.writeAll(" ->"),
-                            .match => try writer.writeAll(" :"),
-                            .list => try writer.writeAll(","),
-                            else => {},
-                        }
                         try writer.writeByte(' ');
+                        // print("tag: {s}\n", .{@tagName(apps[apps.len - 1])});
                         try apps[apps.len - 1]
                             .writeSExp(writer, optional_indent);
                     },
@@ -551,7 +553,7 @@ pub fn PatternWithContext(
             apps: []const Node,
         ) ExactPrefix {
             var current = pattern;
-            var index: usize = undefined; // TODO
+            const index: usize = undefined; // TODO
             // Follow the longest branch that exists
             const prefix_len = for (apps, 0..) |app, i| {
                 current = current.getTerm(app) orelse
@@ -595,6 +597,7 @@ pub fn PatternWithContext(
                 // App pattern's values will always be patterns too, which will
                 // map nested apps to the next top level app.
                 .apps => |apps| {
+                    // Get or put a level of nesting
                     const get_or_put = try result.map
                         .getOrPutValue(allocator, Node.ofApps(&.{}), Self{});
                     result = try get_or_put.value_ptr.getOrPut(allocator, apps);
@@ -764,7 +767,7 @@ pub fn PatternWithContext(
                         Node.ofApps(&.{}),
                     ) orelse break :blk null;
                     const pat_node =
-                        try next.matchAll(allocator, sub_apps) orelse
+                        try next.matchAll(allocator, var_map, sub_apps) orelse
                         break :blk null;
                     break :blk Branch{ .pattern = &pat_node.pattern };
                 },
@@ -795,20 +798,25 @@ pub fn PatternWithContext(
         }
 
         /// Same as match, but with matchTerm's signature. Returns a complete
-        /// match of all apps or else null.
+        /// match of all apps or else null. For partial matches, no new vars
+        /// are put into the var_map, and null is returned.
         /// Caller owns.
         pub fn matchAll(
             self: *Self,
             allocator: Allocator,
+            var_map: *VarMap,
             apps: []const Node,
         ) Allocator.Error!?*Node {
             const result = try self.match(allocator, apps);
+            const prev_len = var_map.entries.len;
+            _ = prev_len;
             // print("Result and Query len equal: {}\n", .{result.len == apps.len});
             // print("Result value null: {}\n", .{result.value == null});
-            return if (result.len == apps.len)
-                result.value
-            else
-                null;
+            if (result.len == apps.len) {
+                return result.value;
+            } else {
+                return null;
+            }
         }
 
         /// Follow `apps` in `self` until no matches. Then returns the furthest
@@ -868,7 +876,7 @@ pub fn PatternWithContext(
                         node).copy(allocator);
                 },
                 inline .apps, .arrow, .match, .list => |apps, tag| blk: {
-                    var apps_rewritten = try allocator.alloc(Node, apps.len);
+                    const apps_rewritten = try allocator.alloc(Node, apps.len);
                     for (apps, apps_rewritten) |app, *app_copy|
                         app_copy.* = try pattern.rewrite(allocator, var_map, app);
 
@@ -899,7 +907,7 @@ pub fn PatternWithContext(
             var result = ArrayListUnmanaged(Node){};
             while (index < apps.len) {
                 print("Matching from index: {}\n", .{index});
-                var query = apps[index..];
+                const query = apps[index..];
                 var matched = try self.match(allocator, query);
                 defer matched.deinit(allocator);
                 if (matched.len == 0) {
@@ -1023,7 +1031,7 @@ test "Pattern: eql" {
     var p2 = Pat{};
 
     var value = Node{ .key = "123" };
-    var value2 = Node{ .key = "123" };
+    const value2 = Node{ .key = "123" };
     // Reverse order because patterns are values, not references
     try p2.map.put(allocator, "Bb", Pat{ .value = &value });
     try p1.map.put(allocator, "Aa", p2);
