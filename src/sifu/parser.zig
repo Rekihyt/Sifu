@@ -193,11 +193,7 @@ pub fn parseAppend(
                     @unionInit(Ast, @tagName(op_tag), &.{}),
                 );
                 // Right hand args for previous op with higher precedence
-                // print("Rhs Len: {}\n", .{level.current.items.len});
                 _ = try level.finalize(true, allocator);
-                print("Root: ", .{});
-                Ast.ofApps(level.root).write(stderr) catch unreachable;
-                print("\n", .{});
                 continue;
             },
             .LeftParen => {

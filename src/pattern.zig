@@ -347,8 +347,12 @@ pub fn PatternWithContext(
                         writer,
                         optional_indent,
                     ),
-                    inline else => |slice, tag| {
+                    .apps => {
                         try writer.writeByte('(');
+                        try self.writeIndent(writer, optional_indent);
+                        try writer.writeByte(')');
+                    },
+                    inline else => |slice, tag| {
                         switch (tag) {
                             .arrow => try writer.writeAll("-> "),
                             .match => try writer.writeAll(": "),
@@ -356,7 +360,6 @@ pub fn PatternWithContext(
                             else => {},
                         }
                         try Node.ofApps(slice).writeIndent(writer, optional_indent);
-                        try writer.writeByte(')');
                     },
                 }
             }
@@ -594,12 +597,19 @@ pub fn PatternWithContext(
                     }
                     result = get_or_put.value_ptr;
                 },
+                .pattern => @panic("unimplemented"),
                 // App pattern's values will always be patterns too, which will
                 // map nested apps to the next top level app.
-                .apps => |apps| {
+                inline else => |apps, tag| {
                     // Get or put a level of nesting
-                    const get_or_put = try result.map
-                        .getOrPutValue(allocator, Node.ofApps(&.{}), Self{});
+                    const get_or_put = try result.map.getOrPutValue(
+                        allocator,
+                        @unionInit(Node, @tagName(tag), &.{}),
+                        Self{},
+                    );
+                    // All op types are encoded the same way after their top level
+                    // hash. These don't need special treatment because their
+                    // structure is simple.
                     result = try get_or_put.value_ptr.getOrPut(allocator, apps);
                     const next = result.value orelse blk: {
                         const pat = try Node.createPattern(allocator, Self{});
@@ -608,15 +618,6 @@ pub fn PatternWithContext(
                     };
                     result = &next.pattern;
                 },
-                // TODO: individualize
-                // All op types are encoded the same way after their top level
-                // hash. These don't need special treatment because their
-                // structure is simple.
-                .arrow, .match, .list => |apps| {
-                    for (apps) |app|
-                        result = try result.getOrPutTerm(allocator, app);
-                },
-                else => @panic("unimplemented"),
             }
             return result;
         }
@@ -760,18 +761,18 @@ pub fn PatternWithContext(
                         .pattern = &self.map.values()[next_index],
                     };
                 } else null,
-                .apps, .match, .arrow, .list => |sub_apps| blk: {
+                .pattern => @panic("unimplemented"),
+                inline else => |sub_apps, tag| blk: {
                     // Check Var as Alternative here, but this probably can't be
                     // a recursive call without a SO
                     var next = self.map.get(
-                        Node.ofApps(&.{}),
+                        @unionInit(Node, @tagName(tag), &.{}),
                     ) orelse break :blk null;
                     const pat_node =
                         try next.matchAll(allocator, var_map, sub_apps) orelse
                         break :blk null;
                     break :blk Branch{ .pattern = &pat_node.pattern };
                 },
-                else => @panic("unimplemented"),
             } orelse if (self.getVar()) |var_next| blk: {
                 // index += 1; // TODO use as limit
                 // result.index = var_next.index;

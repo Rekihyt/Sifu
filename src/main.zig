@@ -83,7 +83,7 @@ pub fn main() !void {
         // casing a top level insert
         if (apps.len > 0 and apps[apps.len - 1] == .arrow) {
             const key = apps[0 .. apps.len - 1];
-            const val = apps[apps.len - 1];
+            const val = Ast.ofApps(apps[apps.len - 1].arrow);
             // print("Parsed apps hash: {}\n", .{apps.hash()});
             try repl_pat.put(allocator, key, val);
         } else {
