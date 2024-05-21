@@ -145,6 +145,8 @@ pub fn PatternWithContext(
             /// Spaces separated juxtaposition, or lists/parens for nested apps.
             /// Infix operators add their rhs as a nested apps after themselves.
             apps: []const Node,
+            /// The list following a non-builtin operator.
+            infix: []const Node,
             /// A postfix encoded match pattern, i.e. `x : Int -> x * 2` where
             /// some node (`x`) must match some subpattern (`Int`) in order for
             /// the rest of the match to continue. Like infixes, the apps to
@@ -174,7 +176,7 @@ pub fn PatternWithContext(
                 return switch (self) {
                     .key, .variable => self,
                     .pattern => |p| Node.ofPattern(try p.copy(allocator)),
-                    inline .apps, .arrow, .match, .list => |apps, tag| blk: {
+                    inline .apps, .arrow, .match, .list, .infix => |apps, tag| blk: {
                         const apps_copy = try allocator.alloc(Node, apps.len);
                         for (apps, apps_copy) |app, *app_copy|
                             app_copy.* = try app.copy(allocator);
@@ -199,7 +201,7 @@ pub fn PatternWithContext(
                 switch (self) {
                     .key, .variable => {},
                     .pattern => |*p| @constCast(p).deinit(allocator),
-                    inline .apps, .match, .arrow, .list => |apps, tag| {
+                    inline .apps, .match, .arrow, .list, .infix => |apps, tag| {
                         _ = tag;
                         for (apps) |*app|
                             @constCast(app).deinit(allocator);
@@ -215,7 +217,7 @@ pub fn PatternWithContext(
             pub fn hasherUpdate(self: Node, hasher: anytype) void {
                 hasher.update(&mem.toBytes(@intFromEnum(self)));
                 switch (self) {
-                    inline .apps, .match, .arrow, .list => |apps, tag| {
+                    inline .apps, .match, .arrow, .list, .infix => |apps, tag| {
                         for (apps) |app|
                             app.hasherUpdate(hasher);
                         switch (tag) {
@@ -241,7 +243,7 @@ pub fn PatternWithContext(
                 else switch (node) {
                     .key => |k| KeyCtx.eql(undefined, k, other.key, undefined),
                     .variable => other == .variable,
-                    inline .apps, .arrow, .match, .list => |apps, tag| blk: {
+                    inline .apps, .arrow, .match, .list, .infix => |apps, tag| blk: {
                         const other_slice = @field(other, @tagName(tag));
                         break :blk apps.len == other_slice.len and
                             for (apps, other_slice) |app, other_app|
@@ -306,7 +308,7 @@ pub fn PatternWithContext(
                 return switch (node) {
                     .key, .variable => node,
                     .pattern => Node{ .pattern = Self{} },
-                    inline .apps, .match, .arrow, .list => |_, tag|
+                    inline .apps, .match, .arrow, .list, .infix => |_, tag|
                     // All slice types hash to themselves
                     @unionInit(Node, @tagName(tag), &.{}),
                 };
@@ -378,7 +380,7 @@ pub fn PatternWithContext(
             ) @TypeOf(writer).Error!void {
                 switch (self) {
                     // Ignore top level parens
-                    inline .apps => |apps| {
+                    inline .apps, .list, .arrow, .match => |apps| {
                         if (apps.len == 0)
                             return;
                         // print("tag: {s}\n", .{@tagName(apps[0])});
@@ -609,7 +611,7 @@ pub fn PatternWithContext(
                     );
                     // All op types are encoded the same way after their top level
                     // hash. These don't need special treatment because their
-                    // structure is simple.
+                    // structure is simple, and their operator unique.
                     result = try get_or_put.value_ptr.getOrPut(allocator, apps);
                     const next = result.value orelse blk: {
                         const pat = try Node.createPattern(allocator, Self{});
@@ -703,9 +705,11 @@ pub fn PatternWithContext(
             value: ?*Node = null, // Null if a branch was found, but no value
             len: usize = 0, // Checks if complete or partial match
             // indices: []usize, // The bounds subsequent matches should be within
-            var_map: VarMap = VarMap{}, // Bound variables
+            // TODO: append varmaps instead of mutating
+            // var_map: VarMap = VarMap{}, // Bound variables
 
             pub fn deinit(self: *Match, allocator: Allocator) void {
+                // Node entries are just references, so they don't need freeing
                 self.var_map.deinit(allocator);
             }
         };
@@ -765,6 +769,7 @@ pub fn PatternWithContext(
                 inline else => |sub_apps, tag| blk: {
                     // Check Var as Alternative here, but this probably can't be
                     // a recursive call without a SO
+                    print("Branching subapps\n", .{});
                     var next = self.map.get(
                         @unionInit(Node, @tagName(tag), &.{}),
                     ) orelse break :blk null;
@@ -808,7 +813,8 @@ pub fn PatternWithContext(
             var_map: *VarMap,
             apps: []const Node,
         ) Allocator.Error!?*Node {
-            const result = try self.match(allocator, apps);
+            const result = try self.match(allocator, var_map, apps);
+            // TODO: rollback map if match fails partway
             const prev_len = var_map.entries.len;
             _ = prev_len;
             // print("Result and Query len equal: {}\n", .{result.len == apps.len});
@@ -828,21 +834,17 @@ pub fn PatternWithContext(
         pub fn match(
             self: *Self,
             allocator: Allocator,
+            var_map: *VarMap,
             // indices: []usize,
             apps: []const Node,
         ) Allocator.Error!Match {
             var current = self;
-
             var result = Match{
                 .value = self.value,
                 // .indices = indices
             };
             for (apps, 1..) |app, len| {
-                if (try current.branchTerm(
-                    allocator,
-                    &result.var_map,
-                    app,
-                )) |branch| {
+                if (try current.branchTerm(allocator, var_map, app)) |branch| {
                     current = branch.pattern;
                     if (current.value) |value| {
                         result.value = value;
@@ -864,7 +866,7 @@ pub fn PatternWithContext(
             var_map: VarMap,
             node: Node,
         ) Allocator.Error!Node {
-            const rewritten = switch (node) {
+            return switch (node) {
                 .key => node, // No copy necessary
                 .variable => |variable| blk: {
                     print("Var get: ", .{});
@@ -888,7 +890,6 @@ pub fn PatternWithContext(
                 // },
                 else => @panic("unimplemented"),
             };
-            return rewritten;
         }
 
         /// Given a pattern and a query to match against it, this function
@@ -909,24 +910,29 @@ pub fn PatternWithContext(
             while (index < apps.len) {
                 print("Matching from index: {}\n", .{index});
                 const query = apps[index..];
-                var matched = try self.match(allocator, query);
-                defer matched.deinit(allocator);
+                var var_map = VarMap{};
+                defer var_map.deinit(allocator);
+                const matched = try self.match(allocator, &var_map, query);
                 if (matched.len == 0) {
                     print("No match, skipping index {}.\n", .{index});
                     try result.append(
                         allocator,
                         // Evaluate nested apps that failed to match
-                        if (apps[index] == .apps)
-                            Node.ofApps(try self.evaluate(
-                                allocator,
-                                apps[index].apps,
-                            ))
-                        else
-                            try apps[index].copy(allocator),
+                        switch (apps[index]) {
+                            inline .apps, .match, .arrow, .list => |slice, tag|
+                            // Recursively eval but preserve node type
+                            @unionInit(
+                                Node,
+                                @tagName(tag),
+                                try self.evaluate(allocator, slice),
+                            ),
+                            else => try apps[index].copy(allocator),
+                        },
                     );
                     index += 1;
                     continue;
                 }
+                print("vars in map: {}\n", .{var_map.entries.len});
                 if (matched.value) |next| {
                     // Prevent infinite recursion at this index. Recursion
                     // through other indices will be terminated by match index
@@ -943,7 +949,7 @@ pub fn PatternWithContext(
                     err_stream.writeByte('\n') catch unreachable;
                     const rewritten = try self.rewrite(
                         allocator,
-                        matched.var_map,
+                        var_map,
                         next.*,
                     );
                     defer allocator.free(rewritten.apps);
@@ -952,7 +958,6 @@ pub fn PatternWithContext(
                     try result.appendSlice(allocator, query);
                     print("Match, but no value\n", .{});
                 }
-                print("vars in map: {}\n", .{matched.var_map.entries.len});
                 index += matched.len;
             }
             return result.toOwnedSlice(allocator);
