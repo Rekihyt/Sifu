@@ -17,6 +17,7 @@ const Wyhash = std.hash.Wyhash;
 pub const Type = enum {
     Name,
     Var,
+    VarApps,
     Str,
     // Ints/UInts are be applied to a number which signifies their size
     I, // signed

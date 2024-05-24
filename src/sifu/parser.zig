@@ -136,7 +136,7 @@ const Level = struct {
         const current_slice = try level.current.toOwnedSlice(allocator);
         if (level.maybe_op_tail) |tail| switch (tail.*) {
             // After we set this pointer, current_slice cannot be freed.
-            .key, .infix, .variable, .var_apps, .pattern => @panic(
+            .key, .variable, .var_apps, .pattern => @panic(
                 "cannot finalize non-slice type\n",
             ),
             inline else => |_, tag| tail.* =
@@ -208,6 +208,7 @@ pub fn parseAppend(
                 break :blk Ast.ofApps(try level.finalize(false, allocator));
             },
             .Var => Ast.ofVar(token.lit),
+            .VarApps => Ast.ofVarApps(token.lit),
             .Str, .I, .F, .U => Ast.ofLit(token),
             .Comment, .NewLine => Ast.ofLit(token),
             else => @panic("unimplemented"),

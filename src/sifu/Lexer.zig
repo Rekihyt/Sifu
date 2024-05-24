@@ -90,6 +90,13 @@ pub fn Lexer(comptime Reader: type) type {
                 ')' => .RightParen,
                 '{' => .LeftBrace,
                 '}' => .RightBrace,
+                '*' => if (try self.peekChar()) |next_char|
+                    if (isLower(next_char))
+                        try self.var_apps()
+                    else
+                        try self.op()
+                else
+                    .Infix,
                 '+', '-' => if (try self.peekChar()) |next_char|
                     if (isDigit(next_char))
                         try self.integer()
@@ -208,6 +215,11 @@ pub fn Lexer(comptime Reader: type) type {
         fn variable(self: *Self) !Type {
             try self.nextIdent();
             return .Var;
+        }
+
+        fn var_apps(self: *Self) !Type {
+            try self.nextIdent();
+            return .VarApps;
         }
 
         /// Reads the next infix characters

@@ -270,6 +270,9 @@ pub fn PatternWithContext(
             pub fn ofVar(variable: Var) Node {
                 return .{ .variable = variable };
             }
+            pub fn ofVarApps(var_apps: Var) Node {
+                return .{ .var_apps = var_apps };
+            }
 
             pub fn ofApps(apps: []const Node) Node {
                 return .{ .apps = apps };
