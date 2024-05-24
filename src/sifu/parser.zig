@@ -136,7 +136,7 @@ const Level = struct {
         const current_slice = try level.current.toOwnedSlice(allocator);
         if (level.maybe_op_tail) |tail| switch (tail.*) {
             // After we set this pointer, current_slice cannot be freed.
-            .key, .infix, .variable, .pattern => @panic(
+            .key, .infix, .variable, .var_apps, .pattern => @panic(
                 "cannot finalize non-slice type\n",
             ),
             inline else => |_, tag| tail.* =

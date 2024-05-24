@@ -145,6 +145,10 @@ pub fn PatternWithContext(
             /// Spaces separated juxtaposition, or lists/parens for nested apps.
             /// Infix operators add their rhs as a nested apps after themselves.
             apps: []const Node,
+            /// Variables that match apps as a term. These are only strictly
+            /// needed for matching patterns with ops, where the nested apps
+            /// is implicit.
+            var_apps: Var,
             /// The list following a non-builtin operator.
             infix: []const Node,
             /// A postfix encoded match pattern, i.e. `x : Int -> x * 2` where
@@ -174,7 +178,7 @@ pub fn PatternWithContext(
             /// The copy should be freed with `deinit`.
             pub fn copy(self: Node, allocator: Allocator) Allocator.Error!Node {
                 return switch (self) {
-                    .key, .variable => self,
+                    .key, .variable, .var_apps => self,
                     .pattern => |p| Node.ofPattern(try p.copy(allocator)),
                     inline .apps, .arrow, .match, .list, .infix => |apps, tag| blk: {
                         const apps_copy = try allocator.alloc(Node, apps.len);
@@ -199,7 +203,7 @@ pub fn PatternWithContext(
 
             pub fn deinit(self: Node, allocator: Allocator) void {
                 switch (self) {
-                    .key, .variable => {},
+                    .key, .variable, .var_apps => {},
                     .pattern => |*p| @constCast(p).deinit(allocator),
                     inline .apps, .match, .arrow, .list, .infix => |apps, tag| {
                         _ = tag;
@@ -229,7 +233,8 @@ pub fn PatternWithContext(
                     },
                     // Variables are always the same hash in Patterns (in
                     // varmaps they need unique hashes)
-                    .variable => {},
+                    // TODO: differentiate between repeated and unique vars
+                    .variable, .var_apps => {},
                     .key => |key| hasher.update(
                         &mem.toBytes(KeyCtx.hash(undefined, key)),
                     ),
@@ -242,7 +247,11 @@ pub fn PatternWithContext(
                     false
                 else switch (node) {
                     .key => |k| KeyCtx.eql(undefined, k, other.key, undefined),
+                    // TODO: make exact comparisons work with single place
+                    // patterns in hashmaps
+                    // .variable => |v| VarCtx.eql(undefined, v, other.variable, undefined),
                     .variable => other == .variable,
+                    .var_apps => other == .var_apps,
                     inline .apps, .arrow, .match, .list, .infix => |apps, tag| blk: {
                         const other_slice = @field(other, @tagName(tag));
                         break :blk apps.len == other_slice.len and
@@ -306,7 +315,7 @@ pub fn PatternWithContext(
             /// while perserving order between different node kinds.
             fn asEmpty(node: Node) Node {
                 return switch (node) {
-                    .key, .variable => node,
+                    .key, .variable, .var_apps => node,
                     .pattern => Node{ .pattern = Self{} },
                     inline .apps, .match, .arrow, .list, .infix => |_, tag|
                     // All slice types hash to themselves
@@ -341,10 +350,9 @@ pub fn PatternWithContext(
                     try writer.writeByte(' ');
                 switch (self) {
                     .key => |key| _ = try util.genericWrite(key, writer),
-                    .variable => |variable| _ = try util.genericWrite(
-                        variable,
-                        writer,
-                    ),
+                    .variable, .var_apps => |variable| {
+                        _ = try util.genericWrite(variable, writer);
+                    },
                     .pattern => |pattern| try pattern.writeIndent(
                         writer,
                         optional_indent,
@@ -591,7 +599,7 @@ pub fn PatternWithContext(
         ) Allocator.Error!*Self {
             var result = pattern;
             switch (node) {
-                .key, .variable => {
+                .key, .variable, .var_apps => {
                     // No need to copy here because empty slices have 0 length
                     const get_or_put = try pattern.map.getOrPutValue(allocator, node, Self{});
                     if (get_or_put.found_existing) {
@@ -755,6 +763,7 @@ pub fn PatternWithContext(
             return switch (node) {
                 .key,
                 .variable,
+                .var_apps,
                 => if (self.map.getIndex(empty_node)) |next_index| blk: {
                     print("exactly: ", .{});
                     self.map.values()[next_index].write(err_stream) catch
