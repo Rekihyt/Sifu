@@ -604,7 +604,8 @@ pub fn PatternWithContext(
             switch (node) {
                 .key, .variable, .var_apps => {
                     // No need to copy here because empty slices have 0 length
-                    const get_or_put = try pattern.map.getOrPutValue(allocator, node, Self{});
+                    const get_or_put =
+                        try pattern.map.getOrPutValue(allocator, node, Self{});
                     if (get_or_put.found_existing) {
                         print("Found existing\n", .{});
                     }
@@ -705,6 +706,21 @@ pub fn PatternWithContext(
 
             return VarNext{
                 .variable = pattern.map.keys()[index].variable,
+                .index = index,
+                .next = &pattern.map.values()[index],
+            };
+        }
+
+        pub fn getVarApps(pattern: *Self) ?VarNext {
+            const index = pattern.map.getIndex(
+                // All vars hash to the same value, so this field will never
+                // be read
+                Node{ .var_apps = undefined },
+            ) orelse
+                return null;
+
+            return VarNext{
+                .variable = pattern.map.keys()[index].var_apps,
                 .index = index,
                 .next = &pattern.map.values()[index],
             };
@@ -855,6 +871,8 @@ pub fn PatternWithContext(
                 .value = self.value,
                 // .indices = indices
             };
+            // TODO: save var_map state and restore if partial match and var
+            // apps
             for (apps, 1..) |app, len| {
                 if (try current.branchTerm(allocator, var_map, app)) |branch| {
                     current = branch.pattern;
@@ -864,7 +882,32 @@ pub fn PatternWithContext(
                     }
                 } else break;
             }
-            return result;
+            return if (apps.len != result.len) blk: {
+                print("Checking varapps\n", .{});
+                const var_apps_next = self.getVarApps() orelse
+                    break :blk result;
+                const node = Node.ofApps(apps);
+                print("Matching as var apps `{s}`\n", .{var_apps_next.variable});
+                var_apps_next.next.write(err_stream) catch unreachable;
+                print("\n", .{});
+                // print(" at index: {?}\n", .{result.index});
+                const var_result =
+                    try var_map.getOrPut(allocator, var_apps_next.variable);
+                if (var_result.found_existing) {
+                    if (var_result.value_ptr.*.eql(node)) {
+                        print("found equal existing var apps mapping\n", .{});
+                    } else {
+                        print("found existing non-equal var apps mapping\n", .{});
+                    }
+                } else {
+                    print("New Var Apps: {s}\n", .{var_result.key_ptr.*});
+                    var_result.value_ptr.* = node;
+                }
+                break :blk Match{
+                    .value = var_apps_next.next.value,
+                    .len = apps.len,
+                };
+            } else result;
         }
 
         /// The second half of an evaluation step. Rewrites all variable
@@ -890,7 +933,7 @@ pub fn PatternWithContext(
                     break :blk try (var_map.get(variable) orelse
                         node).copy(allocator);
                 },
-                inline .apps, .arrow, .match, .list => |apps, tag| blk: {
+                inline .apps, .arrow, .match, .list, .infix => |apps, tag| blk: {
                     const apps_rewritten = try allocator.alloc(Node, apps.len);
                     for (apps, apps_rewritten) |app, *app_copy|
                         app_copy.* = try pattern.rewrite(allocator, var_map, app);
