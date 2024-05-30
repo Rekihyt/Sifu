@@ -845,13 +845,31 @@ pub fn PatternWithContext(
             // TODO: rollback map if match fails partway
             const prev_len = var_map.entries.len;
             _ = prev_len;
+            print("match all\n", .{});
             // print("Result and Query len equal: {}\n", .{result.len == apps.len});
             // print("Result value null: {}\n", .{result.value == null});
-            if (result.len == apps.len) {
-                return result.value;
-            } else {
-                return null;
-            }
+            return if (result.len == apps.len)
+                result.value
+            else if (self.getVarApps()) |var_apps_next| blk: {
+                const node = Node.ofApps(apps);
+                print("Matching as var apps `{s}`\n", .{var_apps_next.variable});
+                var_apps_next.next.write(err_stream) catch unreachable;
+                print("\n", .{});
+                // print(" at index: {?}\n", .{result.index});
+                const var_result =
+                    try var_map.getOrPut(allocator, var_apps_next.variable);
+                if (var_result.found_existing) {
+                    if (var_result.value_ptr.*.eql(node)) {
+                        print("found equal existing var apps mapping\n", .{});
+                    } else {
+                        print("found existing non-equal var apps mapping\n", .{});
+                    }
+                } else {
+                    print("New Var Apps: {s}\n", .{var_result.key_ptr.*});
+                    var_result.value_ptr.* = node;
+                }
+                break :blk var_apps_next.next.value;
+            } else null;
         }
 
         /// Follow `apps` in `self` until no matches. Then returns the furthest
@@ -882,32 +900,7 @@ pub fn PatternWithContext(
                     }
                 } else break;
             }
-            return if (apps.len != result.len) blk: {
-                print("Checking varapps\n", .{});
-                const var_apps_next = self.getVarApps() orelse
-                    break :blk result;
-                const node = Node.ofApps(apps);
-                print("Matching as var apps `{s}`\n", .{var_apps_next.variable});
-                var_apps_next.next.write(err_stream) catch unreachable;
-                print("\n", .{});
-                // print(" at index: {?}\n", .{result.index});
-                const var_result =
-                    try var_map.getOrPut(allocator, var_apps_next.variable);
-                if (var_result.found_existing) {
-                    if (var_result.value_ptr.*.eql(node)) {
-                        print("found equal existing var apps mapping\n", .{});
-                    } else {
-                        print("found existing non-equal var apps mapping\n", .{});
-                    }
-                } else {
-                    print("New Var Apps: {s}\n", .{var_result.key_ptr.*});
-                    var_result.value_ptr.* = node;
-                }
-                break :blk Match{
-                    .value = var_apps_next.next.value,
-                    .len = apps.len,
-                };
-            } else result;
+            return result;
         }
 
         /// The second half of an evaluation step. Rewrites all variable
@@ -920,31 +913,54 @@ pub fn PatternWithContext(
             allocator: Allocator,
             var_map: VarMap,
             node: Node,
-        ) Allocator.Error!Node {
-            return switch (node) {
-                .key => node, // No copy necessary
-                .variable => |variable| blk: {
+            result: *ArrayListUnmanaged(Node),
+        ) Allocator.Error!void {
+            switch (node) {
+                .key => try result.append(allocator, node), // No copy necessary
+                .variable => |variable| {
                     print("Var get: ", .{});
                     if (var_map.get(variable)) |var_node|
                         var_node.write(err_stream) catch unreachable
                     else
                         print("null", .{});
                     print("\n", .{});
-                    break :blk try (var_map.get(variable) orelse
-                        node).copy(allocator);
+                    try result.append(
+                        allocator,
+                        try (var_map.get(variable) orelse
+                            node).copy(allocator),
+                    );
                 },
-                inline .apps, .arrow, .match, .list, .infix => |apps, tag| blk: {
-                    const apps_rewritten = try allocator.alloc(Node, apps.len);
-                    for (apps, apps_rewritten) |app, *app_copy|
-                        app_copy.* = try pattern.rewrite(allocator, var_map, app);
-
-                    break :blk @unionInit(Node, @tagName(tag), apps_rewritten);
+                .var_apps => |var_apps| {
+                    print("Var apps get: ", .{});
+                    if (var_map.get(var_apps)) |var_node|
+                        var_node.write(err_stream) catch unreachable
+                    else
+                        print("null", .{});
+                    print("\n", .{});
+                    if (var_map.get(var_apps)) |apps_node| {
+                        for (apps_node.apps) |app|
+                            try result.append(
+                                allocator,
+                                try app.copy(allocator),
+                            );
+                    } else try result.append(allocator, node);
+                },
+                inline .apps, .arrow, .match, .list, .infix => |apps, tag| {
+                    var apps_rewritten = try ArrayListUnmanaged(Node)
+                        .initCapacity(allocator, apps.len);
+                    for (apps) |app| try pattern
+                        .rewrite(allocator, var_map, app, &apps_rewritten);
+                    try result.append(allocator, @unionInit(
+                        Node,
+                        @tagName(tag),
+                        try apps_rewritten.toOwnedSlice(allocator),
+                    ));
                 },
                 // .pattern => |sub_pat| {
                 //     _ = sub_pat;
                 // },
                 else => @panic("unimplemented"),
-            };
+            }
         }
 
         /// Given a pattern and a query to match against it, this function
@@ -1002,13 +1018,7 @@ pub fn PatternWithContext(
                     print("Eval matched {s}: ", .{@tagName(next.*)});
                     next.write(err_stream) catch unreachable;
                     err_stream.writeByte('\n') catch unreachable;
-                    const rewritten = try self.rewrite(
-                        allocator,
-                        var_map,
-                        next.*,
-                    );
-                    defer allocator.free(rewritten.apps);
-                    try result.appendSlice(allocator, rewritten.apps);
+                    try self.rewrite(allocator, var_map, next.*, &result);
                 } else {
                     try result.appendSlice(allocator, query);
                     print("Match, but no value\n", .{});
