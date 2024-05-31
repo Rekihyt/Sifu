@@ -850,26 +850,8 @@ pub fn PatternWithContext(
             // print("Result value null: {}\n", .{result.value == null});
             return if (result.len == apps.len)
                 result.value
-            else if (self.getVarApps()) |var_apps_next| blk: {
-                const node = Node.ofApps(apps);
-                print("Matching as var apps `{s}`\n", .{var_apps_next.variable});
-                var_apps_next.next.write(err_stream) catch unreachable;
-                print("\n", .{});
-                // print(" at index: {?}\n", .{result.index});
-                const var_result =
-                    try var_map.getOrPut(allocator, var_apps_next.variable);
-                if (var_result.found_existing) {
-                    if (var_result.value_ptr.*.eql(node)) {
-                        print("found equal existing var apps mapping\n", .{});
-                    } else {
-                        print("found existing non-equal var apps mapping\n", .{});
-                    }
-                } else {
-                    print("New Var Apps: {s}\n", .{var_result.key_ptr.*});
-                    var_result.value_ptr.* = node;
-                }
-                break :blk var_apps_next.next.value;
-            } else null;
+            else
+                null;
         }
 
         /// Follow `apps` in `self` until no matches. Then returns the furthest
@@ -889,9 +871,30 @@ pub fn PatternWithContext(
                 .value = self.value,
                 // .indices = indices
             };
-            // TODO: save var_map state and restore if partial match and var
-            // apps
-            for (apps, 1..) |app, len| {
+            if (current.getVarApps()) |var_apps_next| {
+                // Store as a Node for convenience
+                const node = Node.ofApps(apps);
+                print("Matching as var apps `{s}`\n", .{var_apps_next.variable});
+                var_apps_next.next.write(err_stream) catch unreachable;
+                print("\n", .{});
+                // print(" at index: {?}\n", .{result.index});
+                const var_result =
+                    try var_map.getOrPut(allocator, var_apps_next.variable);
+                if (var_result.found_existing) {
+                    if (var_result.value_ptr.*.eql(node)) {
+                        print("found equal existing var apps mapping\n", .{});
+                    } else {
+                        print("found existing non-equal var apps mapping\n", .{});
+                    }
+                } else {
+                    print("New Var Apps: {s}\n", .{var_result.key_ptr.*});
+                    var_result.value_ptr.* = node;
+                }
+                result.value = var_apps_next.next.value;
+                result.len = apps.len;
+            } else for (apps, 1..) |app, len| {
+                // TODO: save var_map state and restore if partial match and var
+                // apps
                 if (try current.branchTerm(allocator, var_map, app)) |branch| {
                     current = branch.pattern;
                     if (current.value) |value| {
@@ -912,10 +915,10 @@ pub fn PatternWithContext(
             pattern: Self,
             allocator: Allocator,
             var_map: VarMap,
-            node: Node,
-            result: *ArrayListUnmanaged(Node),
-        ) Allocator.Error!void {
-            switch (node) {
+            nodes: []const Node,
+        ) Allocator.Error![]const Node {
+            var result = ArrayListUnmanaged(Node){};
+            for (nodes) |node| switch (node) {
                 .key => try result.append(allocator, node), // No copy necessary
                 .variable => |variable| {
                     print("Var get: ", .{});
@@ -946,21 +949,18 @@ pub fn PatternWithContext(
                     } else try result.append(allocator, node);
                 },
                 inline .apps, .arrow, .match, .list, .infix => |apps, tag| {
-                    var apps_rewritten = try ArrayListUnmanaged(Node)
-                        .initCapacity(allocator, apps.len);
-                    for (apps) |app| try pattern
-                        .rewrite(allocator, var_map, app, &apps_rewritten);
                     try result.append(allocator, @unionInit(
                         Node,
                         @tagName(tag),
-                        try apps_rewritten.toOwnedSlice(allocator),
+                        try pattern.rewrite(allocator, var_map, apps),
                     ));
                 },
                 // .pattern => |sub_pat| {
                 //     _ = sub_pat;
                 // },
                 else => @panic("unimplemented"),
-            }
+            };
+            return try result.toOwnedSlice(allocator);
         }
 
         /// Given a pattern and a query to match against it, this function
@@ -1018,13 +1018,24 @@ pub fn PatternWithContext(
                     print("Eval matched {s}: ", .{@tagName(next.*)});
                     next.write(err_stream) catch unreachable;
                     err_stream.writeByte('\n') catch unreachable;
-                    try self.rewrite(allocator, var_map, next.*, &result);
+                    const rewritten =
+                        try self.rewrite(allocator, var_map, next.apps);
+                    defer Node.ofApps(rewritten).deinit(allocator);
+                    const sub_eval = try self.evaluate(allocator, rewritten);
+                    defer allocator.free(sub_eval);
+                    try result.appendSlice(allocator, sub_eval);
                 } else {
                     try result.appendSlice(allocator, query);
                     print("Match, but no value\n", .{});
                 }
                 index += matched.len;
             }
+            print("Eval: ", .{});
+            for (result.items) |app| {
+                app.writeSExp(err_stream, 0) catch unreachable;
+                err_stream.writeByte(' ') catch unreachable;
+            }
+            err_stream.writeByte('\n') catch unreachable;
             return result.toOwnedSlice(allocator);
         }
 
