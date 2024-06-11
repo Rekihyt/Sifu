@@ -4,35 +4,34 @@
 
 #### Nouns
 
-- Term - a single atom not a var, separated by whitespace like `1`, `"asd"`,
+- Atom - anything not separated by the lexer, such as `1`, `"asd"`, or `Foo`.
+- Term - a single atom or nested apps, separated by whitespace like `1`, `(Fn 123 "asd")`,
 or `Foo`.
 - Sub-term: a term inside an app, which is the containing term
-- Var - a lowercase word, matches and stores a match-specific key. During
-rewriting, whenever the key is encountered again, it is rewritten to this
-pattern's val. A Var pattern matches anything, including nested patterns. It
+- Key - an uppercase word atom
+- Var - a lowercase word atom, matches and stores a match-specific term. During
+rewriting, whenever the var is encountered again, it is rewritten to this
+term. A Var pattern matches exactly one term, including nested patterns. It
 only makes sense to match anything after trying to match something specific, so
 Vars always successfully match (if there is a Var) after a Key or Subpat match
 fails.
-- Apps - a list of atoms, nested by parenthesis
+- Apps - a list of terms, nested by parenthesis
 - Ast - the Sifu specific data type of the generic Pattern data structure. Sifu
 parses every token as a Token, which is a term with meta-information, and Apps
 can be nested, so together they form the abstract syntax tree.
-- Pattern - a trie of apps, nested by braces
+- Pattern - a trie of apps, nested by braces like `{ F, G -> 2 }`. Simple
+patterns form sets like `{1, 2, 3}` or hashmaps like `{F -> 1, G -> 2}`.
 - Match
-  1. an expression, either single or multi, of `into : from` where
+  1. an expression of the form `into : from` where
     - into is the expression to match into
     - from is the pattern to match from
   2. the result of evaluating a match, consisting of selecting and rewriting.
-- Multi match - like match, but with `::` instead and list monad / dot product
-semantics where all matches of `into` are included on evaluation as an apps.
 - Arrow
-  1. an expression, either single or multi, of `from -> into` where
-    - from is the expression to rewrite from, also called the Key
-    - into is the expression to rewrite into, also called the Value
+  1. an expression of the form `from -> into` where
+    - from is the expression to rewrite from, which was matched
+    - into is the expression to rewrite into, which is the evaluation
   2. an encoding in a pattern that represents an arrow after its insertion in
-that pattern.
-- Multi arrow - an expression, either single or multi, of `from => into` where
-all matches of `into` are included on evaluation as an apps.
+that pattern, like the arrow in `{F -> 123}`
 - Value - the right side of an arrow, the part rewritten to
 - Commas - special operator that delimits separate keys/arrows in patterns
 - Newline - separates apps, unless before a trailing operator or within a nested

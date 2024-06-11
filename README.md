@@ -130,10 +130,13 @@ Compare (b1 : Bool) (b2 : Bool) -> Case [
 
 ---
 
-## Questions
+## Implementation FAQ
 
 If the ASTs are hashable, why not use a hashmap instead of a trie of tries?
 
-Hashmaps or tries would work for inserting, but granular matching wouldn't.
+> Hashmaps or tries would work for inserting, but granular matching wouldn't.
+> Matching variables would also be tricky to implement.
+
+---
 
 Thanks to Luukdegram for giving me a starting point with their compiler [Luf](https://github.com/Luukdegram/luf)

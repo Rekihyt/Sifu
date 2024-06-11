@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
         .name = "Sifu-Zig",
         // In this case the main source file is merely a path, however, in more
         // complicated build scripts, this could be a generated file.
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -46,6 +46,29 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
+    const wasm_lib = b.addExecutable(.{
+        .name = "Sifu-Zig",
+        // In this case the main source file is merely a path, however, in more
+        // complicated build scripts, this could be a generated file.
+        .root_source_file = b.path("src/pattern.zig"),
+        .target = b.resolveTargetQuery(.{
+            .cpu_arch = .wasm32,
+            .os_tag = .emscripten,
+        }),
+        .optimize = .ReleaseSmall,
+    });
+    wasm_lib.entry = .disabled;
+    wasm_lib.rdynamic = true;
+    wasm_lib.root_module.pic = true;
+    const run_wasm = b.addInstallArtifact(wasm_lib, .{});
+    // if (b.args) |args| {
+    //     run_cmd.addArgs(args);
+    //     run_wasm.addArgs(args);
+    // }
+    // run_wasm.step.dependOn(b.getInstallStep());
+    const wasm_step = b.step("wasm", "Build a wasm exe");
+    wasm_step.dependOn(&run_wasm.step);
+
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const unit_tests = b.addTest(.{
@@ -58,13 +81,13 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
         run_unit_tests.addArgs(args);
     }
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_unit_tests.step);
 
     const verbose_tests = b.option(bool, "VerboseTests", "VerboseTests") orelse false;
     const build_options = b.addOptions();
     build_options.addOption(bool, "verbose_tests", verbose_tests);
     unit_tests.root_module.addOptions("build_options", build_options);
+    wasm_lib.root_module.addOptions("build_options", build_options);
     exe.root_module.addOptions("build_options", build_options);
-
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_unit_tests.step);
 }

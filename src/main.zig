@@ -10,7 +10,6 @@ const Lexer = @import("sifu/Lexer.zig").Lexer;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const parseAst = @import("sifu/parser.zig").parseAst;
 const io = std.io;
-const fs = std.fs;
 const log = std.log.scoped(.sifu_cli);
 const mem = std.mem;
 const print = std.debug.print;
