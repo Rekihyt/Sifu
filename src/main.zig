@@ -13,65 +13,71 @@ const io = std.io;
 const log = std.log.scoped(.sifu_cli);
 const mem = std.mem;
 const print = std.debug.print;
+const wasm = @import("builtin").os.tag == .freestanding;
+const stderr = if (wasm)
+    io.getStdErr().writer()
+else
+    std.io.null_writer;
+const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator(
+    .{ .safety = false, .verbose_log = false, .enable_memory_limit = true },
+);
 
 pub fn main() !void {
-    // @compileLog(@sizeOf(Pat));
-    // @compileLog(@sizeOf(Pat.Node));
-    // @compileLog(@sizeOf(ArrayListUnmanaged(Pat.Node)));
 
-    var token_arena = ArenaAllocator.init(std.heap.page_allocator);
-    defer token_arena.deinit();
-    const token_allocator = token_arena.allocator();
+    // // @compileLog(@sizeOf(Pat));
+    // // @compileLog(@sizeOf(Pat.Node));
+    // // @compileLog(@sizeOf(ArrayListUnmanaged(Pat.Node)));
 
-    var gpa =
-        std.heap.GeneralPurposeAllocator(
-        .{ .safety = false, .verbose_log = false, .enable_memory_limit = true },
-    ){};
+    var gpa = GeneralPurposeAllocator{};
     defer _ = gpa.detectLeaks();
-    const allocator = gpa.allocator();
-
-    var parser_gpa =
-        std.heap.GeneralPurposeAllocator(
-        .{ .safety = true, .verbose_log = false },
-    ){};
-    defer _ = parser_gpa.deinit();
-    const parser_allocator = parser_gpa.allocator();
-
-    var match_gpa =
-        std.heap.GeneralPurposeAllocator(
-        .{ .safety = true, .verbose_log = false },
-    ){};
-    defer _ = match_gpa.deinit();
-    const match_allocator = match_gpa.allocator();
-
     const stdin = io.getStdIn().reader();
     const stdout = io.getStdOut().writer();
-    const stderr = io.getStdErr().writer();
     var buff_writer_stdout = io.bufferedWriter(stdout);
     const buff_stdout = buff_writer_stdout.writer();
+    // TODO: Implement repl specific behavior
+    var pattern = Pat{};
+    defer pattern.deinit(gpa.allocator());
+
+    while (repl(&pattern, &gpa, stdin, buff_stdout)) |_| {
+        try buff_writer_stdout.flush();
+        try stderr.print(
+            "Pattern Allocated: {}\n",
+            .{gpa.total_requested_bytes},
+        );
+    } else |err| switch (err) {
+        error.EndOfStream => return {},
+        // error.StreamTooLong => return e, // TODO: handle somehow
+        else => return err,
+    }
+    _ = gpa.detectLeaks();
+}
+fn repl(
+    pattern: *Pat,
+    pattern_gpa: *GeneralPurposeAllocator,
+    input: anytype,
+    output: anytype,
+) !void {
+    const pat_allocator = pattern_gpa.allocator();
+    // For single-loop lifespans, like lexing, parsing and matching
+    var arena = ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
     const buff_size = 4096;
     var buff: [buff_size]u8 = undefined;
     var fbs = io.fixedBufferStream(&buff);
-    // TODO: Fix repl specific behavior
-    //    - exit on EOF
-    var repl_pat = Pat{};
-    defer repl_pat.deinit(allocator);
-
-    while (stdin.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
+    return if (input.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
         var fbs_written = io.fixedBufferStream(fbs.getWritten());
         const fbs_written_reader = fbs_written.reader();
         var lexer = Lexer(@TypeOf(fbs_written_reader))
-            .init(token_allocator, fbs_written_reader);
+            .init(arena_allocator, fbs_written_reader);
         // for (fbs.getWritten()) |char| {
         // escape (from pressing alt+enter in most shells)
         // if (char == 0x1b) {}
         // }
-        // TODO: combine lexer and parser allocators, avoid token/parsing memory
-        // leaks when freeing asts in the loop
-        var apps = try parseAst(parser_allocator, &lexer);
+        // TODO: combine lexer and parser allocators
+        var apps = try parseAst(arena_allocator, &lexer);
         const ast = Ast.ofApps(apps);
-        defer _ = parser_gpa.detectLeaks();
-        defer ast.deinit(parser_allocator);
 
         // Future parsing will always return apps
         try stderr.print("Parsed:\n", .{});
@@ -84,7 +90,7 @@ pub fn main() !void {
             const key = apps[0 .. apps.len - 1];
             const val = Ast.ofApps(apps[apps.len - 1].arrow);
             // print("Parsed apps hash: {}\n", .{apps.hash()});
-            try repl_pat.put(allocator, key, val);
+            try pattern.put(pat_allocator, key, val);
         } else {
             // // print("Parsed ast hash: {}\n", .{ast.hash()});
             // if (repl_pat.get(ast.apps)) |got| {
@@ -92,7 +98,6 @@ pub fn main() !void {
             //     try got.write(stderr);
             //     print("\n", .{});
             // } else print("Got null\n", .{});
-            defer _ = match_gpa.detectLeaks();
             // var indices = try match_allocator.alloc(usize, ast.apps.len);
             // defer match_allocator.free(indices);
             // var match = try repl_pat.match(
@@ -123,25 +128,15 @@ pub fn main() !void {
             // print("Rewrite: ", .{});
             // try rewrite.write(buff_stdout);
             // try buff_stdout.writeByte('\n');
-            const eval = try repl_pat.evaluate(match_allocator, apps);
-            defer {
-                for (eval) |app| app.deinit(match_allocator);
-                match_allocator.free(eval);
-            }
-            try buff_stdout.print("Eval: ", .{});
+            const eval = try pattern.evaluate(arena_allocator, apps);
+            try output.print("Eval: ", .{});
             for (eval) |app| {
-                try app.writeSExp(buff_stdout, 0);
-                try buff_stdout.writeByte(' ');
+                try app.writeSExp(output, 0);
+                try output.writeByte(' ');
             }
-            try buff_stdout.writeByte('\n');
+            try output.writeByte('\n');
         }
-        try repl_pat.pretty(buff_stdout);
-        try stderr.print("Allocated: {}\n", .{gpa.total_requested_bytes});
-        try buff_writer_stdout.flush();
+        try pattern.pretty(output);
         fbs.reset();
-    } else |e| switch (e) {
-        error.EndOfStream => return {},
-        // error.StreamTooLong => return e, // TODO: handle somehow
-        else => return e,
-    }
+    } else |err| err;
 }

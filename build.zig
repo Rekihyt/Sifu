@@ -50,22 +50,18 @@ pub fn build(b: *std.Build) void {
         .name = "Sifu-Zig",
         // In this case the main source file is merely a path, however, in more
         // complicated build scripts, this could be a generated file.
-        .root_source_file = b.path("src/pattern.zig"),
+        .root_source_file = b.path("src/main.zig"),
         .target = b.resolveTargetQuery(.{
             .cpu_arch = .wasm32,
-            .os_tag = .emscripten,
+            .os_tag = .freestanding,
         }),
-        .optimize = .ReleaseSmall,
+        .optimize = .Debug,
     });
     wasm_lib.entry = .disabled;
     wasm_lib.rdynamic = true;
     wasm_lib.root_module.pic = true;
     const run_wasm = b.addInstallArtifact(wasm_lib, .{});
-    // if (b.args) |args| {
-    //     run_cmd.addArgs(args);
-    //     run_wasm.addArgs(args);
-    // }
-    // run_wasm.step.dependOn(b.getInstallStep());
+    run_wasm.step.dependOn(b.getInstallStep());
     const wasm_step = b.step("wasm", "Build a wasm exe");
     wasm_step.dependOn(&run_wasm.step);
 
