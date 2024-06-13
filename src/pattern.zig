@@ -27,21 +27,19 @@ pub fn AutoPattern(
     return PatternWithContext(Key, Var, AutoContext(Key), AutoContext(Var));
 }
 
-pub fn StringPattern(
-    comptime Var: type,
-    comptime VarCtx: type,
-) type {
-    return PatternWithContext([]const u8, Var, StringContext, VarCtx);
+pub fn StringPattern() type {
+    return PatternWithContext(
+        []const u8,
+        []const u8,
+        StringContext,
+        StringContext,
+        StringMemManager,
+    );
 }
 
-pub fn AutoStringPattern(
-    comptime Var: type,
-) type {
-    return PatternWithContext([]const u8, Var, StringContext, AutoContext(Var));
-}
-
-/// A pattern that uses a pointer to its own type as its node. Used for
-/// parsing. Provided types must implement hash and eql.
+/// A pattern that uses a pointer to its own type as its node and copies keys
+/// and vars by value. Used for parsing. Provided types must implement hash
+/// and eql.
 pub fn Pattern(
     comptime Key: type,
     comptime Var: type,
@@ -51,8 +49,27 @@ pub fn Pattern(
         Var,
         util.IntoArrayContext(Key),
         util.IntoArrayContext(Var),
+        null,
     );
 }
+const StringMemManager = struct {
+    Key: struct {
+        fn copy(allocator: Allocator, key: []const u8) ![]const u8 {
+            return allocator.dupe(u8, key);
+        }
+        fn deinit(allocator: Allocator, key: []const u8) void {
+            return allocator.free(key);
+        }
+    },
+    Var: struct {
+        fn copy(allocator: Allocator, key: []const u8) ![]const u8 {
+            return allocator.dupe(u8, key);
+        }
+        fn deinit(allocator: Allocator, key: []const u8) void {
+            return allocator.free(key);
+        }
+    },
+};
 
 const meta = std.meta;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -75,11 +92,15 @@ const t = @import("test.zig");
 ///        void` that updates a hasher (instead of a direct hash function for
 ///        efficiency)
 ///    - `eql` a function to compare two `T`s, of type `fn (T, T) bool`
+///
+/// MemManager: an optional set of functions for allocating and freeing copies
+/// of Keys and Vars. Must have a copy and deinit function for each.
 pub fn PatternWithContext(
     comptime Key: type,
     comptime Var: type,
     comptime KeyCtx: type,
     comptime VarCtx: type,
+    comptime MemManager: ?type,
 ) type {
     return struct {
         pub const Self = @This();
@@ -107,6 +128,29 @@ pub fn PatternWithContext(
             VarCtx,
             true,
         );
+        pub const Manager = MemManager orelse struct {
+            // No-ops for unmanaged copying by value
+            Key: struct {
+                fn copy(allocator: Allocator, key: Key) !Key {
+                    _ = allocator;
+                    return key;
+                }
+                fn deinit(allocator: Allocator, key: Key) void {
+                    _ = allocator;
+                    _ = key;
+                }
+            },
+            Var: struct {
+                fn copy(allocator: Allocator, variable: Var) !Var {
+                    _ = allocator;
+                    return variable;
+                }
+                fn deinit(allocator: Allocator, variable: Var) void {
+                    _ = allocator;
+                    _ = variable;
+                }
+            },
+        };
 
         /// Maps terms to the next pattern, if there is one. These form
         /// the branches of the trie for a level of nesting. All vars hash to
@@ -174,7 +218,7 @@ pub fn PatternWithContext(
             pattern: Self,
 
             /// Performs a deep copy, resulting in a Node the same size as the
-            /// original.
+            /// original. Does not deep copy keys or vars.
             /// The copy should be freed with `deinit`.
             pub fn copy(self: Node, allocator: Allocator) Allocator.Error!Node {
                 return switch (self) {
@@ -190,6 +234,27 @@ pub fn PatternWithContext(
                 };
             }
 
+            // Like copy but copies and allocates for keys and variables.
+            pub fn deepCopy(
+                self: Node,
+                allocator: Allocator,
+            ) Allocator.Error!Node {
+                return switch (self) {
+                    .key => |key| Node.ofLit(try allocator.dupe(u8, key)),
+                    .variable => |variable| Node.ofVar(try allocator.dupe(u8, variable)),
+                    .var_apps => |var_apps| Node.ofVarApps(try allocator.dupe(u8, var_apps)),
+                    .pattern => |p| Node.ofPattern(try p.deepCopy(allocator)),
+                    inline .apps, .arrow, .match, .list, .infix => |apps, tag| blk: {
+                        const apps_copy = try allocator.alloc(Node, apps.len);
+                        for (apps, apps_copy) |app, *app_copy|
+                            app_copy.* = try app.deepCopy(allocator);
+
+                        break :blk @unionInit(Node, @tagName(tag), apps_copy);
+                    },
+                };
+            }
+
+            // Same as copy but allocates the root
             pub fn clone(self: Node, allocator: Allocator) !*Node {
                 const self_copy = try allocator.create(Node);
                 self_copy.* = try self.copy(allocator);
@@ -439,7 +504,8 @@ pub fn PatternWithContext(
             };
         }
 
-        /// Deep copy a pattern by value. Use deinit to free.
+        /// Deep copy a pattern by value, as well as Keys and Variables.
+        /// Use deinit to free.
         pub fn copy(self: Self, allocator: Allocator) Allocator.Error!Self {
             var result = Self{};
             var map_iter = self.map.iterator();
@@ -1103,7 +1169,7 @@ else
     std.io.null_writer;
 
 test "Pattern: eql" {
-    const Pat = AutoStringPattern(usize);
+    const Pat = StringPattern();
     const Node = Pat.Node;
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1209,7 +1275,7 @@ test "Memory: simple" {
 }
 
 test "Memory: nesting" {
-    const Pat = AutoStringPattern(void);
+    const Pat = StringPattern();
     const Node = Pat.Node;
     var nested_pattern = try Pat.create(testing.allocator);
     defer nested_pattern.destroy(testing.allocator);
@@ -1229,7 +1295,7 @@ test "Memory: idempotency" {
 }
 
 test "Memory: nested pattern" {
-    const Pat = AutoStringPattern(void);
+    const Pat = StringPattern();
     const Node = Pat.Node;
     var pattern = try Pat.create(testing.allocator);
     defer pattern.destroy(testing.allocator);

@@ -29,6 +29,9 @@ pub fn main() !void {
     // // @compileLog(@sizeOf(ArrayListUnmanaged(Pat.Node)));
 
     var gpa = GeneralPurposeAllocator{};
+    const allocator = gpa.allocator();
+    var arena_allocator = ArenaAllocator.init(std.heap.page_allocator);
+    const arena = arena_allocator.allocator();
     defer _ = gpa.detectLeaks();
     const stdin = io.getStdIn().reader();
     const stdout = io.getStdOut().writer();
@@ -38,12 +41,13 @@ pub fn main() !void {
     var pattern = Pat{};
     defer pattern.deinit(gpa.allocator());
 
-    while (repl(&pattern, &gpa, stdin, buff_stdout)) |_| {
+    while (repl(&pattern, allocator, arena, stdin, buff_stdout)) |_| {
         try buff_writer_stdout.flush();
         try stderr.print(
             "Pattern Allocated: {}\n",
             .{gpa.total_requested_bytes},
         );
+        _ = arena_allocator.reset(.retain_capacity);
     } else |err| switch (err) {
         error.EndOfStream => return {},
         // error.StreamTooLong => return e, // TODO: handle somehow
@@ -53,30 +57,26 @@ pub fn main() !void {
 }
 fn repl(
     pattern: *Pat,
-    pattern_gpa: *GeneralPurposeAllocator,
+    // For persistent lifespans, like lexing or parsing done for inserting
+    allocator: Allocator,
+    // For single-loop lifespans, like lexing or parsing done for matching
+    arena: Allocator,
     input: anytype,
     output: anytype,
 ) !void {
-    const pat_allocator = pattern_gpa.allocator();
-    // For single-loop lifespans, like lexing, parsing and matching
-    var arena = ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
-
     const buff_size = 4096;
     var buff: [buff_size]u8 = undefined;
     var fbs = io.fixedBufferStream(&buff);
     return if (input.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
         var fbs_written = io.fixedBufferStream(fbs.getWritten());
-        const fbs_written_reader = fbs_written.reader();
-        var lexer = Lexer(@TypeOf(fbs_written_reader))
-            .init(arena_allocator, fbs_written_reader);
+        var lexer = Lexer(@TypeOf(fbs_written).Reader)
+            .init(arena, fbs_written.reader());
         // for (fbs.getWritten()) |char| {
         // escape (from pressing alt+enter in most shells)
         // if (char == 0x1b) {}
         // }
         // TODO: combine lexer and parser allocators
-        var apps = try parseAst(arena_allocator, &lexer);
+        var apps = try parseAst(arena, &lexer);
         const ast = Ast.ofApps(apps);
 
         // Future parsing will always return apps
@@ -90,7 +90,11 @@ fn repl(
             const key = apps[0 .. apps.len - 1];
             const val = Ast.ofApps(apps[apps.len - 1].arrow);
             // print("Parsed apps hash: {}\n", .{apps.hash()});
-            try pattern.put(pat_allocator, key, val);
+            try pattern.put(
+                allocator,
+                key,
+                val,
+            );
         } else {
             // // print("Parsed ast hash: {}\n", .{ast.hash()});
             // if (repl_pat.get(ast.apps)) |got| {
@@ -128,7 +132,7 @@ fn repl(
             // print("Rewrite: ", .{});
             // try rewrite.write(buff_stdout);
             // try buff_stdout.writeByte('\n');
-            const eval = try pattern.evaluate(arena_allocator, apps);
+            const eval = try pattern.evaluate(arena, apps);
             try output.print("Eval: ", .{});
             for (eval) |app| {
                 try app.writeSExp(output, 0);

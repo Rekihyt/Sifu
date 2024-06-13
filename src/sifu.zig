@@ -1,3 +1,5 @@
+/// This file contains the specific instantiated versions of the langauge's
+/// general types.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Pattern = @import("../pattern.zig")

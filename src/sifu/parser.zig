@@ -168,7 +168,7 @@ pub fn parseAppend(
     var level = levels.pop();
     for (line) |token| {
         const current_ast = switch (token.type) {
-            .Name => Ast.ofLit(token),
+            .Name => Ast.ofLit(token.lit),
             inline .Infix, .Match, .Arrow, .Comma => |tag| {
                 const op_tag: meta.Tag(Ast) = switch (tag) {
                     .Infix => .infix,
@@ -186,7 +186,7 @@ pub fn parseAppend(
                 //     _ = tail;
                 // };
                 if (tag == .Infix)
-                    try level.current.append(allocator, Ast.ofLit(token));
+                    try level.current.append(allocator, Ast.ofLit(token.lit));
                 // Add an apps for the trailing args
                 try level.current.append(
                     allocator,
@@ -209,8 +209,8 @@ pub fn parseAppend(
             },
             .Var => Ast.ofVar(token.lit),
             .VarApps => Ast.ofVarApps(token.lit),
-            .Str, .I, .F, .U => Ast.ofLit(token),
-            .Comment, .NewLine => Ast.ofLit(token),
+            .Str, .I, .F, .U => Ast.ofLit(token.lit),
+            .Comment, .NewLine => Ast.ofLit(token.lit),
             else => @panic("unimplemented"),
         };
         try level.current.append(allocator, current_ast);

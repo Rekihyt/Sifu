@@ -13,14 +13,10 @@ const Allocator = std.mem.Allocator;
 const print = std.debug.print;
 
 /// The Sifu-specific interpreter Ast, using Tokens as keys and strings as
-/// values.
+/// values. Tokens aren't used because the interpreter doesn't need to track
+/// meta-info about syntax
 pub const Ast = Pat.Node;
-pub const Pat = @import("../pattern.zig").PatternWithContext(
-    Token,
-    []const u8,
-    util.IntoArrayContext(Token),
-    StringContext,
-);
+pub const Pat = @import("../pattern.zig").StringPattern();
 
 // for debugging with zig test --test-filter, comment this import
 // const stderr = if (true)
