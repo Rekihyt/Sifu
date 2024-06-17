@@ -10,16 +10,14 @@ const Lexer = @import("sifu/Lexer.zig").Lexer;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const parseAst = @import("sifu/parser.zig").parseAst;
 const io = std.io;
-const log = std.log.scoped(.sifu_cli);
+// const log = if (wasm) std.log.scoped(.sifu_cli) else
+
 const mem = std.mem;
 const print = std.debug.print;
-const wasm = @import("builtin").os.tag == .freestanding;
-const stderr = if (wasm)
-    io.getStdErr().writer()
-else
-    std.io.null_writer;
+const wasm = @import("wasm.zig");
+const is_wasm = @import("builtin").os.tag == .freestanding;
 const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator(
-    .{ .safety = false, .verbose_log = false, .enable_memory_limit = true },
+    .{ .safety = true, .verbose_log = false, .enable_memory_limit = true },
 );
 
 pub fn main() !void {
@@ -31,23 +29,34 @@ pub fn main() !void {
     var gpa = GeneralPurposeAllocator{};
     const allocator = gpa.allocator();
     var arena_allocator = ArenaAllocator.init(std.heap.page_allocator);
+
     const arena = arena_allocator.allocator();
     defer _ = gpa.detectLeaks();
-    const stdin = io.getStdIn().reader();
-    const stdout = io.getStdOut().writer();
+    const stdin, const stdout, const stderr = if (is_wasm)
+        wasm.Streams
+    else
+        .{
+            io.getStdIn().reader(),
+            io.getStdOut().writer(),
+            io.getStdErr().writer(),
+        };
     var buff_writer_stdout = io.bufferedWriter(stdout);
     const buff_stdout = buff_writer_stdout.writer();
     // TODO: Implement repl specific behavior
     var pattern = Pat{};
-    defer pattern.deinit(gpa.allocator());
+    defer pattern.deinit(allocator);
 
-    while (repl(&pattern, allocator, arena, stdin, buff_stdout)) |_| {
+    while (repl(&pattern, allocator, arena, stdin, buff_stdout, stderr)) |_| {
         try buff_writer_stdout.flush();
         try stderr.print(
             "Pattern Allocated: {}\n",
             .{gpa.total_requested_bytes},
         );
-        _ = arena_allocator.reset(.retain_capacity);
+        _ = arena_allocator.reset(.free_all);
+        try stderr.print(
+            "Arena Capacity: {}\n",
+            .{arena_allocator.queryCapacity()},
+        );
     } else |err| switch (err) {
         error.EndOfStream => return {},
         // error.StreamTooLong => return e, // TODO: handle somehow
@@ -55,6 +64,7 @@ pub fn main() !void {
     }
     _ = gpa.detectLeaks();
 }
+
 fn repl(
     pattern: *Pat,
     // For persistent lifespans, like lexing or parsing done for inserting
@@ -63,6 +73,7 @@ fn repl(
     arena: Allocator,
     input: anytype,
     output: anytype,
+    err_output: anytype,
 ) !void {
     const buff_size = 4096;
     var buff: [buff_size]u8 = undefined;
@@ -80,9 +91,9 @@ fn repl(
         const ast = Ast.ofApps(apps);
 
         // Future parsing will always return apps
-        try stderr.print("Parsed:\n", .{});
-        try ast.write(stderr);
-        _ = try stderr.write("\n");
+        try err_output.print("Parsed:\n", .{});
+        try ast.write(err_output);
+        _ = try err_output.write("\n");
 
         // TODO: put with shell command like @put instead of special
         // casing a top level insert
@@ -90,11 +101,7 @@ fn repl(
             const key = apps[0 .. apps.len - 1];
             const val = Ast.ofApps(apps[apps.len - 1].arrow);
             // print("Parsed apps hash: {}\n", .{apps.hash()});
-            try pattern.put(
-                allocator,
-                key,
-                val,
-            );
+            try pattern.put(allocator, key, val);
         } else {
             // // print("Parsed ast hash: {}\n", .{ast.hash()});
             // if (repl_pat.get(ast.apps)) |got| {

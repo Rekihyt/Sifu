@@ -16,22 +16,19 @@ const last = util.last;
 const panic = std.debug.panic;
 
 pub fn AutoPattern(
-    comptime Key: type,
-    comptime Var: type,
+    comptime Literal: type,
 ) type {
-    if (Key == []const u8)
+    if (Literal == []const u8)
         @compileError(
             \\Cannot make a pattern automatically from []const u8,
             \\please use AutoStringPattern instead.
         );
-    return PatternWithContext(Key, Var, AutoContext(Key), AutoContext(Var));
+    return PatternWithContext(Literal, AutoContext(Literal));
 }
 
 pub fn StringPattern() type {
     return PatternWithContext(
         []const u8,
-        []const u8,
-        StringContext,
         StringContext,
         StringMemManager,
     );
@@ -41,35 +38,38 @@ pub fn StringPattern() type {
 /// and vars by value. Used for parsing. Provided types must implement hash
 /// and eql.
 pub fn Pattern(
-    comptime Key: type,
-    comptime Var: type,
+    comptime Literal: type,
 ) type {
     return PatternWithContext(
-        Key,
-        Var,
-        util.IntoArrayContext(Key),
-        util.IntoArrayContext(Var),
+        Literal,
+        util.IntoArrayContext(Literal),
         null,
     );
 }
+
 const StringMemManager = struct {
-    Key: struct {
-        fn copy(allocator: Allocator, key: []const u8) ![]const u8 {
-            return allocator.dupe(u8, key);
-        }
-        fn deinit(allocator: Allocator, key: []const u8) void {
-            return allocator.free(key);
-        }
-    },
-    Var: struct {
-        fn copy(allocator: Allocator, key: []const u8) ![]const u8 {
-            return allocator.dupe(u8, key);
-        }
-        fn deinit(allocator: Allocator, key: []const u8) void {
-            return allocator.free(key);
-        }
-    },
+    fn copy(allocator: Allocator, str: []const u8) ![]const u8 {
+        return allocator.dupe(u8, str);
+    }
+    fn deinit(allocator: Allocator, str: []const u8) void {
+        print("Freeing {s}\n", .{str});
+        return allocator.free(str);
+    }
 };
+
+pub fn CopyByValue(comptime T: type) type {
+    // No-ops for unmanaged copying by value
+    return struct {
+        fn copy(allocator: Allocator, val: T) !T {
+            _ = allocator;
+            return val;
+        }
+        fn deinit(allocator: Allocator, val: T) void {
+            _ = allocator;
+            _ = val;
+        }
+    };
+}
 
 const meta = std.meta;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -84,8 +84,7 @@ const t = @import("test.zig");
 /// match) do not.
 ///
 /// Params
-/// `Key` - the type of literal keys
-/// `Var` - the type of variable keys
+/// `Literal` - the type of literal keys and variables
 ///
 /// Contexts must be either nulls or structs with a type and two functions:
 ///    - `hasherUpdate` a hash function for `T`, of type `fn (T, anytype)
@@ -96,10 +95,8 @@ const t = @import("test.zig");
 /// MemManager: an optional set of functions for allocating and freeing copies
 /// of Keys and Vars. Must have a copy and deinit function for each.
 pub fn PatternWithContext(
-    comptime Key: type,
-    comptime Var: type,
-    comptime KeyCtx: type,
-    comptime VarCtx: type,
+    comptime Literal: type,
+    comptime Ctx: type,
     comptime MemManager: ?type,
 ) type {
     return struct {
@@ -121,36 +118,15 @@ pub fn PatternWithContext(
         /// Used to store the children, which are the next patterns pointed to
         /// by literal keys.
         pub const PatternList = std.ArrayListUnmanaged(Self);
-        /// This is used as a kind of temporary storage for matching
-        pub const VarMap = std.ArrayHashMapUnmanaged(
-            Var,
+        /// This is used as a kind of temporary storage for variable during
+        /// matching and rewriting
+        pub const LiteralMap = std.ArrayHashMapUnmanaged(
+            Literal,
             Node,
-            VarCtx,
+            Ctx,
             true,
         );
-        pub const Manager = MemManager orelse struct {
-            // No-ops for unmanaged copying by value
-            Key: struct {
-                fn copy(allocator: Allocator, key: Key) !Key {
-                    _ = allocator;
-                    return key;
-                }
-                fn deinit(allocator: Allocator, key: Key) void {
-                    _ = allocator;
-                    _ = key;
-                }
-            },
-            Var: struct {
-                fn copy(allocator: Allocator, variable: Var) !Var {
-                    _ = allocator;
-                    return variable;
-                }
-                fn deinit(allocator: Allocator, variable: Var) void {
-                    _ = allocator;
-                    _ = variable;
-                }
-            },
-        };
+        pub const Manager = MemManager orelse CopyByValue(Literal);
 
         /// Maps terms to the next pattern, if there is one. These form
         /// the branches of the trie for a level of nesting. All vars hash to
@@ -167,7 +143,7 @@ pub fn PatternWithContext(
         /// structure forces both to be the same type). In Sifu, it is also the
         /// structure given to a source code entry (a `Node(Token)`). It encodes
         /// sequences, nesting, and patterns.
-        /// The `Key` is a custom type to allow storing of metainfo such as a
+        /// The `Literal` is a custom type to allow storing of metainfo such as a
         /// position, and must implement `toString()` for pattern conversion.
         /// It could also be a simple type for optimization purposes. Sifu maps
         /// the syntax described below to this data structure, but that syntax
@@ -177,22 +153,22 @@ pub fn PatternWithContext(
         pub const Node = union(enum) {
             /// A unique constant, literal values. Uniqueness when in a pattern
             /// arises from NodeMap referencing the same value multiple times
-            /// (based on Key.eql).
-            key: Key,
+            /// (based on Literal.eql).
+            key: Literal,
             /// A Var matches and stores a locally-unique key. During rewriting,
             /// whenever the key is encountered again, it is rewritten to this
             /// pattern's value. A Var pattern matches anything, including nested
             /// patterns. It only makes sense to match anything after trying to
             /// match something specific, so Vars always successfully match (if
             /// there is a Var) after a Key or Subpat match fails.
-            variable: Var,
+            variable: Literal,
             /// Spaces separated juxtaposition, or lists/parens for nested apps.
             /// Infix operators add their rhs as a nested apps after themselves.
             apps: []const Node,
             /// Variables that match apps as a term. These are only strictly
             /// needed for matching patterns with ops, where the nested apps
             /// is implicit.
-            var_apps: Var,
+            var_apps: Literal,
             /// The list following a non-builtin operator.
             infix: []const Node,
             /// A postfix encoded match pattern, i.e. `x : Int -> x * 2` where
@@ -213,41 +189,26 @@ pub fn PatternWithContext(
             /// Lists are operators that are recognized as separators for
             /// patterns.
             list: []const Node,
-            // A pointer here saves space depending on the size of `Key`
+            // A pointer here saves space depending on the size of `Literal`
             /// An expression in braces.
             pattern: Self,
 
             /// Performs a deep copy, resulting in a Node the same size as the
             /// original. Does not deep copy keys or vars.
             /// The copy should be freed with `deinit`.
-            pub fn copy(self: Node, allocator: Allocator) Allocator.Error!Node {
+            pub fn copy(
+                self: Node,
+                allocator: Allocator,
+            ) Allocator.Error!Node {
                 return switch (self) {
-                    .key, .variable, .var_apps => self,
+                    .key => |key| Node.ofKey(try Manager.copy(allocator, key)),
+                    .variable => |variable| Node.ofVar(try Manager.copy(allocator, variable)),
+                    .var_apps => |var_apps| Node.ofVarApps(try Manager.copy(allocator, var_apps)),
                     .pattern => |p| Node.ofPattern(try p.copy(allocator)),
                     inline .apps, .arrow, .match, .list, .infix => |apps, tag| blk: {
                         const apps_copy = try allocator.alloc(Node, apps.len);
                         for (apps, apps_copy) |app, *app_copy|
                             app_copy.* = try app.copy(allocator);
-
-                        break :blk @unionInit(Node, @tagName(tag), apps_copy);
-                    },
-                };
-            }
-
-            // Like copy but copies and allocates for keys and variables.
-            pub fn deepCopy(
-                self: Node,
-                allocator: Allocator,
-            ) Allocator.Error!Node {
-                return switch (self) {
-                    .key => |key| Node.ofLit(try allocator.dupe(u8, key)),
-                    .variable => |variable| Node.ofVar(try allocator.dupe(u8, variable)),
-                    .var_apps => |var_apps| Node.ofVarApps(try allocator.dupe(u8, var_apps)),
-                    .pattern => |p| Node.ofPattern(try p.deepCopy(allocator)),
-                    inline .apps, .arrow, .match, .list, .infix => |apps, tag| blk: {
-                        const apps_copy = try allocator.alloc(Node, apps.len);
-                        for (apps, apps_copy) |app, *app_copy|
-                            app_copy.* = try app.deepCopy(allocator);
 
                         break :blk @unionInit(Node, @tagName(tag), apps_copy);
                     },
@@ -268,7 +229,9 @@ pub fn PatternWithContext(
 
             pub fn deinit(self: Node, allocator: Allocator) void {
                 switch (self) {
-                    .key, .variable, .var_apps => {},
+                    .key => |key| Manager.deinit(allocator, key),
+                    .variable => |variable| Manager.deinit(allocator, variable),
+                    .var_apps => |var_apps| Manager.deinit(allocator, var_apps),
                     .pattern => |*p| @constCast(p).deinit(allocator),
                     inline .apps, .match, .arrow, .list, .infix => |apps, tag| {
                         _ = tag;
@@ -301,7 +264,7 @@ pub fn PatternWithContext(
                     // TODO: differentiate between repeated and unique vars
                     .variable, .var_apps => {},
                     .key => |key| hasher.update(
-                        &mem.toBytes(KeyCtx.hash(undefined, key)),
+                        &mem.toBytes(Ctx.hash(undefined, key)),
                     ),
                     .pattern => |pattern| pattern.hasherUpdate(hasher),
                 }
@@ -311,10 +274,10 @@ pub fn PatternWithContext(
                 return if (@intFromEnum(node) != @intFromEnum(other))
                     false
                 else switch (node) {
-                    .key => |k| KeyCtx.eql(undefined, k, other.key, undefined),
+                    .key => |k| Ctx.eql(undefined, k, other.key, undefined),
                     // TODO: make exact comparisons work with single place
                     // patterns in hashmaps
-                    // .variable => |v| VarCtx.eql(undefined, v, other.variable, undefined),
+                    // .variable => |v| Ctx.eql(undefined, v, other.variable, undefined),
                     .variable => other == .variable,
                     .var_apps => other == .var_apps,
                     inline .apps, .arrow, .match, .list, .infix => |apps, tag| blk: {
@@ -329,13 +292,13 @@ pub fn PatternWithContext(
                     .pattern => |p| p.eql(other.pattern),
                 };
             }
-            pub fn ofLit(key: Key) Node {
+            pub fn ofKey(key: Literal) Node {
                 return .{ .key = key };
             }
-            pub fn ofVar(variable: Var) Node {
+            pub fn ofVar(variable: Literal) Node {
                 return .{ .variable = variable };
             }
-            pub fn ofVarApps(var_apps: Var) Node {
+            pub fn ofVarApps(var_apps: Literal) Node {
                 return .{ .var_apps = var_apps };
             }
 
@@ -345,7 +308,7 @@ pub fn PatternWithContext(
 
             pub fn createKey(
                 allocator: Allocator,
-                key: Key,
+                key: Literal,
             ) Allocator.Error!*Node {
                 const node = try allocator.create(Node);
                 node.* = Node{ .key = key };
@@ -494,7 +457,7 @@ pub fn PatternWithContext(
 
         pub fn ofKey(
             allocator: Allocator,
-            optional_key: ?Key,
+            optional_key: ?Literal,
         ) Allocator.Error!Self {
             return Self{
                 .value = if (optional_key) |key|
@@ -566,8 +529,8 @@ pub fn PatternWithContext(
                 hasher.update(&mem.toBytes(value.hash()));
         }
 
-        fn keyEql(k1: Key, k2: Key) bool {
-            return KeyCtx.eql(undefined, k1, k2, undefined);
+        fn keyEql(k1: Literal, k2: Literal) bool {
+            return Ctx.eql(undefined, k1, k2, undefined);
         }
 
         /// Patterns are equal if they have the same literals, sub-arrays and
@@ -596,7 +559,7 @@ pub fn PatternWithContext(
         }
 
         pub const VarNext = struct {
-            variable: Var,
+            variable: Literal,
             index: usize,
             next: *Self,
         };
@@ -660,7 +623,6 @@ pub fn PatternWithContext(
         /// each var's bound variable. These can the be used by the caller for
         /// rewriting.
         /// All nodes are copied, not moved, into the pattern.
-        ///
         pub fn getOrPutTerm(
             pattern: *Self,
             allocator: Allocator,
@@ -668,12 +630,14 @@ pub fn PatternWithContext(
         ) Allocator.Error!*Self {
             var result = pattern;
             switch (node) {
-                .key, .variable, .var_apps => {
-                    // No need to copy here because empty slices have 0 length
-                    const get_or_put =
-                        try pattern.map.getOrPutValue(allocator, node, Self{});
+                inline .key, .variable, .var_apps => {
+                    const get_or_put = try pattern.map
+                        .getOrPutValue(allocator, node, Self{});
                     if (get_or_put.found_existing) {
                         print("Found existing\n", .{});
+                    } else {
+                        // New keys must be copied because we don't own Node
+                        get_or_put.key_ptr.* = try node.copy(allocator);
                     }
                     result = get_or_put.value_ptr;
                 },
@@ -682,6 +646,7 @@ pub fn PatternWithContext(
                 // map nested apps to the next top level app.
                 inline else => |apps, tag| {
                     // Get or put a level of nesting
+                    // No need to copy here because empty slices have 0 length
                     const get_or_put = try result.map.getOrPutValue(
                         allocator,
                         @unionInit(Node, @tagName(tag), &.{}),
@@ -747,25 +712,25 @@ pub fn PatternWithContext(
         pub fn putKeys(
             self: *Self,
             allocator: Allocator,
-            keys: []const Key,
+            keys: []const Literal,
             optional_value: ?Node,
         ) Allocator.Error!*Self {
-            var apps = allocator.alloc(Key, keys.len);
+            var apps = allocator.alloc(Literal, keys.len);
             defer apps.free(allocator);
             for (apps, keys) |*app, key|
-                app.* = Node.ofLit(key);
+                app.* = Node.ofKey(try Manager.copy(allocator, key));
 
             return self.put(
                 allocator,
                 Node.ofApps(apps),
-                optional_value,
+                try optional_value.clone(allocator),
             );
         }
 
         pub fn getVar(pattern: *Self) ?VarNext {
             const index = pattern.map.getIndex(
-                // All vars hash to the same value, so this field will never
-                // be read
+                // All vars hash to the same value, so the value of this field
+                // will never be read
                 Node{ .variable = undefined },
             ) orelse
                 return null;
@@ -799,7 +764,7 @@ pub fn PatternWithContext(
             len: usize = 0, // Checks if complete or partial match
             // indices: []usize, // The bounds subsequent matches should be within
             // TODO: append varmaps instead of mutating
-            // var_map: VarMap = VarMap{}, // Bound variables
+            // var_map: LiteralMap = LiteralMap{}, // Bound variables
 
             pub fn deinit(self: *Match, allocator: Allocator) void {
                 // Node entries are just references, so they don't need freeing
@@ -838,7 +803,7 @@ pub fn PatternWithContext(
         pub fn branchTerm(
             self: *Self,
             allocator: Allocator,
-            var_map: *VarMap,
+            var_map: *LiteralMap,
             node: Node,
         ) Allocator.Error!?Branch {
             const empty_node = node.asEmpty();
@@ -904,7 +869,7 @@ pub fn PatternWithContext(
         pub fn matchAll(
             self: *Self,
             allocator: Allocator,
-            var_map: *VarMap,
+            var_map: *LiteralMap,
             apps: []const Node,
         ) Allocator.Error!?*Node {
             const result = try self.match(allocator, var_map, apps);
@@ -928,7 +893,7 @@ pub fn PatternWithContext(
         pub fn match(
             self: *Self,
             allocator: Allocator,
-            var_map: *VarMap,
+            var_map: *LiteralMap,
             // indices: []usize,
             apps: []const Node,
         ) Allocator.Error!Match {
@@ -980,12 +945,15 @@ pub fn PatternWithContext(
         pub fn rewrite(
             pattern: Self,
             allocator: Allocator,
-            var_map: VarMap,
+            var_map: LiteralMap,
             nodes: []const Node,
         ) Allocator.Error![]const Node {
             var result = ArrayListUnmanaged(Node){};
             for (nodes) |node| switch (node) {
-                .key => try result.append(allocator, node), // No copy necessary
+                .key => |key| try result.append(
+                    allocator,
+                    Node.ofKey(try Manager.copy(allocator, key)),
+                ),
                 .variable => |variable| {
                     print("Var get: ", .{});
                     if (var_map.get(variable)) |var_node|
@@ -1038,7 +1006,7 @@ pub fn PatternWithContext(
         /// - a pattern of higher ordinal: break
         pub fn evaluate(
             self: *Self,
-            // var_map: *VarMap,
+            // var_map: *LiteralMap,
             allocator: Allocator,
             apps: []const Node,
         ) Allocator.Error![]const Node {
@@ -1047,7 +1015,7 @@ pub fn PatternWithContext(
             while (index < apps.len) {
                 print("Matching from index: {}\n", .{index});
                 const query = apps[index..];
-                var var_map = VarMap{};
+                var var_map = LiteralMap{};
                 defer var_map.deinit(allocator);
                 const matched = try self.match(allocator, &var_map, query);
                 if (matched.len == 0) {
@@ -1212,7 +1180,7 @@ test "should behave like a set when given void" {
     // {
     //     var current = &expected;
     //     for (0..2) |i| {
-    //         current = current.map.Node.ofLit(i);
+    //         current = current.map.Node.ofKey(i);
     //     }
     // }
 
@@ -1284,7 +1252,7 @@ test "Memory: nesting" {
     _ = try nested_pattern.putKeys(
         testing.allocator,
         &.{ "cherry", "blossom", "tree" },
-        Node.ofLit("beautiful"),
+        Node.ofKey("beautiful"),
     );
 }
 
