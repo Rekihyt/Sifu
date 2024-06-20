@@ -2,8 +2,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const mem = std.mem;
 const math = std.math;
-const assert = std.debug.assert;
 const util = @import("util.zig");
+const assert = std.debug.assert;
+const panic = util.panic;
 const Order = math.Order;
 const Wyhash = std.hash.Wyhash;
 const array_hash_map = std.array_hash_map;
@@ -13,7 +14,7 @@ const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const print = util.print;
 const first = util.first;
 const last = util.last;
-const panic = std.debug.panic;
+const err_stream = util.err_stream;
 
 pub fn AutoPattern(
     comptime Literal: type,
@@ -586,8 +587,8 @@ pub fn PatternWithContext(
                         if (maybe_sub_value.value) |value|
                             break :blk value.pattern;
                 },
-                .arrow, .match, .list => @panic("unimplemented"),
-                else => @panic("unimplemented"),
+                .arrow, .match, .list => panic("unimplemented", .{}),
+                else => panic("unimplemented", .{}),
             };
         }
 
@@ -641,7 +642,7 @@ pub fn PatternWithContext(
                     }
                     result = get_or_put.value_ptr;
                 },
-                .pattern => @panic("unimplemented"),
+                .pattern => panic("unimplemented", .{}),
                 // App pattern's values will always be patterns too, which will
                 // map nested apps to the next top level app.
                 inline else => |apps, tag| {
@@ -824,7 +825,7 @@ pub fn PatternWithContext(
                         .pattern = &self.map.values()[next_index],
                     };
                 } else null,
-                .pattern => @panic("unimplemented"),
+                .pattern => panic("unimplemented", .{}),
                 inline else => |sub_apps, tag| blk: {
                     // Check Var as Alternative here, but this probably can't be
                     // a recursive call without a SO
@@ -992,7 +993,7 @@ pub fn PatternWithContext(
                 // .pattern => |sub_pat| {
                 //     _ = sub_pat;
                 // },
-                else => @panic("unimplemented"),
+                else => panic("unimplemented", .{}),
             };
             return try result.toOwnedSlice(allocator);
         }
@@ -1128,13 +1129,6 @@ pub fn PatternWithContext(
 }
 
 const testing = std.testing;
-
-// for debugging with zig test --test-filter, comment this import
-// const stderr = if (true)
-const err_stream = if (@import("build_options").verbose_tests)
-    std.io.getStdErr().writer()
-else
-    std.io.null_writer;
 
 test "Pattern: eql" {
     const Pat = StringPattern();

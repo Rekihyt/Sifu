@@ -7,6 +7,7 @@ const fsize = util.fsize();
 const Order = math.Order;
 const math = std.math;
 const assert = std.debug.assert;
+const panic = util.panic;
 const Oom = Allocator.Error;
 const Lexer = @import("Lexer.zig");
 const Wyhash = std.hash.Wyhash;

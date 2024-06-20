@@ -10,7 +10,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const panic = std.debug.panic;
 const util = @import("../util.zig");
 const fsize = fsize;
 const pattern = @import("pattern.zig");
@@ -26,8 +25,7 @@ const Order = std.math.Order;
 const mem = std.mem;
 const math = std.math;
 const assert = std.debug.assert;
-const debug = std.debug;
-const print = util.print;
+const panic = util.panic;
 
 pub fn Lexer(comptime Reader: type) type {
     return struct {
@@ -352,16 +350,10 @@ pub fn Lexer(comptime Reader: type) type {
 }
 
 const testing = std.testing;
-const io = std.io;
 const meta = std.meta;
-const verbose_tests = @import("build_options").verbose_tests;
-// const stderr = if (false)
-const stderr = if (verbose_tests)
-    std.io.getStdErr().writer()
-else
-    std.io.null_writer;
-
-const fs = std.fs;
+const io = std.io;
+const streams = @import("../streams.zig").streams;
+const err_stream = streams.err_stream;
 
 fn expectEqualTokens(
     comptime input: []const u8,
@@ -376,7 +368,7 @@ fn expectEqualTokens(
 
     for (expecteds) |expected| {
         const next_token = (try lex.next()).?;
-        try stderr.print("{s}\n", .{next_token.lit});
+        try err_stream.print("{s}\n", .{next_token.lit});
         try testing.expectEqualStrings(
             expected,
             next_token.lit,

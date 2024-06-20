@@ -8,7 +8,6 @@ const Parser = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const panic = std.debug.panic;
 const util = @import("../util.zig");
 const fsize = util.fsize();
 const Pat = @import("ast.zig").Pat;
@@ -26,9 +25,10 @@ const Order = std.math.Order;
 const mem = std.mem;
 const math = std.math;
 const assert = std.debug.assert;
-const debug = std.debug;
 const meta = std.meta;
 const print = util.print;
+const panic = util.panic;
+const err_stream = util.err_stream;
 
 // TODO add indentation tracking, and separate based on newlines+indent
 // TODO revert parsing to assume apps at all levels, with ops as appended,
@@ -136,8 +136,9 @@ const Level = struct {
         const current_slice = try level.current.toOwnedSlice(allocator);
         if (level.maybe_op_tail) |tail| switch (tail.*) {
             // After we set this pointer, current_slice cannot be freed.
-            .key, .variable, .var_apps, .pattern => @panic(
+            .key, .variable, .var_apps, .pattern => panic(
                 "cannot finalize non-slice type\n",
+                .{},
             ),
             inline else => |_, tag| tail.* =
                 @unionInit(Ast, @tagName(tag), current_slice),
@@ -181,7 +182,7 @@ pub fn parseAppend(
                 // if (@intFromEnum(op_tag) < @intFromEnum(level.root)) {
                 //     print("Parsing lower precedence\n", .{});
                 //     print("Op: ", .{});
-                //     level.root.write(stderr) catch unreachable;
+                //     level.root.write(err_stream) catch unreachable;
                 //     print("\n", .{});
                 //     _ = tail;
                 // };
@@ -211,7 +212,7 @@ pub fn parseAppend(
             .VarApps => Ast.ofVarApps(token.lit),
             .Str, .I, .F, .U => Ast.ofKey(token.lit),
             .Comment, .NewLine => Ast.ofKey(token.lit),
-            else => @panic("unimplemented"),
+            else => panic("unimplemented", .{}),
         };
         try level.current.append(allocator, current_ast);
     }
@@ -235,7 +236,7 @@ pub fn intoNode(
                 _ = try pattern.insertNode(allocator, ast);
             break :blk Ast.ofPattern(pattern);
         },
-        else => @panic("unimplemented"),
+        else => panic("unimplemented", .{}),
     };
 }
 
@@ -287,19 +288,10 @@ fn getOpTailOrNull(ast: Ast) ?*Ast {
 
 const testing = std.testing;
 const expectEqualStrings = testing.expectEqualStrings;
-const fs = std.fs;
 const io = std.io;
 const Lexer = @import("Lexer.zig")
     .Lexer(io.FixedBufferStream([]const u8).Reader);
 const List = ArrayListUnmanaged(Ast);
-
-// for debugging with zig test --test-filter, comment this import
-const verbose_tests = @import("build_options").verbose_tests;
-// const stderr = if (false)
-const stderr = if (verbose_tests)
-    std.io.getStdErr().writer()
-else
-    std.io.null_writer;
 
 test "simple val" {
     var arena = ArenaAllocator.init(testing.allocator);
@@ -325,14 +317,14 @@ fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
 }
 
 fn expectEqualApps(expected: Ast, actual: Ast) !void {
-    try stderr.writeByte('\n');
-    try stderr.writeAll("Expected: ");
-    try expected.write(stderr);
-    try stderr.writeByte('\n');
+    try err_stream.writeByte('\n');
+    try err_stream.writeAll("Expected: ");
+    try expected.write(err_stream);
+    try err_stream.writeByte('\n');
 
-    try stderr.writeAll("Actual: ");
-    try actual.write(stderr);
-    try stderr.writeByte('\n');
+    try err_stream.writeAll("Actual: ");
+    try actual.write(err_stream);
+    try err_stream.writeByte('\n');
 
     try testing.expect(.apps == expected);
     try testing.expect(.apps == actual);
@@ -354,17 +346,17 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
                 },
                 .variable => |v| try testing.expect(mem.eql(u8, v, actual_elem.variable)),
                 .apps => try expectEqualApps(expected_elem, actual_elem),
-                .match => |_| @panic("unimplemented"),
-                .arrow => |_| @panic("unimplemented"),
+                .match => |_| panic("unimplemented", .{}),
+                .arrow => |_| panic("unimplemented", .{}),
                 .pattern => |pattern| try testing.expect(
                     pattern.eql(actual_elem.pattern.*),
                 ),
             }
         } else {
-            try stderr.writeAll("Asts of different types not equal");
+            try err_stream.writeAll("Asts of different types not equal");
             try testing.expectEqual(expected_elem, actual_elem);
             // above line should always fail
-            debug.panic(
+            panic(
                 "Asserted asts were equal despite different types",
                 .{},
             );

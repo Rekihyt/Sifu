@@ -1,7 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
-const debug = std.debug;
 const syntax = @import("syntax.zig");
 const Token = syntax.Token(usize);
 // pub const Pattern = Ast.Pat;

@@ -3,57 +3,59 @@ const sifu = @import("sifu.zig");
 const Pat = @import("sifu/ast.zig").Pat;
 const Ast = Pat.Node;
 const syntax = @import("sifu/syntax.zig");
-const interpreter = @import("sifu/interpreter.zig");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
 const Lexer = @import("sifu/Lexer.zig").Lexer;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const parseAst = @import("sifu/parser.zig").parseAst;
+const streams = @import("streams.zig").streams;
 const io = std.io;
-// const log = if (wasm) std.log.scoped(.sifu_cli) else
-
 const mem = std.mem;
-const print = std.debug.print;
 const wasm = @import("wasm.zig");
-const is_wasm = @import("builtin").os.tag == .freestanding;
-const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator(
+const builtin = @import("builtin");
+const is_wasm = builtin.target.cpu.arch == .wasm32;
+const panic = @import("util.zig").panic;
+var gpa = if (is_wasm) undefined else std.heap.GeneralPurposeAllocator(
     .{ .safety = true, .verbose_log = false, .enable_memory_limit = true },
-);
+){};
 
-pub fn main() !void {
+pub fn main() void {
+    // @compileLog(@sizeOf(Pat));
+    // @compileLog(@sizeOf(Pat.Node));
+    // @compileLog(@sizeOf(ArrayListUnmanaged(Pat.Node)));
 
-    // // @compileLog(@sizeOf(Pat));
-    // // @compileLog(@sizeOf(Pat.Node));
-    // // @compileLog(@sizeOf(ArrayListUnmanaged(Pat.Node)));
+    const allocator = if (is_wasm) std.heap.wasm_allocator else gpa.allocator();
 
-    var gpa = GeneralPurposeAllocator{};
-    const allocator = gpa.allocator();
-    var arena_allocator = ArenaAllocator.init(std.heap.page_allocator);
+    if (comptime !is_wasm) {
+        defer _ = gpa.detectLeaks();
+    }
+    repl(allocator) catch |e|
+        panic("{}", .{e});
 
+    if (comptime !is_wasm)
+        _ = gpa.detectLeaks();
+}
+
+fn repl(
+    allocator: Allocator,
+) !void {
+    const in_stream, const out_stream, const err_stream = streams;
+    var arena_allocator = ArenaAllocator.init(allocator);
     const arena = arena_allocator.allocator();
-    defer _ = gpa.detectLeaks();
-    const stdin, const stdout, const stderr = if (is_wasm)
-        wasm.Streams
-    else
-        .{
-            io.getStdIn().reader(),
-            io.getStdOut().writer(),
-            io.getStdErr().writer(),
-        };
-    var buff_writer_stdout = io.bufferedWriter(stdout);
+    var buff_writer_stdout = io.bufferedWriter(out_stream);
     const buff_stdout = buff_writer_stdout.writer();
+    const io_streams = .{ in_stream, buff_stdout, err_stream };
     // TODO: Implement repl specific behavior
     var pattern = Pat{};
     defer pattern.deinit(allocator);
-
-    while (repl(&pattern, allocator, arena, stdin, buff_stdout, stderr)) |_| {
+    while (replStep(&pattern, allocator, arena, io_streams)) |_| {
         try buff_writer_stdout.flush();
-        try stderr.print(
+        if (comptime !is_wasm) try err_stream.print(
             "Pattern Allocated: {}\n",
             .{gpa.total_requested_bytes},
         );
         _ = arena_allocator.reset(.free_all);
-        try stderr.print(
+        if (comptime !is_wasm) try err_stream.print(
             "Arena Capacity: {}\n",
             .{arena_allocator.queryCapacity()},
         );
@@ -62,23 +64,20 @@ pub fn main() !void {
         // error.StreamTooLong => return e, // TODO: handle somehow
         else => return err,
     }
-    _ = gpa.detectLeaks();
 }
 
-fn repl(
+fn replStep(
     pattern: *Pat,
-    // For persistent lifespans, like lexing or parsing done for inserting
-    allocator: Allocator,
-    // For single-loop lifespans, like lexing or parsing done for matching
+    pat_allocator: Allocator,
     arena: Allocator,
-    input: anytype,
-    output: anytype,
-    err_output: anytype,
+    io_streams: anytype,
 ) !void {
+    const in_stream, const out_stream, const err_stream = io_streams;
     const buff_size = 4096;
     var buff: [buff_size]u8 = undefined;
     var fbs = io.fixedBufferStream(&buff);
-    return if (input.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
+
+    return if (in_stream.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
         var fbs_written = io.fixedBufferStream(fbs.getWritten());
         var lexer = Lexer(@TypeOf(fbs_written).Reader)
             .init(arena, fbs_written.reader());
@@ -91,9 +90,9 @@ fn repl(
         const ast = Ast.ofApps(apps);
 
         // Future parsing will always return apps
-        try err_output.print("Parsed:\n", .{});
-        try ast.write(err_output);
-        _ = try err_output.write("\n");
+        try err_stream.print("Parsed:\n", .{});
+        try ast.write(err_stream);
+        _ = try err_stream.write("\n");
 
         // TODO: put with shell command like @put instead of special
         // casing a top level insert
@@ -101,7 +100,7 @@ fn repl(
             const key = apps[0 .. apps.len - 1];
             const val = Ast.ofApps(apps[apps.len - 1].arrow);
             // print("Parsed apps hash: {}\n", .{apps.hash()});
-            try pattern.put(allocator, key, val);
+            try pattern.put(pat_allocator, key, val);
         } else {
             // // print("Parsed ast hash: {}\n", .{ast.hash()});
             // if (repl_pat.get(ast.apps)) |got| {
@@ -140,14 +139,14 @@ fn repl(
             // try rewrite.write(buff_stdout);
             // try buff_stdout.writeByte('\n');
             const eval = try pattern.evaluate(arena, apps);
-            try output.print("Eval: ", .{});
+            try out_stream.print("Eval: ", .{});
             for (eval) |app| {
-                try app.writeSExp(output, 0);
-                try output.writeByte(' ');
+                try app.writeSExp(out_stream, 0);
+                try out_stream.writeByte(' ');
             }
-            try output.writeByte('\n');
+            try out_stream.writeByte('\n');
         }
-        try pattern.pretty(output);
+        try pattern.pretty(out_stream);
         fbs.reset();
     } else |err| err;
 }

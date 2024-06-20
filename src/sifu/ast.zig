@@ -10,20 +10,14 @@ const Wyhash = std.hash.Wyhash;
 const mem = std.mem;
 const StringContext = std.array_hash_map.StringContext;
 const Allocator = std.mem.Allocator;
-const print = std.debug.print;
+const print = util.print;
+const err_stream = util.err_stream;
 
 /// The Sifu-specific interpreter Ast, using Tokens as keys and strings as
 /// values. Tokens aren't used because the interpreter doesn't need to track
 /// meta-info about syntax
 pub const Ast = Pat.Node;
 pub const Pat = @import("../pattern.zig").StringPattern();
-
-// for debugging with zig test --test-filter, comment this import
-// const stderr = if (true)
-const err_stream = if (@import("build_options").verbose_tests)
-    std.io.getStdErr().writer()
-else
-    std.io.null_writer;
 
 test "simple ast to pattern" {
     const term = Token{

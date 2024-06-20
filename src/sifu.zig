@@ -10,21 +10,8 @@ const syntax = @import("sifu/syntax.zig");
 const Ast = @import("sifu/ast.zig").Ast;
 const parser = @import("sifu/parser.zig");
 const ArenaAllocator = std.heap.ArenaAllocator;
-
-pub fn parse(allocator: Allocator, source: []const u8) !Pattern {
-    var lexer = Lexer.init(allocator, source);
-    defer lexer.deinit();
-
-    var arena = ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    return parser.parse(
-        arena,
-        try lexer.apps(),
-    );
-}
-
 const testing = std.testing;
+
 test "Submodules" {
     _ = @import("sifu/ast.zig");
     _ = @import("sifu/errors.zig");

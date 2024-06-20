@@ -7,20 +7,13 @@ const Token = syntax.Token(usize);
 const Term = syntax.Term;
 const Type = syntax.Type;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const fs = std.fs;
 const Lexer = @import("sifu/Lexer.zig")
     .Lexer(io.FixedBufferStream([]const u8).Reader);
 const parse = @import("sifu/parser.zig").parse;
 const io = std.io;
-const print = std.debug.print;
-
-// for debugging with zig test --test-filter, comment this import
-const verbose_tests = @import("build_options").verbose_tests;
-// const stderr = if (true)
-const stderr = if (verbose_tests)
-    std.io.getStdErr().writer()
-else
-    std.io.null_writer;
+const util = @import("util.zig");
+const print = util.print;
+const err_stream = util.err_stream;
 
 test "Submodules" {
     _ = @import("sifu.zig");
@@ -109,10 +102,10 @@ test "Pattern: simple vals" {
 
     try testing.expect(!expected.eql(actual));
     _ = try actual.insertApps(allocator, key, val.*);
-    try expected.write(stderr);
-    try stderr.writeByte('\n');
-    try actual.write(stderr);
-    try stderr.writeByte('\n');
+    try expected.write(err_stream);
+    try err_stream.writeByte('\n');
+    try actual.write(err_stream);
+    try err_stream.writeByte('\n');
     try testing.expect(expected.eql(actual));
 
     // TODO: match patterns instead
@@ -146,6 +139,6 @@ test "Pattern: simple vals" {
     try testing.expect(val2.eql(actual.matchUnique(key2).?.*.val.?.*));
     try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUniqueApps(key[0..1]));
     try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUniqueApps(key2.apps[0..1]));
-    try expected.write(stderr);
-    try actual.write(stderr);
+    try expected.write(err_stream);
+    try actual.write(err_stream);
 }

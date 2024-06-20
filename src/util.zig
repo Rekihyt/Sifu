@@ -7,6 +7,11 @@ const Strategy = std.hash.Strategy;
 const Wyhash = std.hash.Wyhash;
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
+const is_wasm = @import("builtin").target.cpu.arch == .wasm32;
+const wasm = @import("wasm.zig");
+const streams = @import("streams.zig").streams;
+pub const err_stream = streams[2];
+pub const panic = if (is_wasm) wasm.panic else std.debug.panic;
 
 /// Remove the tag from a union type.
 pub fn toUntagged(comptime TaggedUnion: type) type {
@@ -15,13 +20,9 @@ pub fn toUntagged(comptime TaggedUnion: type) type {
     return @Type(info);
 }
 
-/// Shorthand for printing to stderr or null writer and asserting no errors.
+/// Shorthand for printing to stderr or null writer and panicking on errors.
 pub fn print(comptime fmt: []const u8, args: anytype) void {
-    const stderr = if (@import("build_options").verbose_tests)
-        std.io.getStdErr().writer()
-    else
-        std.io.null_writer;
-    stderr.print(fmt, args) catch unreachable;
+    err_stream.print(fmt, args) catch panic(fmt, args);
 }
 
 pub fn popMany(
@@ -165,7 +166,7 @@ pub fn first(slice: anytype) @TypeOf(slice[0]) {
 }
 
 pub fn last(slice: anytype) @typeInfo(@TypeOf(slice)).Pointer.child {
-    @panic("this function appears to be broken");
+    panic("this function appears to be broken", .{});
     // assert(slice.len > 0);
     // return slice[slice.len - 1];
 }
