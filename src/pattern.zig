@@ -53,7 +53,7 @@ const StringMemManager = struct {
         return allocator.dupe(u8, str);
     }
     fn deinit(allocator: Allocator, str: []const u8) void {
-        print("Freeing {s}\n", .{str});
+        // print("Freeing {s}\n", .{str});
         return allocator.free(str);
     }
 };

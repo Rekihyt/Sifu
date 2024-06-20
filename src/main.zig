@@ -15,6 +15,8 @@ const wasm = @import("wasm.zig");
 const builtin = @import("builtin");
 const is_wasm = builtin.target.cpu.arch == .wasm32;
 const panic = @import("util.zig").panic;
+// TODO: merge these into just GPA, when it eventually implements wasm_allocator
+// itself
 var gpa = if (is_wasm) undefined else std.heap.GeneralPurposeAllocator(
     .{ .safety = true, .verbose_log = false, .enable_memory_limit = true },
 ){};
@@ -55,10 +57,6 @@ fn repl(
             .{gpa.total_requested_bytes},
         );
         _ = arena_allocator.reset(.free_all);
-        if (comptime !is_wasm) try err_stream.print(
-            "Arena Capacity: {}\n",
-            .{arena_allocator.queryCapacity()},
-        );
     } else |err| switch (err) {
         error.EndOfStream => return {},
         // error.StreamTooLong => return e, // TODO: handle somehow
