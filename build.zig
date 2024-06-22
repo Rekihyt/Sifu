@@ -59,14 +59,30 @@ pub fn build(b: *std.Build) void {
         }),
         .optimize = .Debug,
     });
-    wasm_exe.entry = .disabled;
+    // wasm_exe.entry = .disabled;
     wasm_exe.rdynamic = true;
     wasm_exe.root_module.pic = true;
-    // wasm_exe.import_memory = true;
+    wasm_exe.import_memory = true;
     const run_wasm = b.addInstallArtifact(wasm_exe, .{});
     run_wasm.step.dependOn(b.getInstallStep());
     const wasm_step = b.step("wasm", "Build a wasm exe");
     wasm_step.dependOn(&run_wasm.step);
+
+    const wasi_exe = b.addExecutable(.{
+        .name = "Sifu-Zig-Wasi",
+        // In this case the main source file is merely a path, however, in more
+        // complicated build scripts, this could be a generated file.
+        .root_source_file = b.path("src/main.zig"),
+        .target = b.resolveTargetQuery(.{
+            .cpu_arch = .wasm32,
+            .os_tag = .wasi,
+        }),
+        .optimize = .Debug,
+    });
+    const run_wasi = b.addInstallArtifact(wasi_exe, .{});
+    run_wasi.step.dependOn(b.getInstallStep());
+    const wasi_step = b.step("wasi", "Build a wasm exe");
+    wasi_step.dependOn(&run_wasi.step);
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
@@ -92,5 +108,6 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "verbose_errors", verbose_errors);
     unit_tests.root_module.addOptions("build_options", build_options);
     wasm_exe.root_module.addOptions("build_options", build_options);
+    wasi_exe.root_module.addOptions("build_options", build_options);
     exe.root_module.addOptions("build_options", build_options);
 }

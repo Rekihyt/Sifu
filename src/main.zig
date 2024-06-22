@@ -13,11 +13,11 @@ const io = std.io;
 const mem = std.mem;
 const wasm = @import("wasm.zig");
 const builtin = @import("builtin");
-const is_wasm = builtin.target.cpu.arch == .wasm32;
+const no_os = builtin.target.os.tag == .freestanding;
 const panic = @import("util.zig").panic;
 // TODO: merge these into just GPA, when it eventually implements wasm_allocator
 // itself
-var gpa = if (is_wasm) undefined else std.heap.GeneralPurposeAllocator(
+var gpa = if (no_os) undefined else std.heap.GeneralPurposeAllocator(
     .{ .safety = true, .verbose_log = false, .enable_memory_limit = true },
 ){};
 
@@ -26,15 +26,18 @@ pub fn main() void {
     // @compileLog(@sizeOf(Pat.Node));
     // @compileLog(@sizeOf(ArrayListUnmanaged(Pat.Node)));
 
-    const allocator = if (is_wasm) std.heap.wasm_allocator else gpa.allocator();
+    const allocator = if (no_os)
+        std.heap.wasm_allocator
+    else
+        gpa.allocator();
 
-    if (comptime !is_wasm) {
+    if (comptime !no_os) {
         defer _ = gpa.detectLeaks();
     }
     repl(allocator) catch |e|
         panic("{}", .{e});
 
-    if (comptime !is_wasm)
+    if (comptime !no_os)
         _ = gpa.detectLeaks();
 }
 
@@ -52,7 +55,7 @@ fn repl(
     defer pattern.deinit(allocator);
     while (replStep(&pattern, allocator, arena, io_streams)) |_| {
         try buff_writer_stdout.flush();
-        if (comptime !is_wasm) try err_stream.print(
+        if (comptime !no_os) try err_stream.print(
             "Pattern Allocated: {}\n",
             .{gpa.total_requested_bytes},
         );

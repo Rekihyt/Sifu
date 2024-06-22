@@ -1,16 +1,40 @@
 const std = @import("std");
+const fmt = std.fmt;
 // for debugging with zig test --test-filter, comment this import
 const verbose_errors = @import("build_options").verbose_errors;
 
-extern "env" fn log(msg_ptr: [*]const u8, msg_len: usize) void;
-extern "env" fn promptIntoAddr(
+extern "js" fn log(msg_ptr: [*]const u8, msg_len: usize) void;
+extern "js" fn promptIntoAddr(
     result_addr_ptr: *const [*]u8,
     result_len_ptr: *const usize,
 ) void;
 
+// Allocator `len` bytes using the wasm allocator
+export fn alloc(len: usize) [*]const u8 {
+    var buff: [256]u8 = undefined;
+    const str = fmt.bufPrint(&buff, "Alloc: {}\n", .{len}) catch unreachable;
+    log(str.ptr, str.len);
+    const slice = std.heap.wasm_allocator.alloc(u8, len) catch
+        panic("Allocation of {} bytes failed", .{len});
+    return slice.ptr;
+}
+
+export fn free(ptr: [*]const u8, len: usize) void {
+    // const ptr: [*]usize = @ptrFromInt(ptr_num);
+    std.heap.wasm_allocator.free(ptr[0..len]);
+}
+
 // TODO: add errors / return len
 fn writeFn(ctx: *const anyopaque, bytes: []const u8) error{}!usize {
     _ = ctx;
+    var buff: [256]u8 = undefined;
+    const str = fmt.bufPrint(
+        &buff,
+        "Write {} bytes: {s}\n",
+        .{ bytes.len, bytes },
+    ) catch
+        unreachable;
+    log(str.ptr, str.len);
     log(bytes.ptr, bytes.len);
     return bytes.len;
 }

@@ -7,11 +7,11 @@ const Strategy = std.hash.Strategy;
 const Wyhash = std.hash.Wyhash;
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
-const is_wasm = @import("builtin").target.cpu.arch == .wasm32;
+const no_os = @import("builtin").target.os.tag == .freestanding;
 const wasm = @import("wasm.zig");
 const streams = @import("streams.zig").streams;
 pub const err_stream = streams[2];
-pub const panic = if (is_wasm) wasm.panic else std.debug.panic;
+pub const panic = if (no_os) wasm.panic else std.debug.panic;
 
 /// Remove the tag from a union type.
 pub fn toUntagged(comptime TaggedUnion: type) type {
