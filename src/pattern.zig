@@ -14,7 +14,7 @@ const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const print = util.print;
 const first = util.first;
 const last = util.last;
-const err_stream = util.err_stream;
+const streams = util.streams;
 
 pub fn AutoPattern(
     comptime Literal: type,
@@ -694,7 +694,7 @@ pub fn PatternWithContext(
             if (maybe_value) |value| {
                 if (result.value) |prev_value| {
                     print("Deleting old value: {*}\n", .{prev_value});
-                    prev_value.writeIndent(err_stream, null) catch unreachable;
+                    prev_value.writeIndent(streams.err, null) catch unreachable;
                     print("\n", .{});
                     prev_value.destroy(allocator);
                 }
@@ -809,7 +809,7 @@ pub fn PatternWithContext(
         ) Allocator.Error!?Branch {
             const empty_node = node.asEmpty();
             print("Branching `", .{});
-            node.asEmpty().writeSExp(err_stream, null) catch unreachable;
+            node.asEmpty().writeSExp(streams.err, null) catch unreachable;
             print("`, ", .{});
             return switch (node) {
                 .key,
@@ -817,7 +817,7 @@ pub fn PatternWithContext(
                 .var_apps,
                 => if (self.map.getIndex(empty_node)) |next_index| blk: {
                     print("exactly: ", .{});
-                    self.map.values()[next_index].write(err_stream) catch
+                    self.map.values()[next_index].write(streams.err) catch
                         unreachable;
                     print(" at index: {?}\n", .{next_index});
                     break :blk Branch{
@@ -842,7 +842,7 @@ pub fn PatternWithContext(
                 // index += 1; // TODO use as limit
                 // result.index = var_next.index;
                 print("as var `{s}`\n", .{var_next.variable});
-                var_next.next.write(err_stream) catch unreachable;
+                var_next.next.write(streams.err) catch unreachable;
                 print("\n", .{});
                 // print(" at index: {?}\n", .{result.index});
                 const var_result =
@@ -907,7 +907,7 @@ pub fn PatternWithContext(
                 // Store as a Node for convenience
                 const node = Node.ofApps(apps);
                 print("Matching as var apps `{s}`\n", .{var_apps_next.variable});
-                var_apps_next.next.write(err_stream) catch unreachable;
+                var_apps_next.next.write(streams.err) catch unreachable;
                 print("\n", .{});
                 // print(" at index: {?}\n", .{result.index});
                 const var_result =
@@ -958,7 +958,7 @@ pub fn PatternWithContext(
                 .variable => |variable| {
                     print("Var get: ", .{});
                     if (var_map.get(variable)) |var_node|
-                        var_node.write(err_stream) catch unreachable
+                        var_node.write(streams.err) catch unreachable
                     else
                         print("null", .{});
                     print("\n", .{});
@@ -971,7 +971,7 @@ pub fn PatternWithContext(
                 .var_apps => |var_apps| {
                     print("Var apps get: ", .{});
                     if (var_map.get(var_apps)) |var_node|
-                        var_node.write(err_stream) catch unreachable
+                        var_node.write(streams.err) catch unreachable
                     else
                         print("null", .{});
                     print("\n", .{});
@@ -1051,8 +1051,8 @@ pub fn PatternWithContext(
                                 break;
                         } else break; // Don't evaluate the same pattern
                     print("Eval matched {s}: ", .{@tagName(next.*)});
-                    next.write(err_stream) catch unreachable;
-                    err_stream.writeByte('\n') catch unreachable;
+                    next.write(streams.err) catch unreachable;
+                    streams.err.writeByte('\n') catch unreachable;
                     const rewritten =
                         try self.rewrite(allocator, var_map, next.apps);
                     defer Node.ofApps(rewritten).deinit(allocator);
@@ -1067,10 +1067,10 @@ pub fn PatternWithContext(
             }
             print("Eval: ", .{});
             for (result.items) |app| {
-                app.writeSExp(err_stream, 0) catch unreachable;
-                err_stream.writeByte(' ') catch unreachable;
+                app.writeSExp(streams.err, 0) catch unreachable;
+                streams.err.writeByte(' ') catch unreachable;
             }
-            err_stream.writeByte('\n') catch unreachable;
+            streams.err.writeByte('\n') catch unreachable;
             return result.toOwnedSlice(allocator);
         }
 
@@ -1151,10 +1151,10 @@ test "Pattern: eql" {
         Node{ .key = "Aa" },
         Node{ .key = "Bb" },
     }, value2);
-    try p1.write(err_stream);
-    try err_stream.writeByte('\n');
-    try p_put.write(err_stream);
-    try err_stream.writeByte('\n');
+    try p1.write(streams.err);
+    try streams.err.writeByte('\n');
+    try p_put.write(streams.err);
+    try streams.err.writeByte('\n');
     try testing.expect(p1.eql(p_put));
 }
 
@@ -1179,7 +1179,7 @@ test "should behave like a set when given void" {
     // }
 
     print("\nSet Pattern:\n", .{});
-    try pattern.write(err_stream);
+    try pattern.write(streams.err);
     print("\n", .{});
     const prefix = pattern.getPrefix(nodes1);
     // Even though there is a match, the value is null because we didn't put

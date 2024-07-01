@@ -9,8 +9,7 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const no_os = @import("builtin").target.os.tag == .freestanding;
 const wasm = @import("wasm.zig");
-const streams = @import("streams.zig").streams;
-pub const err_stream = streams[2];
+pub const streams = @import("streams.zig").streams;
 pub const panic = if (no_os) wasm.panic else std.debug.panic;
 
 /// Remove the tag from a union type.
@@ -22,7 +21,7 @@ pub fn toUntagged(comptime TaggedUnion: type) type {
 
 /// Shorthand for printing to stderr or null writer and panicking on errors.
 pub fn print(comptime fmt: []const u8, args: anytype) void {
-    err_stream.print(fmt, args) catch panic(fmt, args);
+    streams.err.print(fmt, args) catch panic(fmt, args);
 }
 
 pub fn popMany(

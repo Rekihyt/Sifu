@@ -44,18 +44,18 @@ pub fn main() void {
 fn repl(
     allocator: Allocator,
 ) !void {
-    const in_stream, const out_stream, const err_stream = streams;
     var arena_allocator = ArenaAllocator.init(allocator);
     const arena = arena_allocator.allocator();
-    var buff_writer_stdout = io.bufferedWriter(out_stream);
+    var buff_writer_stdout = io.bufferedWriter(streams.out);
     const buff_stdout = buff_writer_stdout.writer();
-    const io_streams = .{ in_stream, buff_stdout, err_stream };
+    const io_streams = .{ streams.in, buff_stdout, streams.err };
     // TODO: Implement repl specific behavior
     var pattern = Pat{};
     defer pattern.deinit(allocator);
     while (replStep(&pattern, allocator, arena, io_streams)) |_| {
+        streams.err.print("replStep finished", .{}) catch unreachable;
         try buff_writer_stdout.flush();
-        if (comptime !no_os) try err_stream.print(
+        if (comptime !no_os) try streams.err.print(
             "Pattern Allocated: {}\n",
             .{gpa.total_requested_bytes},
         );
@@ -73,12 +73,13 @@ fn replStep(
     arena: Allocator,
     io_streams: anytype,
 ) !void {
+    streams.err.print("replStep", .{}) catch unreachable;
     const in_stream, const out_stream, const err_stream = io_streams;
     const buff_size = 4096;
     var buff: [buff_size]u8 = undefined;
     var fbs = io.fixedBufferStream(&buff);
 
-    return if (in_stream.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
+    if (in_stream.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len)) |_| {
         var fbs_written = io.fixedBufferStream(fbs.getWritten());
         var lexer = Lexer(@TypeOf(fbs_written).Reader)
             .init(arena, fbs_written.reader());
@@ -149,5 +150,5 @@ fn replStep(
         }
         try pattern.pretty(out_stream);
         fbs.reset();
-    } else |err| err;
+    } else |err| return err;
 }
