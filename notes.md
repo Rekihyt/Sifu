@@ -61,8 +61,16 @@ A computation model that facilitates language, not vice-versa.
   - builtin hashmaps, which are used to implement records
   - hashmaps of types (tags) can trivially implement row types
   - type checking is just a pattern match on patterns
-  - compliler treats type values as compile time and interprets them to type check. the interpreter treats them as normal sets
-- Strats are literals preceded by the `$` symbol that can perform operations outside of the Sifu language spec. These are implemented as compiler extensions, and can interact with the user, for example by throwing compile errors. Strats should focus primarily on _how_ an expression evaluates instead of _what_ it evaluates to. For example, file IO, spawn/join threads. When pattern matching, strats in the match of a tag are matched as usual, but when encountered on the right they evaluated by invoking their matching compiler plugin, with any apps as args.
+  - compliler treats type values as compile time and interprets them to type
+  check. the interpreter treats them as normal sets
+  - Strats are literals preceded by the `$` symbol that can perform operations
+  outside of the Sifu language spec. These are implemented as compiler
+  extensions, and can interact with the user, for example by throwing compile
+  errors. Strats should focus primarily on _how_ an expression evaluates instead
+  of _what_ it evaluates to. For example, file IO, spawn/join threads. When
+  pattern matching, strats in the match of a tag are matched as usual, but when
+  encountered on the right they evaluated by invoking their matching compiler
+  plugin, with any apps as args.
   - `$ lazy`: don't evaluate the expression until necessary
   - `$lazy 2` evaluate 2 expression deep
   - `$strict` force all evaluations to whatever depth
@@ -679,26 +687,6 @@ ComposeBranches (ord : Ord) -> Case [
 
 ---
 
-### Left to Right pattern matching evaluation
-
-Patterns should be matched starting from the left most term and greedily
-consuming as many submatches as possible. When replaced, matching begins at the
-current location, but not before.
-
-```
-Foo -> 321
-Foo Foo -> 123
-Bar -> Foo
-Foo Bar -> 456
-
-Foo Foo # select Foo, select its Foo with val 123
-Foo Bar # select Foo, select its Bar with val 456
-Bar Foo # select Bar, try and fail to match its Foo, then fallback to 123 321
-Bar Bar # select Bar, try and fail to match its Bar, then fallback to Bar. select Bar for Bar Bar
-```
-
----
-
 Pattern keys must also contain patterns, otherwise subpatterns (types) aren't possible.
 Pattern values must also contain patterns, in other words patterns must be built once during insert, not multiple times each rewrite.
 
@@ -788,19 +776,21 @@ because sometimes 0 is desired. They would make `->` map only to its first
 app as a singleton not an array. This might make some precedence operators
 redundant.
 
-Two operators for matching are probably necessary too. `*:` maybe?
-
-The operator `...` or `*` is necessary for globbing. Matching using it needs
+The operator `@` is necessary for globbing. Matching using it needs
 some kind of substring search algorithm for apps though (but probably not for
 patterns). It could be combined like `{*}` to denote the current pattern or
 everything in scope.
 
 Single arrow: rewrite to first match, looking back or else self
-Double arrow: rewrite to all matches in order looking back or else empty. 
+Double arrow: rewrite to all matches in order looking back or else empty.
 
 Commas might be better as a way to append instead of separate apps. An append
 operator would also be good to enable treating apps of a single pattern as just
-a pattern.
+a pattern, but this can easily be defined. Trailing commas are desirable for
+consistency but are problematic because the empty apps following one is added
+to a pattern. One possible solution is to change how newlines are parsed
+instead: a newline followed by a closing brace does not denote a trailing empty
+apps.
 ```
 
 # Make apps of length 1 map to a singleton 
@@ -857,3 +847,51 @@ Matching
 - No backtracking
 - Computation must flow upwards for streaming execution
 - Patterns of differing length are fine: the lowest index, followed by longest match is chosen greedily
+
+---
+
+FAQ
+- Parenthesis behavior and role as explicit, unelidable structure is a significant difference
+
+---
+
+### Left to Right pattern matching evaluation strategies
+
+#### Default Eval
+Patterns should be matched starting from the left most term and greedily
+consuming as many submatches as possible. When replaced, matching begins at the
+current location, but not before.
+
+A builtin operator might be necessary to force evaluation, but it might be
+enough to just use a concat operator that flips, as it will evaluate after
+the first argument.
+```sifu
+Foo -> Not << (True | False) where
+  x << y -> y x
+  (@xs) -> @xs
+```
+The reversed concat might not even be necessary either, as the unwrapping
+may also evaluate @xs before the first Not function is applied. This will
+depend on evaluation order, where a match like `f (x | y)` could fail to
+match f immediately, but then fully evaluate `(x | y)` and retry the match,
+as opposed to a partial eval into `f x | y`.
+
+Reversed operators don't seem enough to solve the general problem of
+precedence either. Sometimes expressions with operators don't evaluate their
+operator away, so them being evaluated first isn't enough to give them
+precedence in following evaluations with surrounding operators.
+
+```
+Foo -> 321
+Foo Foo -> 123
+Bar -> Foo
+Foo Bar -> 456
+
+Foo Foo # select Foo, select its Foo with val 123
+Foo Bar # select Foo, select its Bar with val 456
+Bar Foo # select Bar, try and fail to match its Foo, then fallback to 123 321
+Bar Bar # select Bar, try and fail to match its Bar, then fallback to Bar. select Bar for Bar Bar
+```
+
+
+

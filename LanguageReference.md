@@ -16,6 +16,7 @@ only makes sense to match anything after trying to match something specific, so
 Vars always successfully match (if there is a Var) after a Key or Subpat match
 fails.
 - Apps - a list of terms, nested by parenthesis
+- Tuple - anything surrounded by parenthesis
 - Ast - the Sifu specific data type of the generic Pattern data structure. Sifu
 parses every token as a Token, which is a term with meta-information, and Apps
 can be nested, so together they form the abstract syntax tree.
@@ -70,11 +71,12 @@ By default, all expressions in Sifu form an app until either an infix or pattern
 
 
 ### Parentheses
-Parentheses do more than just specify precedence, they force their contained
+Parentheses do not specify precedence, they force their contained
 expression into a single-term App. This has a sometimes surprising consequence:
-single-terms inside parentheses are apps instead of terms. While this is weird
-for expressions, is makes sense for matching, and consistency in general. If the
-key `(Foo Bar)` doesn't match `Foo Bar`, then `(Foo)` shouldn't match `Foo`.
+single-terms inside parentheses are singleton apps instead of terms. While
+this is weird for expressions, is makes sense for matching, and consistency in
+general. If the key `(Foo Bar)` doesn't match `Foo Bar`, then `(Foo)` shouldn't
+match `Foo`.
 
 (These technically make the language into a Lisp, but don't tell anyone, I want
 _some_ users)
