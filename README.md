@@ -1,5 +1,8 @@
 # Sifu, A Concatenative Language Based on Tries
 
+See some examples here: [https://sifu-lang.pages.dev/playground](playground)
+
+---
 
 ### Main Ideas
   
@@ -46,29 +49,6 @@ data instead of evaluating it.
     - complilation is creating perfect hashmaps from dynamic ones
 
 
-## Examples
-```python
-# Implement some simple types
-Ord -> { Gt, Eq, Lt }
-Bool -> { True, False }
-
-# A function `IsEq` that takes an ord, and returns True if it is Eq. `_` is
-# just another var, meant to be unused. 
-IsEq Eq -> True
-IsEq _ -> False
-
-# This function compares bools using Case, a function that takes a list of
-# entries and another arg and applies them against the arg until one matches.
-# The matches on the lhs of the entries are sub-matches, which are matched
-# recursively, then bind their computations to the variables `b1` and `b2`.
-# If either one doesn't match at least once, the parent match doesn't as
-# well.
-Compare (b1 : Bool) (b2 : Bool) -> Case [
-    (True, False) -> Gt,
-    (False, True) -> Lt,
-    _ -> Eq,
-  ] (b1, b2)
-```
 
 
 ## Roadmap

@@ -893,5 +893,4 @@ Bar Foo # select Bar, try and fail to match its Foo, then fallback to 123 321
 Bar Bar # select Bar, try and fail to match its Bar, then fallback to Bar. select Bar for Bar Bar
 ```
 
-
-
+The scope should include the current pattern up to the top level, and any along the way.

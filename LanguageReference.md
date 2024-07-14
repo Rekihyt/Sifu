@@ -143,6 +143,11 @@ G -> F
 ```
 To prevent a match to either `F` or `G` from recursing forever, patterns only match entries defined before the current one. So after defining these two entries, `F` will evaluate to `G`, then stop, and `G` will evaluate to `F`, match the first entry, and finally return `G` again.
 
+
+There are no side effects. Sifu also isn't lazy, but doesn't evaluate values in
+arrows until their key is matched, therefore values in arrows are copied into
+their patterns but not evaluated.
+
 ---
 
 ## Semantics and Syntax Isomorphism
@@ -166,6 +171,6 @@ And (_ : Bool) (_ : Bool) => False
 ```
 Then an expression like this should also have type `Bool`:
 ```
-And False True
+And (False) (True)
 ```
 To type check it, we need to show each argument will match its parameter at least once. Both `False : Bool` and `True : Bool` match, so this program is checked.
