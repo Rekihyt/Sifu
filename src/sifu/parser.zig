@@ -99,7 +99,7 @@ pub fn parseAst(
     }
     while (try lexer.nextLine()) |line| {
         defer lexer.allocator.free(line);
-        if (try parseAppend(allocator, &levels, line)) |ast|
+        if (try parse(allocator, &levels, line)) |ast|
             return ast
         else
             continue;
@@ -107,14 +107,16 @@ pub fn parseAst(
     return &.{};
 }
 
-/// This encodes the values needed to parse a specific level of nesting. These
-/// fields would be the parameters in a recursive algorithm.
+const LevelKind = enum {
+    Apps,
+    Pattern,
+    Op,
+};
+
+/// This tracks the values needed to parse a specific layer of nesting,
+/// including each level of precendence. These fields would be function
+/// parameters in the recursive parsing algorithm.
 const Level = struct {
-    // This contains the current Ast being parsed.
-    root: []const Ast = &.{},
-    // This is temporary storage for an op's rhs so that they don't need to be
-    // removed from the current list when done
-    current: ArrayListUnmanaged(Ast) = ArrayListUnmanaged(Ast){},
     // This points to the last op parsed for a level of nesting. This tracks
     // infixes for each level of nesting, in congruence with the parse stack.
     // These are nullable because each level of nesting gets a new relative
@@ -122,34 +124,37 @@ const Level = struct {
     // the entire level of nesting is parsed (apart from another infix). Like
     // the parse stack, indices here correspond to a level of nesting, while
     // infixes mutate the element at their index as they are parsed.
-    maybe_op_tail: ?*Ast = null,
-    is_pattern: bool = false,
+    op_tail_ptr: ?*Ast = null,
+    // The current level of apps (containing the lowest level precedence)
+    // being parsed
+    current: ArrayListUnmanaged(Ast) = .{},
+    root: []const Ast = &.{},
 
     /// Write the next terms to this operator, if any. Anything apart from slice
     /// kinds (`.Infix`, `.Match` etc.) will be apps. Returns a pointer to the
     /// op if one was finalized.
     fn finalize(
         level: *Level,
-        is_op: bool,
+        precedence: meta.Tag(Ast),
         allocator: Allocator,
     ) ![]const Ast {
         const current_slice = try level.current.toOwnedSlice(allocator);
-        if (level.maybe_op_tail) |tail| switch (tail.*) {
+        if (level.op_tail_ptr) |tail| tail.* = switch (tail.*) {
             // After we set this pointer, current_slice cannot be freed.
             .key, .variable, .var_apps, .pattern => panic(
                 "cannot finalize non-slice type\n",
                 .{},
             ),
-            inline else => |_, tag| tail.* =
-                @unionInit(Ast, @tagName(tag), current_slice),
+            inline else => |_, tag| @unionInit(Ast, @tagName(tag), current_slice),
         } else {
             // No tail yet means we need to init root
             level.root = current_slice;
         }
-        // Set the next tail, if needed
-        if (is_op)
-            level.maybe_op_tail = &current_slice[current_slice.len - 1];
-
+        // Set the next op tail if needed
+        level.op_tail_ptr = switch (precedence) {
+            .infix, .match, .arrow, .list => &current_slice[current_slice.len - 1],
+            else => null,
+        };
         return level.root;
     }
 };
@@ -160,7 +165,7 @@ const Level = struct {
 /// parsing. Otherwise, an Ast is returned from an ownded slice of parser_stack.
 // Precedence: semis < long arrow, long match < commas < infix < arrow, match
 // - TODO: [] should be a flat Apps instead of as an infix
-pub fn parseAppend(
+pub fn parse(
     allocator: Allocator,
     levels: *ArrayListUnmanaged(Level),
     line: []const Token,
@@ -178,7 +183,7 @@ pub fn parseAppend(
                     .Comma => .list,
                     else => unreachable,
                 };
-                // if (level.maybe_op_tail) |tail|
+                // if (level.op_tail_ptr) |tail|
                 // if (@intFromEnum(op_tag) < @intFromEnum(level.root)) {
                 //     print("Parsing lower precedence\n", .{});
                 //     print("Op: ", .{});
@@ -194,19 +199,25 @@ pub fn parseAppend(
                     @unionInit(Ast, @tagName(op_tag), &.{}),
                 );
                 // Right hand args for previous op with higher precedence
-                _ = try level.finalize(true, allocator);
+                _ = try level.finalize(op_tag, allocator);
                 continue;
             },
-            .LeftParen => {
+            .LeftParen, .LeftBrace => {
                 // Save index of the nested app to write to later
                 try levels.append(allocator, level);
                 // Reset vars for new nesting level
                 level = Level{};
                 continue;
             },
-            .RightParen => blk: {
+            inline .RightParen, .RightBrace => |tag| blk: {
                 defer level = levels.pop();
-                break :blk Ast.ofApps(try level.finalize(false, allocator));
+                const kind = if (tag == .RightParen) .apps else .pattern;
+                // blk: {
+                //     // This intermediate allocation could be removed for patterns
+                //     defer allocator.free(current_slice);
+                //     break :blk pattern.fromList(current_slice);
+                // }
+                break :blk Ast.ofApps(try level.finalize(kind, allocator));
             },
             .Var => Ast.ofVar(token.lit),
             .VarApps => Ast.ofVarApps(token.lit),
@@ -216,7 +227,7 @@ pub fn parseAppend(
         };
         try level.current.append(allocator, current_ast);
     }
-    const result = try level.finalize(false, allocator);
+    const result = try level.finalize(.apps, allocator);
     // TODO: return optional void and move to caller
     return result;
 }

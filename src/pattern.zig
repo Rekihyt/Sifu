@@ -401,6 +401,7 @@ pub fn PatternWithContext(
                             .list => try writer.writeAll(", "),
                             else => {},
                         }
+                        // Don't write an s-exp as its redundant for ops
                         try Node.ofApps(slice).writeIndent(writer, optional_indent);
                     },
                 }

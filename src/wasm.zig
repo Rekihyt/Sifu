@@ -54,8 +54,8 @@ fn readFn(ctx: *InputCtx, bytes: []u8) error{OutOfMemory}!usize {
             return 0;
     }
     const slice = ctx.ptr[ctx.pos..bytes.len];
-    bufDebug("Copy {} bytes at {*}\n", .{ slice.len, bytes.ptr });
     std.mem.copyForwards(u8, bytes, slice);
+    bufDebug("Copied `{s}` at {*}\n", .{ slice, bytes.ptr });
     ctx.pos += slice.len;
     return slice.len;
 }
