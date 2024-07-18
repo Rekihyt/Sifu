@@ -355,6 +355,14 @@ pub fn PatternWithContext(
                 };
             }
 
+            pub fn isOp(self: Node) bool {
+                return switch (self) {
+                    // TODO: ensure complete
+                    .match, .arrow, .infix, .list => true,
+                    else => false,
+                };
+            }
+
             /// Compares by value, not by len, pos, or pointers.
             pub fn order(self: Node, other: Node) Order {
                 const ord = math.order(@intFromEnum(self), @intFromEnum(other));

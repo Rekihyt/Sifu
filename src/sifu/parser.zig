@@ -87,13 +87,13 @@ pub fn parseAst(
     // No need to destroy asts, they will all be returned or cleaned up
     var levels = ArrayListUnmanaged(Level){};
     defer levels.deinit(allocator);
-    try levels.append(allocator, Level{});
-    errdefer { // TODO: add test coverage
+    errdefer {
+        // TODO: add test coverage
         for (levels.items) |*level| {
-            Ast.ofApps(level.root).deinit(allocator);
-            for (level.current.items) |*ast|
-                ast.deinit(allocator);
-            level.current.deinit(allocator);
+            for (level.apps_stack.items) |*apps| {
+                Ast.ofApps(apps.items).deinit(allocator);
+                apps.deinit(allocator);
+            }
         }
         levels.deinit(allocator);
     }
@@ -107,16 +107,11 @@ pub fn parseAst(
     return &.{};
 }
 
-const LevelKind = enum {
-    Apps,
-    Pattern,
-    Op,
-};
-
 /// This tracks the values needed to parse a specific layer of nesting,
 /// including each level of precendence. These fields would be function
 /// parameters in the recursive parsing algorithm.
 const Level = struct {
+    var apps_stack_buff: [3]ArrayListUnmanaged(Ast) = undefined;
     // This points to the last op parsed for a level of nesting. This tracks
     // infixes for each level of nesting, in congruence with the parse stack.
     // These are nullable because each level of nesting gets a new relative
@@ -124,37 +119,105 @@ const Level = struct {
     // the entire level of nesting is parsed (apart from another infix). Like
     // the parse stack, indices here correspond to a level of nesting, while
     // infixes mutate the element at their index as they are parsed.
-    op_tail_ptr: ?*Ast = null,
     // The current level of apps (containing the lowest level precedence)
     // being parsed
-    current: ArrayListUnmanaged(Ast) = .{},
-    root: []const Ast = &.{},
+    apps_stack: ArrayListUnmanaged(ArrayListUnmanaged(Ast)) =
+        ArrayListUnmanaged(ArrayListUnmanaged(Ast))
+            .initBuffer(&apps_stack_buff),
+    // Tracks the first link in the operator list, if any
+    root: Ast = Ast.ofApps(&.{}), // root is always an apps
+    tail: *Ast = undefined,
 
-    /// Write the next terms to this operator, if any. Anything apart from slice
-    /// kinds (`.Infix`, `.Match` etc.) will be apps. Returns a pointer to the
-    /// op if one was finalized.
-    fn finalize(
-        level: *Level,
-        precedence: meta.Tag(Ast),
-        allocator: Allocator,
-    ) ![]const Ast {
-        const current_slice = try level.current.toOwnedSlice(allocator);
-        if (level.op_tail_ptr) |tail| tail.* = switch (tail.*) {
-            // After we set this pointer, current_slice cannot be freed.
-            .key, .variable, .var_apps, .pattern => panic(
-                "cannot finalize non-slice type\n",
-                .{},
-            ),
-            inline else => |_, tag| @unionInit(Ast, @tagName(tag), current_slice),
+    pub fn init(self: *Level) void {
+        self.tail = &self.root;
+        print("New tail {*}\n", .{self.tail});
+        // Add the initial level of apps
+        self.apps_stack.appendAssumeCapacity(ArrayListUnmanaged(Ast){});
+    }
+
+    // The pointer is safe until the current list is resized.
+    fn current(self: *Level) *ArrayListUnmanaged(Ast) {
+        const len = self.apps_stack.items.len;
+        assert(len != 0); // Check Level.new() was called
+        return &self.apps_stack.items[len - 1];
+    }
+
+    /// Returns a pointer to the op.
+    fn appendOp(self: *Level, op: Ast, allocator: Allocator) !void {
+        if (self.current().items.len > 0 and
+            self.current().getLast().isOp())
+        {
+            try self.current().append(allocator, op);
+            // Add an apps for the trailing args
+            const slice = try self.current().toOwnedSlice(allocator);
+            const tail = &slice[slice.len - 1];
+            tail.* = switch (tail.*) {
+                inline .arrow, .match, .infix, .list => |_, tag| @unionInit(
+                    Ast,
+                    @tagName(tag),
+                    slice,
+                ),
+                else => panic(
+                    "appendOp called with non-op {}\n",
+                    .{meta.activeTag(op)},
+                ),
+            };
+            // Check if the previous op was higher precedence
+            // if (@intFromEnum(prev_op) > @intFromEnum(op)) {} else {
         } else {
-            // No tail yet means we need to init root
-            level.root = current_slice;
+            print("First op\n", .{});
+            try self.current().append(allocator, op);
+
+            const slice = try self.current().toOwnedSlice(allocator);
+            self.root = Ast.ofApps(slice);
+            // Descend one level of precedence
+            // const slice = try self.apps_stack.pop().toOwnedSlice(allocator);
+            // self.current().append(slice);
         }
-        // Set the next op tail if needed
-        level.op_tail_ptr = switch (precedence) {
-            .infix, .match, .arrow, .list => &current_slice[current_slice.len - 1],
-            else => null,
-        };
+        // };
+        // if (apps.len > 0 and apps[apps.len - 1].isOp()) |tail|
+    }
+
+    /// Allocate the current apps to slices. There should be at least one apps
+    ///on the apps_stack.
+    pub fn finalize(
+        level: *Level,
+        allocator: Allocator,
+    ) !Ast {
+        var slice: []Ast = undefined;
+        var tail = level.tail;
+        while (level.apps_stack.popOrNull()) |*apps| {
+            slice = try @constCast(apps).toOwnedSlice(allocator);
+            print("Finalizing slice of len {}\n", .{slice.len});
+            // const next = if (level.apps_stack.getLastOrNull()) |parent|
+            //     parent
+            // else {
+            //     // TODO: check w
+            //     break;
+            // };
+            //
+            // Set new tail pointer to this op's rhs
+            // Overwrite the empty op tail, if necessary
+            if (level.apps_stack.getLastOrNull()) |_| {
+                switch (tail.*) {
+                    inline .apps, .arrow, .match, .infix, .list => |_, tag| tail.* =
+                        @unionInit(Ast, @tagName(tag), slice),
+                    inline else => |_, tag| panic(
+                        "Level of precedence pop without op ({s} instead)\n",
+                        .{@tagName(tag)},
+                    ),
+                    // panic("cannot finalize non-slice type\n", .{}),
+                }
+            } else {
+                print("Writing final apps to tail {*}\n", .{tail});
+                tail.* = Ast.ofApps(slice);
+                break;
+            }
+            tail = &slice[slice.len - 1];
+        }
+        // else panic("Empty precedence level\n", .{});
+
+        print("Root ptr {*}\n", .{&level.root});
         return level.root;
     }
 };
@@ -171,53 +234,48 @@ pub fn parse(
     line: []const Token,
 ) !?[]const Ast {
     // These variables are relative to the current level of nesting being parsed
-    var level = levels.pop();
+    var level = Level{};
+    level.init();
     for (line) |token| {
         const current_ast = switch (token.type) {
             .Name => Ast.ofKey(token.lit),
             inline .Infix, .Match, .Arrow, .Comma => |tag| {
-                const op_tag: meta.Tag(Ast) = switch (tag) {
+                const op_tag = switch (tag) {
                     .Infix => .infix,
                     .Arrow => .arrow,
                     .Match => .match,
                     .Comma => .list,
                     else => unreachable,
                 };
-                // if (level.op_tail_ptr) |tail|
-                // if (@intFromEnum(op_tag) < @intFromEnum(level.root)) {
-                //     print("Parsing lower precedence\n", .{});
-                //     print("Op: ", .{});
-                //     level.root.write(err_stream) catch unreachable;
-                //     print("\n", .{});
-                //     _ = tail;
-                // };
+                const op = @unionInit(Ast, @tagName(op_tag), &.{});
                 if (tag == .Infix)
-                    try level.current.append(allocator, Ast.ofKey(token.lit));
-                // Add an apps for the trailing args
-                try level.current.append(
-                    allocator,
-                    @unionInit(Ast, @tagName(op_tag), &.{}),
-                );
+                    try level.current().append(allocator, Ast.ofKey(token.lit));
                 // Right hand args for previous op with higher precedence
-                _ = try level.finalize(op_tag, allocator);
+                try level.appendOp(op, allocator);
                 continue;
             },
-            .LeftParen, .LeftBrace => {
-                // Save index of the nested app to write to later
+            inline .LeftParen, .LeftBrace => |tag| {
+                const tail = if (tag == .RightParen)
+                    Ast.ofApps(&.{})
+                else
+                    Ast.ofPattern(Pat{});
+                // Push a new app or pattern
+                try level.current().append(allocator, tail);
+                // Push the current level for later
                 try levels.append(allocator, level);
-                // Reset vars for new nesting level
+                // Start a new nesting level
                 level = Level{};
+                level.init();
                 continue;
             },
-            inline .RightParen, .RightBrace => |tag| blk: {
+            .RightParen, .RightBrace => blk: {
                 defer level = levels.pop();
-                const kind = if (tag == .RightParen) .apps else .pattern;
                 // blk: {
                 //     // This intermediate allocation could be removed for patterns
                 //     defer allocator.free(current_slice);
                 //     break :blk pattern.fromList(current_slice);
                 // }
-                break :blk Ast.ofApps(try level.finalize(kind, allocator));
+                break :blk try level.finalize(allocator);
             },
             .Var => Ast.ofVar(token.lit),
             .VarApps => Ast.ofVarApps(token.lit),
@@ -225,11 +283,15 @@ pub fn parse(
             .Comment, .NewLine => Ast.ofKey(token.lit),
             else => panic("unimplemented", .{}),
         };
-        try level.current.append(allocator, current_ast);
+        try level.current().append(allocator, current_ast);
+        print("Current slice ptr {*}, len {}\n", .{
+            level.current().items.ptr,
+            level.current().items.len,
+        });
     }
-    const result = try level.finalize(.apps, allocator);
+    const result = try level.finalize(allocator);
     // TODO: return optional void and move to caller
-    return result;
+    return result.apps;
 }
 
 // Convert a list of nodes into a single node, depending on its type
