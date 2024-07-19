@@ -235,18 +235,10 @@ pub fn Lexer(comptime Reader: type) type {
                 .Match
             else if (mem.eql(u8, lit, "::"))
                 .LongMatch
-            else if (mem.eql(u8, lit, "*:"))
-                .MultiMatch
-            else if (mem.eql(u8, lit, "*::"))
-                .LongMultiMatch
             else if (mem.eql(u8, lit, "->"))
                 .Arrow
             else if (mem.eql(u8, lit, "-->"))
                 .LongArrow
-            else if (mem.eql(u8, lit, "==>"))
-                .LongMultiArrow
-            else if (mem.eql(u8, lit, "=>"))
-                .MultiArrow
             else
                 .Infix;
         }

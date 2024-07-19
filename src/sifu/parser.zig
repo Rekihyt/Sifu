@@ -136,36 +136,61 @@ const Level = struct {
     }
 
     // The pointer is safe until the current list is resized.
-    fn current(self: *Level) *ArrayListUnmanaged(Ast) {
+    fn current(self: Level) *ArrayListUnmanaged(Ast) {
         const len = self.apps_stack.items.len;
         assert(len != 0); // Check Level.new() was called
         return &self.apps_stack.items[len - 1];
     }
 
+    /// True if the given op has precedence over the current one. True if an op
+    /// hasn't been parsed yet, or if the ops share precedence levels.
+    fn isPrecedent(self: Level, op: Ast) bool {
+        const prev = self.current().getLastOrNull() orelse
+            return true;
+        if (!prev.isOp())
+            return true;
+        const op_precedence: usize = switch (op) {
+            .arrow, .match => 1,
+            .infix => 2,
+            .long_arrow, .long_match => 3,
+            else => unreachable,
+        };
+        return self.apps_stack.items.len > op_precedence;
+    }
+
     /// Returns a pointer to the op.
     fn appendOp(self: *Level, op: Ast, allocator: Allocator) !void {
-        if (self.current().items.len > 0 and
-            self.current().getLast().isOp())
-        {
+        if (self.isPrecedent(op)) {
+            print(
+                "Writing precedent tail type of {s}\n",
+                .{@tagName(self.tail.*)},
+            );
             try self.current().append(allocator, op);
             // Add an apps for the trailing args
             const slice = try self.current().toOwnedSlice(allocator);
-            const tail = &slice[slice.len - 1];
-            tail.* = switch (tail.*) {
-                inline .arrow, .match, .infix, .list => |_, tag| @unionInit(
+            self.tail.* = switch (self.tail.*) {
+                inline .apps,
+                .arrow,
+                .match,
+                .infix,
+                .list,
+                .long_arrow,
+                .long_match,
+                => |_, tag| @unionInit(
                     Ast,
                     @tagName(tag),
                     slice,
                 ),
                 else => panic(
-                    "appendOp called with non-op {}\n",
-                    .{meta.activeTag(op)},
+                    "Non-op tail {}\n",
+                    .{meta.activeTag(self.tail.*)},
                 ),
             };
+            self.tail = &slice[slice.len - 1];
             // Check if the previous op was higher precedence
             // if (@intFromEnum(prev_op) > @intFromEnum(op)) {} else {
         } else {
-            print("First op\n", .{});
+            print("Non-Precedence\n", .{});
             try self.current().append(allocator, op);
 
             const slice = try self.current().toOwnedSlice(allocator);
@@ -239,12 +264,20 @@ pub fn parse(
     for (line) |token| {
         const current_ast = switch (token.type) {
             .Name => Ast.ofKey(token.lit),
-            inline .Infix, .Match, .Arrow, .Comma => |tag| {
+            inline .Infix,
+            .Match,
+            .Arrow,
+            .Comma,
+            .LongMatch,
+            .LongArrow,
+            => |tag| {
                 const op_tag = switch (tag) {
                     .Infix => .infix,
-                    .Arrow => .arrow,
                     .Match => .match,
+                    .Arrow => .arrow,
                     .Comma => .list,
+                    .LongMatch => .long_match,
+                    .LongArrow => .long_arrow,
                     else => unreachable,
                 };
                 const op = @unionInit(Ast, @tagName(op_tag), &.{});
@@ -281,7 +314,6 @@ pub fn parse(
             .VarApps => Ast.ofVarApps(token.lit),
             .Str, .I, .F, .U => Ast.ofKey(token.lit),
             .Comment, .NewLine => Ast.ofKey(token.lit),
-            else => panic("unimplemented", .{}),
         };
         try level.current().append(allocator, current_ast);
         print("Current slice ptr {*}, len {}\n", .{

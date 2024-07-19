@@ -179,13 +179,16 @@ pub fn PatternWithContext(
             /// is elided.
             match: []const Node,
             /// A postfix encoded arrow expression denoting a rewrite, i.e. `A B
-            /// C -> 123`.
+            /// C -> 123`. This includes "long" versions of ops, which have same
+            /// semantics, but only play a in part parsing/printing. Parsing
+            /// shouldn't concern this abstract data structure, and there is
+            /// enough information preserved such that during printing, the
+            /// correct precedence operator can be recreated.
             arrow: []const Node,
-            /// "long" versions of ops have same semantics, but are tracked to
-            /// facilitate parsing/printing. They may be removed in the future,
-            /// as parsing isn't a concern of this abstract data structure.
-            // long_match: []const Node,
-            // long_arrow: []const Node,
+            /// These are here temporarily until the parser is rewritten to
+            /// determine precedence by tracking tokens instead of nodes.
+            long_match: []const Node,
+            long_arrow: []const Node,
             /// A single element in comma separated list, with the comma elided.
             /// Lists are operators that are recognized as separators for
             /// patterns.
@@ -206,7 +209,14 @@ pub fn PatternWithContext(
                     .variable => |variable| Node.ofVar(try Manager.copy(allocator, variable)),
                     .var_apps => |var_apps| Node.ofVarApps(try Manager.copy(allocator, var_apps)),
                     .pattern => |p| Node.ofPattern(try p.copy(allocator)),
-                    inline .apps, .arrow, .match, .list, .infix => |apps, tag| blk: {
+                    inline .apps,
+                    .arrow,
+                    .match,
+                    .list,
+                    .infix,
+                    .long_arrow,
+                    .long_match,
+                    => |apps, tag| blk: {
                         const apps_copy = try allocator.alloc(Node, apps.len);
                         for (apps, apps_copy) |app, *app_copy|
                             app_copy.* = try app.copy(allocator);
@@ -234,7 +244,14 @@ pub fn PatternWithContext(
                     .variable => |variable| Manager.deinit(allocator, variable),
                     .var_apps => |var_apps| Manager.deinit(allocator, var_apps),
                     .pattern => |*p| @constCast(p).deinit(allocator),
-                    inline .apps, .match, .arrow, .list, .infix => |apps, tag| {
+                    inline .apps,
+                    .match,
+                    .arrow,
+                    .list,
+                    .infix,
+                    .long_arrow,
+                    .long_match,
+                    => |apps, tag| {
                         _ = tag;
                         for (apps) |*app|
                             @constCast(app).deinit(allocator);
@@ -250,12 +267,19 @@ pub fn PatternWithContext(
             pub fn hasherUpdate(self: Node, hasher: anytype) void {
                 hasher.update(&mem.toBytes(@intFromEnum(self)));
                 switch (self) {
-                    inline .apps, .match, .arrow, .list, .infix => |apps, tag| {
+                    inline .apps,
+                    .match,
+                    .arrow,
+                    .list,
+                    .infix,
+                    .long_arrow,
+                    .long_match,
+                    => |apps, tag| {
                         for (apps) |app|
                             app.hasherUpdate(hasher);
                         switch (tag) {
-                            .arrow => hasher.update("->"),
-                            .match => hasher.update(":"),
+                            .arrow, .long_arrow => hasher.update("->"),
+                            .match, .long_match => hasher.update(":"),
                             .list => hasher.update(","),
                             else => {},
                         }
@@ -281,7 +305,14 @@ pub fn PatternWithContext(
                     // .variable => |v| Ctx.eql(undefined, v, other.variable, undefined),
                     .variable => other == .variable,
                     .var_apps => other == .var_apps,
-                    inline .apps, .arrow, .match, .list, .infix => |apps, tag| blk: {
+                    inline .apps,
+                    .arrow,
+                    .match,
+                    .list,
+                    .infix,
+                    .long_arrow,
+                    .long_match,
+                    => |apps, tag| blk: {
                         const other_slice = @field(other, @tagName(tag));
                         break :blk apps.len == other_slice.len and
                             for (apps, other_slice) |app, other_app|
@@ -349,7 +380,14 @@ pub fn PatternWithContext(
                 return switch (node) {
                     .key, .variable, .var_apps => node,
                     .pattern => Node{ .pattern = Self{} },
-                    inline .apps, .match, .arrow, .list, .infix => |_, tag|
+                    inline .apps,
+                    .match,
+                    .arrow,
+                    .list,
+                    .infix,
+                    .long_arrow,
+                    .long_match,
+                    => |_, tag|
                     // All slice types hash to themselves
                     @unionInit(Node, @tagName(tag), &.{}),
                 };
