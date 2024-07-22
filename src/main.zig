@@ -53,7 +53,6 @@ fn repl(
     var pattern = Pat{};
     defer pattern.deinit(allocator);
     while (replStep(&pattern, allocator, arena, io_streams)) |_| {
-        streams.err.print("replStep finished\n", .{}) catch unreachable;
         try buff_writer_stdout.flush();
         if (comptime !no_os) try streams.err.print(
             "Pattern Allocated: {}\n",
@@ -73,7 +72,6 @@ fn replStep(
     arena: Allocator,
     io_streams: anytype,
 ) !void {
-    streams.err.print("replStep\n", .{}) catch unreachable;
     const in_stream, const out_stream, const err_stream = io_streams;
     const buff_size = 4096;
     var buff: [buff_size]u8 = undefined;
@@ -92,7 +90,7 @@ fn replStep(
         const ast = Ast.ofApps(apps);
 
         // Future parsing will always return apps
-        try err_stream.print("Parsed:\n", .{});
+        try err_stream.print("Parsed {} apps: ", .{apps.len});
         try ast.write(err_stream);
         _ = try err_stream.write("\n");
 

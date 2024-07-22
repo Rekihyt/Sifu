@@ -467,7 +467,7 @@ pub fn PatternWithContext(
             ) @TypeOf(writer).Error!void {
                 switch (self) {
                     // Ignore top level parens
-                    inline .apps, .list, .arrow, .match => |apps| {
+                    inline .apps, .list, .arrow, .match, .infix => |apps| {
                         if (apps.len == 0)
                             return;
                         // print("tag: {s}\n", .{@tagName(apps[0])});
@@ -1114,6 +1114,7 @@ pub fn PatternWithContext(
             }
             print("Eval: ", .{});
             for (result.items) |app| {
+                print("{s} ", .{@tagName(app)});
                 app.writeSExp(streams.err, 0) catch unreachable;
                 streams.err.writeByte(' ') catch unreachable;
             }

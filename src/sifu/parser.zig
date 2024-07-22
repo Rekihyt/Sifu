@@ -28,7 +28,7 @@ const assert = std.debug.assert;
 const meta = std.meta;
 const print = util.print;
 const panic = util.panic;
-const err_stream = util.err_stream;
+const streams = @import("../streams.zig").streams;
 
 // TODO add indentation tracking, and separate based on newlines+indent
 // TODO revert parsing to assume apps at all levels, with ops as appended,
@@ -111,7 +111,7 @@ pub fn parseAst(
 /// including each level of precendence. These fields would be function
 /// parameters in the recursive parsing algorithm.
 const Level = struct {
-    var apps_stack_buff: [3]ArrayListUnmanaged(Ast) = undefined;
+    // var apps_stack_buff: [3]ArrayListUnmanaged(Ast) = undefined;
     // This points to the last op parsed for a level of nesting. This tracks
     // infixes for each level of nesting, in congruence with the parse stack.
     // These are nullable because each level of nesting gets a new relative
@@ -122,23 +122,24 @@ const Level = struct {
     // The current level of apps (containing the lowest level precedence)
     // being parsed
     apps_stack: ArrayListUnmanaged(ArrayListUnmanaged(Ast)) =
-        ArrayListUnmanaged(ArrayListUnmanaged(Ast))
-            .initBuffer(&apps_stack_buff),
+        ArrayListUnmanaged(ArrayListUnmanaged(Ast)){},
     // Tracks the first link in the operator list, if any
-    root: Ast = Ast.ofApps(&.{}), // root is always an apps
+    root: Ast = Ast.ofApps(&.{}), // root starts as an apps by default
     tail: *Ast = undefined,
 
-    pub fn init(self: *Level) void {
+    /// This function should be used on a new, stack allocated level
+    pub fn init(self: *Level, allocator: Allocator) !void {
         self.tail = &self.root;
-        print("New tail {*}\n", .{self.tail});
+        assert(self.apps_stack.items.len == 0);
+        // print("New tail {*}\n", .{self.tail});
         // Add the initial level of apps
-        self.apps_stack.appendAssumeCapacity(ArrayListUnmanaged(Ast){});
+        try self.apps_stack.append(allocator, ArrayListUnmanaged(Ast){});
     }
 
     // The pointer is safe until the current list is resized.
     fn current(self: Level) *ArrayListUnmanaged(Ast) {
         const len = self.apps_stack.items.len;
-        assert(len != 0); // Check Level.new() was called
+        assert(len != 0); // Check Level.init was called
         return &self.apps_stack.items[len - 1];
     }
 
@@ -146,9 +147,9 @@ const Level = struct {
     /// hasn't been parsed yet, or if the ops share precedence levels.
     fn isPrecedent(self: Level, op: Ast) bool {
         const prev = self.current().getLastOrNull() orelse
-            return true;
+            return false;
         if (!prev.isOp())
-            return true;
+            return false;
         const op_precedence: usize = switch (op) {
             .arrow, .match => 1,
             .infix => 2,
@@ -158,49 +159,72 @@ const Level = struct {
         return self.apps_stack.items.len > op_precedence;
     }
 
+    fn finalizeOp(self: *Level, allocator: Allocator) !void {
+        const slice = try self.current().toOwnedSlice(allocator);
+        self.tail.* = switch (self.tail.*) {
+            inline .apps,
+            .arrow,
+            .match,
+            .infix,
+            .list,
+            .long_arrow,
+            .long_match,
+            => |_, tag| @unionInit(Ast, @tagName(tag), slice),
+            else => panic(
+                "Non-op tail {}\n",
+                .{meta.activeTag(self.tail.*)},
+            ),
+        };
+        self.tail = &slice[slice.len - 1];
+    }
+
     /// Returns a pointer to the op.
     fn appendOp(self: *Level, op: Ast, allocator: Allocator) !void {
         if (self.isPrecedent(op)) {
             print(
-                "Writing precedent tail type of {s}\n",
+                "Finalizing precedent tail type of {s}\n",
                 .{@tagName(self.tail.*)},
             );
-            try self.current().append(allocator, op);
             // Add an apps for the trailing args
-            const slice = try self.current().toOwnedSlice(allocator);
-            self.tail.* = switch (self.tail.*) {
-                inline .apps,
-                .arrow,
-                .match,
-                .infix,
-                .list,
-                .long_arrow,
-                .long_match,
-                => |_, tag| @unionInit(
-                    Ast,
-                    @tagName(tag),
-                    slice,
-                ),
-                else => panic(
-                    "Non-op tail {}\n",
-                    .{meta.activeTag(self.tail.*)},
-                ),
-            };
-            self.tail = &slice[slice.len - 1];
+            try self.current().append(allocator, op);
+            try self.finalizeOp(allocator);
             // Check if the previous op was higher precedence
             // if (@intFromEnum(prev_op) > @intFromEnum(op)) {} else {
         } else {
-            print("Non-Precedence\n", .{});
+            print(
+                "Finalizing non-precedent tail type of {s}\n",
+                .{@tagName(self.tail.*)},
+            );
             try self.current().append(allocator, op);
+            try self.finalizeOp(allocator);
 
-            const slice = try self.current().toOwnedSlice(allocator);
-            self.root = Ast.ofApps(slice);
+            // self.root = Ast.ofApps(slice);
             // Descend one level of precedence
             // const slice = try self.apps_stack.pop().toOwnedSlice(allocator);
             // self.current().append(slice);
         }
         // };
         // if (apps.len > 0 and apps[apps.len - 1].isOp()) |tail|
+    }
+
+    // Convert a list of nodes into a single node, depending on its type
+    pub fn intoNode(
+        allocator: Allocator,
+        kind: Ast,
+        nodes: []const Ast,
+    ) !Ast {
+        return switch (kind) {
+            .apps => Ast.ofApps(nodes),
+            .pattern => blk: {
+                print("pat\n", .{});
+                var pattern = Pat{};
+                // TODO: split nodes by commas/newlines and add individually
+                try pattern.put(allocator, nodes, null);
+                Ast.ofApps(nodes).deinit(allocator);
+                break :blk Ast.ofPattern(pattern);
+            },
+            else => unreachable,
+        };
     }
 
     /// Allocate the current apps to slices. There should be at least one apps
@@ -224,25 +248,28 @@ const Level = struct {
             // Set new tail pointer to this op's rhs
             // Overwrite the empty op tail, if necessary
             if (level.apps_stack.getLastOrNull()) |_| {
+                if (!tail.isOp()) panic(
+                    "Level of precedence pop without op ({s} instead)\n",
+                    .{@tagName(meta.activeTag(tail.*))},
+                );
                 switch (tail.*) {
-                    inline .apps, .arrow, .match, .infix, .list => |_, tag| tail.* =
-                        @unionInit(Ast, @tagName(tag), slice),
-                    inline else => |_, tag| panic(
-                        "Level of precedence pop without op ({s} instead)\n",
-                        .{@tagName(tag)},
-                    ),
-                    // panic("cannot finalize non-slice type\n", .{}),
+                    inline .apps, .arrow, .match, .infix, .list => |_, tag| {
+                        tail.* = @unionInit(Ast, @tagName(tag), slice);
+                    },
+                    else => unreachable,
                 }
             } else {
-                print("Writing final apps to tail {*}\n", .{tail});
                 tail.* = Ast.ofApps(slice);
+                print("Writing final apps to tail {*}: ", .{tail});
+                tail.writeSExp(streams.err, null) catch unreachable;
+                print("\n", .{});
                 break;
             }
             tail = &slice[slice.len - 1];
         }
-        // else panic("Empty precedence level\n", .{});
-
-        print("Root ptr {*}\n", .{&level.root});
+        print("Root apps {*}: ", .{&level.root});
+        level.root.writeIndent(streams.err, null) catch unreachable;
+        print("\n", .{});
         return level.root;
     }
 };
@@ -260,7 +287,7 @@ pub fn parse(
 ) !?[]const Ast {
     // These variables are relative to the current level of nesting being parsed
     var level = Level{};
-    level.init();
+    try level.init(allocator);
     for (line) |token| {
         const current_ast = switch (token.type) {
             .Name => Ast.ofKey(token.lit),
@@ -288,27 +315,26 @@ pub fn parse(
                 continue;
             },
             inline .LeftParen, .LeftBrace => |tag| {
-                const tail = if (tag == .RightParen)
-                    Ast.ofApps(&.{})
-                else
-                    Ast.ofPattern(Pat{});
-                // Push a new app or pattern
-                try level.current().append(allocator, tail);
                 // Push the current level for later
                 try levels.append(allocator, level);
                 // Start a new nesting level
                 level = Level{};
-                level.init();
+                try level.init(allocator);
+                print("Init\n", .{});
+                if (tag == .LeftBrace)
+                    level.root = Ast.ofPattern(Pat{});
                 continue;
             },
             .RightParen, .RightBrace => blk: {
                 defer level = levels.pop();
+                break :blk try level.finalize(allocator);
+
                 // blk: {
                 //     // This intermediate allocation could be removed for patterns
                 //     defer allocator.free(current_slice);
                 //     break :blk pattern.fromList(current_slice);
                 // }
-                break :blk try level.finalize(allocator);
+
             },
             .Var => Ast.ofVar(token.lit),
             .VarApps => Ast.ofVarApps(token.lit),
@@ -326,29 +352,17 @@ pub fn parse(
     return result.apps;
 }
 
-// Convert a list of nodes into a single node, depending on its type
-pub fn intoNode(
-    allocator: Allocator,
-    kind: Ast,
-    nodes: *ArrayListUnmanaged(Ast),
-) !Ast {
-    return switch (kind) {
-        .apps => Ast.ofApps(try nodes.toOwnedSlice(allocator)),
-        .pattern => blk: {
-            print("pat\n", .{});
-            var pattern = Pat{};
-            for (nodes.items) |ast|
-                _ = try pattern.insertNode(allocator, ast);
-            break :blk Ast.ofPattern(pattern);
-        },
-        else => panic("unimplemented", .{}),
-    };
-}
-
 // Assumes apps are Infix encoded (they have at least one element).
 fn getOpTailOrNull(ast: Ast) ?*Ast {
     return switch (ast) {
-        .apps, .arrow, .match, .list => |apps| @constCast(&apps[apps.len - 1]),
+        .apps,
+        .arrow,
+        .match,
+        .list,
+        .infix,
+        .long_match,
+        .long_arrow,
+        => |apps| @constCast(&apps[apps.len - 1]),
         else => null,
     };
 }
@@ -422,14 +436,14 @@ fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
 }
 
 fn expectEqualApps(expected: Ast, actual: Ast) !void {
-    try err_stream.writeByte('\n');
-    try err_stream.writeAll("Expected: ");
-    try expected.write(err_stream);
-    try err_stream.writeByte('\n');
+    try streams.err.writeByte('\n');
+    try streams.err.writeAll("Expected: ");
+    try expected.write(streams.err);
+    try streams.err.writeByte('\n');
 
-    try err_stream.writeAll("Actual: ");
-    try actual.write(err_stream);
-    try err_stream.writeByte('\n');
+    try streams.err.writeAll("Actual: ");
+    try actual.write(streams.err);
+    try streams.err.writeByte('\n');
 
     try testing.expect(.apps == expected);
     try testing.expect(.apps == actual);
@@ -458,7 +472,7 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
                 ),
             }
         } else {
-            try err_stream.writeAll("Asts of different types not equal");
+            try streams.err.writeAll("Asts of different types not equal");
             try testing.expectEqual(expected_elem, actual_elem);
             // above line should always fail
             panic(
