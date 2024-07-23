@@ -162,8 +162,7 @@ const Level = struct {
         return self.apps_stack.items.len > op_precedence;
     }
 
-    fn finalizeOp(self: *Level, allocator: Allocator) !void {
-        const slice = try self.current().toOwnedSlice(allocator);
+    fn writeTail(self: *Level, slice: []Ast) void {
         self.tail.* = switch (self.tail.*) {
             inline .apps,
             .arrow,
@@ -185,21 +184,21 @@ const Level = struct {
     fn appendOp(self: *Level, op: Ast, allocator: Allocator) !void {
         if (self.isPrecedent(op)) {
             print(
-                "Finalizing precedent tail type of {s}\n",
-                .{@tagName(self.tail.*)},
+                "Appending precedent to {s} tail with {s} op\n",
+                .{ @tagName(self.tail.*), @tagName(meta.activeTag(op)) },
             );
             // Add an apps for the trailing args
             try self.current().append(allocator, op);
-            try self.finalizeOp(allocator);
+            self.writeTail(try self.current().toOwnedSlice(allocator));
             // Check if the previous op was higher precedence
             // if (@intFromEnum(prev_op) > @intFromEnum(op)) {} else {
         } else {
             print(
-                "Finalizing non-precedent tail type of {s}\n",
-                .{@tagName(self.tail.*)},
+                "Appending non-precedent to {s} tail with {s} op\n",
+                .{ @tagName(self.tail.*), @tagName(meta.activeTag(op)) },
             );
             try self.current().append(allocator, op);
-            try self.finalizeOp(allocator);
+            self.writeTail(try self.current().toOwnedSlice(allocator));
 
             // self.root = Ast.ofApps(slice);
             // Descend one level of precedence
@@ -262,7 +261,7 @@ const Level = struct {
                     else => unreachable,
                 }
             } else {
-                tail.* = Ast.ofApps(slice);
+                level.writeTail(slice);
                 print("Writing final apps to tail {*}: ", .{tail});
                 tail.writeSExp(streams.err, null) catch unreachable;
                 print("\n", .{});
