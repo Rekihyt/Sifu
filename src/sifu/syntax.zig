@@ -62,6 +62,13 @@ pub fn Token(comptime Context: type) type {
             return self.lit;
         }
 
+        pub fn copy(self: Self, allocator: Allocator) !Self {
+            var result = self;
+            result.lit = try allocator.dupe(u8, self.lit);
+            // TODO copy Context too if necessary
+            return result;
+        }
+
         /// Ignores Context.
         pub fn order(self: Self, other: Self) Order {
             // Doesn't use `Token.Type` because it depends entirely on the

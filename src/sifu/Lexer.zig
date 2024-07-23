@@ -26,6 +26,7 @@ const mem = std.mem;
 const math = std.math;
 const assert = std.debug.assert;
 const panic = util.panic;
+const detect_leaks = @import("build_options").detect_leaks;
 
 pub fn Lexer(comptime Reader: type) type {
     return struct {
@@ -54,6 +55,10 @@ pub fn Lexer(comptime Reader: type) type {
         /// Creates a new lexer using the given allocator
         pub fn init(allocator: Allocator, reader: Reader) Self {
             return .{ .allocator = allocator, .reader = reader };
+        }
+
+        pub fn clearRetainingCapacity(self: *@This()) void {
+            self.buff.clearRetainingCapacity();
         }
 
         pub fn peek(
@@ -161,10 +166,14 @@ pub fn Lexer(comptime Reader: type) type {
             return self.char;
         }
 
-        /// Advances one character, reading it into the current token list buff.
+        /// Advances one character, reading it into the current token list buff
+        /// unless it is a special character, which don't need allocation.
         fn consume(self: *Self) !void {
             const char = try self.nextChar();
-            try self.buff.append(self.allocator, char);
+            switch (char) {
+                '\n', ',', '(', ')', '{', '}' => {},
+                else => try self.buff.append(self.allocator, char),
+            }
         }
 
         /// Advances one character, or panics (should only be called after `peekChar`)

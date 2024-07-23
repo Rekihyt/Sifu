@@ -98,7 +98,10 @@ pub fn parseAst(
         levels.deinit(allocator);
     }
     while (try lexer.nextLine()) |line| {
-        defer lexer.allocator.free(line);
+        defer {
+            lexer.allocator.free(line);
+            lexer.clearRetainingCapacity();
+        }
         if (try parse(allocator, &levels, line)) |ast|
             return ast
         else

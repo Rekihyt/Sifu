@@ -92,6 +92,7 @@ fn replStep(
     var fbs_written = io.fixedBufferStream(fbs.getWritten());
     var lexer = Lexer(@TypeOf(fbs_written).Reader)
         .init(arena, fbs_written.reader());
+    defer lexer.buff.clearAndFree(arena);
     // for (fbs.getWritten()) |char| {
     // escape (from pressing alt+enter in most shells)
     // if (char == 0x1b) {}
