@@ -231,8 +231,14 @@ pub fn Lexer(comptime Reader: type) type {
 
         /// Reads the next infix characters
         fn op(self: *Self) Error!Type {
-            const pos = self.pos;
-            _ = pos;
+            // Create a temporary buffer in case a builtin op is found, which
+            // shouldn't be allocated
+            var buff = self.buff;
+            defer {
+                self.buff.deinit(self.allocator);
+                self.buff = buff;
+            }
+            self.buff = ArrayListUnmanaged(u8){};
             while (try self.peekChar()) |next_char|
                 if (isOp(next_char))
                     try self.consume()
@@ -248,8 +254,12 @@ pub fn Lexer(comptime Reader: type) type {
                 .Arrow
             else if (mem.eql(u8, lit, "-->"))
                 .LongArrow
-            else
-                .Infix;
+            else blk: {
+                // Infix operators aren't builtin, so are allocator like any
+                // other literal.
+                try buff.appendSlice(self.allocator, self.buff.items);
+                break :blk .Infix;
+            };
         }
 
         /// Reads the next digits and/or any underscores
