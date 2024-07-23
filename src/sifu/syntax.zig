@@ -26,7 +26,8 @@ pub const Type = enum {
     F, // float
     Comment,
     Comma,
-    NewLine, // New line separator
+    Semicolon,
+    NewLine,
     Match,
     Arrow,
     Infix,

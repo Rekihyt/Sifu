@@ -89,6 +89,7 @@ pub fn Lexer(comptime Reader: type) type {
             const token_type: Type = switch (char) {
                 '\n' => .NewLine,
                 ',' => .Comma,
+                ';' => .Semicolon,
                 '(' => .LeftParen,
                 ')' => .RightParen,
                 '{' => .LeftBrace,

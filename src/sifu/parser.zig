@@ -149,9 +149,7 @@ const Level = struct {
     /// True if the given op has precedence over the current one. True if an op
     /// hasn't been parsed yet, or if the ops share precedence levels.
     fn isPrecedent(self: Level, op: Ast) bool {
-        const prev = self.current().getLastOrNull() orelse
-            return false;
-        if (!prev.isOp())
+        if (!self.root.isOp())
             return false;
         const op_precedence: usize = switch (op) {
             .arrow, .match => 1,
@@ -181,12 +179,14 @@ const Level = struct {
     }
 
     /// Returns a pointer to the op.
-    fn appendOp(self: *Level, op: Ast, allocator: Allocator) !void {
+    fn appendOp(self: *Level, op: Ast, infix: ?Ast, allocator: Allocator) !void {
         if (self.isPrecedent(op)) {
             print(
                 "Appending precedent to {s} tail with {s} op\n",
                 .{ @tagName(self.tail.*), @tagName(meta.activeTag(op)) },
             );
+            if (infix) |infix_lit|
+                try self.current().append(allocator, infix_lit);
             // Add an apps for the trailing args
             try self.current().append(allocator, op);
             self.writeTail(try self.current().toOwnedSlice(allocator));
@@ -197,6 +197,8 @@ const Level = struct {
                 "Appending non-precedent to {s} tail with {s} op\n",
                 .{ @tagName(self.tail.*), @tagName(meta.activeTag(op)) },
             );
+            if (infix) |infix_lit|
+                try self.current().append(allocator, infix_lit);
             try self.current().append(allocator, op);
             self.writeTail(try self.current().toOwnedSlice(allocator));
 
@@ -282,7 +284,7 @@ const Level = struct {
 /// returning a partial Ast on trailing operators or unfinished nesting. In such
 /// a case, null is returned and the same parser_stack must be reused to finish
 /// parsing. Otherwise, an Ast is returned from an ownded slice of parser_stack.
-// Precedence: semis < long arrow, long match < commas < infix < arrow, match
+// Precedence: semis, long arrow, long match < infix < commas, arrow, match
 // - TODO: [] should be a flat Apps instead of as an infix
 pub fn parse(
     allocator: Allocator,
@@ -295,29 +297,6 @@ pub fn parse(
     for (line) |token| {
         const current_ast = switch (token.type) {
             .Name => Ast.ofKey(token.lit),
-            inline .Infix,
-            .Match,
-            .Arrow,
-            .Comma,
-            .LongMatch,
-            .LongArrow,
-            => |tag| {
-                const op_tag = switch (tag) {
-                    .Infix => .infix,
-                    .Match => .match,
-                    .Arrow => .arrow,
-                    .Comma => .list,
-                    .LongMatch => .long_match,
-                    .LongArrow => .long_arrow,
-                    else => unreachable,
-                };
-                const op = @unionInit(Ast, @tagName(op_tag), &.{});
-                if (tag == .Infix)
-                    try level.current().append(allocator, Ast.ofKey(token.lit));
-                // Right hand args for previous op with higher precedence
-                try level.appendOp(op, allocator);
-                continue;
-            },
             inline .LeftParen, .LeftBrace => |tag| {
                 // Push the current level for later
                 try levels.append(allocator, level);
@@ -344,6 +323,25 @@ pub fn parse(
             .VarApps => Ast.ofVarApps(token.lit),
             .Str, .I, .F, .U => Ast.ofKey(token.lit),
             .Comment, .NewLine => Ast.ofKey(token.lit),
+            inline else => |tag| {
+                const op_tag = switch (tag) {
+                    .Infix => .infix,
+                    .Match => .match,
+                    .Arrow => .arrow,
+                    .Comma => .list,
+                    .Semicolon => .long_list,
+                    .LongMatch => .long_match,
+                    .LongArrow => .long_arrow,
+                    else => unreachable,
+                };
+                // Right hand args for previous op with higher precedence
+                try level.appendOp(
+                    @unionInit(Ast, @tagName(op_tag), &.{}),
+                    if (tag == .Infix) Ast.ofKey(token.lit) else null,
+                    allocator,
+                );
+                continue;
+            },
         };
         try level.current().append(allocator, current_ast);
         print("Current slice ptr {*}, len {}\n", .{
