@@ -7,7 +7,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
 const Lexer = @import("sifu/Lexer.zig").Lexer;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
-const parseAst = @import("sifu/parser.zig").parseAst;
+const parse = @import("sifu/parser.zig").parse;
 const streams = @import("streams.zig").streams;
 const io = std.io;
 const mem = std.mem;
@@ -97,7 +97,7 @@ fn replStep(
     // escape (from pressing alt+enter in most shells)
     // if (char == 0x1b) {}
     // }
-    var apps = try parseAst(arena, &lexer);
+    var apps = try parse(arena, &lexer);
     defer if (comptime detect_leaks)
         Ast.ofApps(apps).deinit(arena);
     const ast = Ast.ofApps(apps);

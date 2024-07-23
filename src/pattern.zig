@@ -185,8 +185,11 @@ pub fn PatternWithContext(
             /// enough information preserved such that during printing, the
             /// correct precedence operator can be recreated.
             arrow: []const Node,
-            /// These are here temporarily until the parser is rewritten to
-            /// determine precedence by tracking tokens instead of nodes.
+            /// TODO: remove. These are here temporarily until the parser is
+            /// refactored to determine precedence by tracking tokens instead of
+            /// nodes. The pretty printer must also then reconstruct the correct
+            /// tokens based on the precedence needed to preserve a given Ast's
+            /// structure.
             long_match: []const Node,
             long_arrow: []const Node,
             long_list: []const Node,
@@ -361,14 +364,8 @@ pub fn PatternWithContext(
 
             pub fn isOp(self: Node) bool {
                 return switch (self) {
-                    .match,
-                    .arrow,
-                    .infix,
-                    .list,
-                    .long_arrow,
-                    .long_match,
-                    => true,
-                    else => false,
+                    .key, .variable, .apps, .var_apps, .pattern => false,
+                    else => true,
                 };
             }
 
