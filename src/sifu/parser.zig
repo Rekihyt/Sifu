@@ -270,6 +270,7 @@ const Level = struct {
         print("Root apps {*}: ", .{&level.root});
         level.root.writeIndent(streams.err, null) catch unreachable;
         print("\n", .{});
+        level.apps_stack.deinit(allocator);
         return level.root;
     }
 };

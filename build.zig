@@ -104,8 +104,14 @@ pub fn build(b: *std.Build) void {
         "VerboseErrors",
         "Write all error and debug information to stderr",
     ) orelse false;
+    const detect_leaks = b.option(
+        bool,
+        "DetectLeaks",
+        "Use GPA's with leak detection instead of arenas",
+    ) orelse false;
     const build_options = b.addOptions();
     build_options.addOption(bool, "verbose_errors", verbose_errors);
+    build_options.addOption(bool, "detect_leaks", detect_leaks);
     unit_tests.root_module.addOptions("build_options", build_options);
     wasm_exe.root_module.addOptions("build_options", build_options);
     wasi_exe.root_module.addOptions("build_options", build_options);
