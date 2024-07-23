@@ -395,8 +395,13 @@ pub fn PatternWithContext(
 
             pub fn isOp(self: Node) bool {
                 return switch (self) {
-                    // TODO: ensure complete
-                    .match, .arrow, .infix, .list => true,
+                    .match,
+                    .arrow,
+                    .infix,
+                    .list,
+                    .long_arrow,
+                    .long_match,
+                    => true,
                     else => false,
                 };
             }
@@ -444,6 +449,8 @@ pub fn PatternWithContext(
                         switch (tag) {
                             .arrow => try writer.writeAll("-> "),
                             .match => try writer.writeAll(": "),
+                            .long_arrow => try writer.writeAll("--> "),
+                            .long_match => try writer.writeAll(":: "),
                             .list => try writer.writeAll(", "),
                             else => {},
                         }

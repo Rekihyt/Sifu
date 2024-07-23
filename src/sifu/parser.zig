@@ -261,7 +261,8 @@ const Level = struct {
                     else => unreachable,
                 }
             } else {
-                level.writeTail(slice);
+                if (slice.len > 0)
+                    level.writeTail(slice);
                 print("Writing final apps to tail {*}: ", .{tail});
                 tail.writeSExp(streams.err, null) catch unreachable;
                 print("\n", .{});

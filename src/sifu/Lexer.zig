@@ -239,6 +239,8 @@ pub fn Lexer(comptime Reader: type) type {
                 self.buff = buff;
             }
             self.buff = ArrayListUnmanaged(u8){};
+            // Put the current char into the temp buffer
+            try self.buff.append(self.allocator, buff.pop());
             while (try self.peekChar()) |next_char|
                 if (isOp(next_char))
                     try self.consume()

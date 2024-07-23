@@ -97,13 +97,11 @@ fn replStep(
     // escape (from pressing alt+enter in most shells)
     // if (char == 0x1b) {}
     // }
-    // TODO: combine lexer and parser allocators
     var apps = try parseAst(arena, &lexer);
     defer if (comptime detect_leaks)
         Ast.ofApps(apps).deinit(arena);
     const ast = Ast.ofApps(apps);
 
-    // Future parsing will always return apps
     try err_stream.print("Parsed {} apps: ", .{apps.len});
     try ast.write(err_stream);
     _ = try err_stream.write("\n");
