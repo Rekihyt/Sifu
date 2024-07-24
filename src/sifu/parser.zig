@@ -89,7 +89,10 @@ const Level = struct {
         tail: *Ast,
         apps: ArrayListUnmanaged(Ast) = .{},
 
-        pub fn writeTail(self: *Precedence, slice: []Ast) void {
+        pub fn writeTail(self: *Precedence, allocator: Allocator) !void {
+            if (self.apps.items.len == 0)
+                return;
+            var slice = try self.apps.toOwnedSlice(allocator);
             self.tail.* = switch (self.tail.*) {
                 inline .apps,
                 .arrow,
@@ -171,7 +174,7 @@ const Level = struct {
                 try precedence.append(allocator, infix_lit);
             // Add an apps for the trailing args
             try precedence.append(allocator, op);
-            precedence.writeTail(try precedence.apps.toOwnedSlice(allocator));
+            try precedence.writeTail(allocator);
             // Check if the previous op was higher precedence
             // if (@intFromEnum(prev_op) > @intFromEnum(op)) {} else {
         } else {
@@ -182,7 +185,7 @@ const Level = struct {
             if (infix) |infix_lit|
                 try precedence.append(allocator, infix_lit);
             try precedence.append(allocator, op);
-            precedence.writeTail(try precedence.apps.toOwnedSlice(allocator));
+            try precedence.writeTail(allocator);
 
             // self.root = Ast.ofApps(slice);
             // Descend one level of precedence
@@ -214,50 +217,18 @@ const Level = struct {
     }
 
     /// Allocate the current apps to slices. There should be at least one apps
-    ///on the precedences.
+    /// on the precedences.
     pub fn finalize(
         level: *Level,
         allocator: Allocator,
     ) !Ast {
-        var slice: []Ast = undefined;
-        while (level.precedences.popOrNull()) |*precedence| {
-            var precedence_ptr = @constCast(precedence);
-            var tail, var apps = .{ precedence.tail, precedence.apps };
-            slice = try apps.toOwnedSlice(allocator);
-            print("Finalizing slice of len {}\n", .{slice.len});
-            // const next = if (level.precedences.getLastOrNull()) |parent|
-            //     parent
-            // else {
-            //     // TODO: check w
-            //     break;
-            // };
-            //
-            // Set new tail pointer to this op's rhs
-            // Overwrite the empty op tail, if necessary
-            if (level.precedences.getLastOrNull()) |_| {
-                if (!tail.isOp()) panic(
-                    "Level of precedence pop without op ({s} instead)\n",
-                    .{@tagName(meta.activeTag(tail.*))},
-                );
-                switch (tail.*) {
-                    inline .apps, .arrow, .match, .infix, .list => |_, tag| {
-                        tail.* = @unionInit(Ast, @tagName(tag), slice);
-                    },
-                    else => unreachable,
-                }
-            } else {
-                if (slice.len > 0)
-                    precedence_ptr.writeTail(slice);
-                print("Writing final apps to tail {*}: ", .{tail});
-                tail.writeSExp(streams.err, null) catch unreachable;
-                print("\n", .{});
-                break;
-            }
-            tail = &slice[slice.len - 1];
-        }
+        while (level.precedences.popOrNull()) |*precedence|
+            try @constCast(precedence).writeTail(allocator);
+
         print("Root apps {*}: ", .{&level.root});
         level.root.writeIndent(streams.err, null) catch unreachable;
         print("\n", .{});
+        // All arraylists have been written to slices, so don't need freeing
         level.precedences.deinit(allocator);
         return level.root;
     }
