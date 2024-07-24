@@ -113,6 +113,17 @@ const Level = struct {
         pub fn append(self: *Precedence, allocator: Allocator, ast: Ast) !void {
             return self.apps.append(allocator, ast);
         }
+
+        /// True if the given op has precedence over the current one. True if an op
+        /// hasn't been parsed yet, or if the ops share precedence levels.
+        // Precedence: semis, long arrow, long match < infix < commas, arrow, match
+        fn order(self: Precedence, op: Ast) Order {
+            if (!self.tail.isOp())
+                return .gt;
+            const op_precedence = precedenceLevel(op);
+            const tail_precedence = precedenceLevel(self.tail.*);
+            return math.order(op_precedence, tail_precedence);
+        }
     };
 
     // var precedences_buff: [3]ArrayListUnmanaged(Ast) = undefined;
@@ -146,54 +157,46 @@ const Level = struct {
         return &self.precedences.items[len - 1];
     }
 
-    /// True if the given op has precedence over the current one. True if an op
-    /// hasn't been parsed yet, or if the ops share precedence levels.
-    // Precedence: semis, long arrow, long match < infix < commas, arrow, match
-    fn isPrecedent(self: Level, op: Ast) bool {
-        if (!self.root.isOp())
-            return false;
-        const op_precedence: usize = switch (op) {
-            .arrow, .match, .list => 1,
+    fn precedenceLevel(op: Ast) usize {
+        return switch (op) {
+            .arrow, .match, .list => 3,
             .infix => 2,
-            .long_arrow, .long_match, .long_list => 3,
+            .long_arrow, .long_match, .long_list => 1,
             else => unreachable,
         };
-        return self.precedences.items.len > op_precedence;
     }
 
     /// Returns a pointer to the op.
     fn appendOp(self: *Level, op: Ast, infix: ?Ast, allocator: Allocator) !void {
-        const precedence = self.current();
+        var precedence = self.current();
         const tail = precedence.tail;
-        if (self.isPrecedent(op)) {
-            print(
-                "Appending precedent to {s} tail with {s} op\n",
-                .{ @tagName(tail.*), @tagName(meta.activeTag(op)) },
-            );
-            if (infix) |infix_lit|
-                try precedence.append(allocator, infix_lit);
-            // Add an apps for the trailing args
-            try precedence.append(allocator, op);
+        // Descend as many levels of precedence as necessary
+        while (precedence.order(op) == .lt) : (precedence = self.current()) {
+            print("Descending\n", .{});
             try precedence.writeTail(allocator);
-            // Check if the previous op was higher precedence
-            // if (@intFromEnum(prev_op) > @intFromEnum(op)) {} else {
-        } else {
-            print(
-                "Appending non-precedent to {s} tail with {s} op\n",
-                .{ @tagName(tail.*), @tagName(meta.activeTag(op)) },
-            );
-            if (infix) |infix_lit|
-                try precedence.append(allocator, infix_lit);
-            try precedence.append(allocator, op);
-            try precedence.writeTail(allocator);
-
-            // self.root = Ast.ofApps(slice);
-            // Descend one level of precedence
-            // const slice = try self.precedences.pop().toOwnedSlice(allocator);
-            // self.current().append(slice);
+            _ = self.precedences.pop();
         }
-        // };
-        // if (apps.len > 0 and apps[apps.len - 1].isOp()) |tail|
+        print("Appending {s} precedent to {s} tail with {s} op\n", .{
+            @tagName(precedence.order(op)),
+            @tagName(tail.*),
+            @tagName(meta.activeTag(op)),
+        });
+        if (infix) |infix_lit|
+            try precedence.append(allocator, infix_lit);
+        // Add an apps for the trailing args
+        try precedence.append(allocator, op);
+        switch (precedence.order(op)) {
+            // Ascend one level of precedence
+            .gt => {
+                const slice = precedence.apps.items;
+                try self.precedences.append(
+                    allocator,
+                    Precedence{ .tail = &slice[slice.len - 1] },
+                );
+            },
+            .lt => unreachable,
+            .eq => try precedence.writeTail(allocator),
+        }
     }
 
     // Convert a list of nodes into a single node, depending on its type
@@ -344,10 +347,6 @@ pub fn parseLine(
             },
         };
         try level.current().append(allocator, current_ast);
-        print("Current slice ptr {*}, len {}\n", .{
-            level.current().apps.items.ptr,
-            level.current().apps.items.len,
-        });
     }
     const result = try level.finalize(allocator);
     // TODO: return optional void and move to caller

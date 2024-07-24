@@ -418,7 +418,7 @@ pub fn PatternWithContext(
                             else => {},
                         }
                         // Don't write an s-exp as its redundant for ops
-                        try Node.ofApps(slice).writeIndent(writer, optional_indent);
+                        try Node.ofApps(slice).writeSExp(writer, optional_indent);
                     },
                 }
             }
