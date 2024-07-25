@@ -841,17 +841,32 @@ to begin with for some feature is a possible code smell of that feature.
 
 ---
 
-Matching
+## Evaluation
+### Matching
 - Only once, uniquely
 - Indices table, vars match the longest length (last entry), going down to 0
 - No backtracking
+- Submatching should allow directly matching another submatch literally, even
+  if that submatch doesn't match itself. This is equivalent to using false with
+  an implication in classical logic. The proof, and therefore program is valid.
+
 - Computation must flow upwards for streaming execution
-- Patterns of differing length are fine: the lowest index, followed by longest match is chosen greedily
+- Patterns of differing length are fine: the lowest index, followed by longest
+  match is chosen greedily
+- Nesting _does not_ reset the current index (otherwise infinite loops are
+  possible) and _does not_ allow the current index to be matched unless it is
+  with a simplified expression (patterns like `F -> (F)` shouldn't recurse on
+  `F`). An Ast is more reduced than another if it has a shorter height of apps/
+  ops.
+  
+- Optional: an arbitrary match but finite limit argument that allows a certain
+  number of what would be non-terminating matches
 
 ---
 
 FAQ
-- Parenthesis behavior and role as explicit, unelidable structure is a significant difference
+- Parenthesis behavior and role as explicit, unelidable structure is a
+  significant difference
 
 ---
 
@@ -893,4 +908,5 @@ Bar Foo # select Bar, try and fail to match its Foo, then fallback to 123 321
 Bar Bar # select Bar, try and fail to match its Bar, then fallback to Bar. select Bar for Bar Bar
 ```
 
-The scope should include the current pattern up to the top level, and any along the way.
+The scope should include the current pattern up to the top level, and any along
+the way.

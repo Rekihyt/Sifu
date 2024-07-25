@@ -418,7 +418,7 @@ pub fn PatternWithContext(
                             else => {},
                         }
                         // Don't write an s-exp as its redundant for ops
-                        try Node.ofApps(slice).writeSExp(writer, optional_indent);
+                        try Node.ofApps(slice).writeIndent(writer, optional_indent);
                     },
                 }
             }
@@ -1022,6 +1022,7 @@ pub fn PatternWithContext(
         /// - the same pattern: continue unless patterns are equivalent
         ///   expressions (fixed point)
         /// - a pattern of higher ordinal: break
+        // TODO: fix ops as keys not being matched
         pub fn evaluate(
             self: *Self,
             // var_map: *LiteralMap,
