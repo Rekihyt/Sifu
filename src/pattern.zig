@@ -657,11 +657,24 @@ pub fn PatternWithContext(
                     }
                     result = get_or_put.value_ptr;
                 },
-                .pattern => panic("unimplemented", .{}),
+                .pattern => |sub_pat| {
+                    const get_or_put = try result.map.getOrPutValue(
+                        allocator,
+                        Node.ofPattern(Self{}),
+                        Self{},
+                    );
+                    _ = sub_pat;
+                    _ = get_or_put;
+                    @panic("unimplemented\n");
+                },
                 // App pattern's values will always be patterns too, which will
                 // map nested apps to the next top level app.
+                // The resulting encoding appears counter-intuitive when printed
+                // because each level of nesting must be a branch to enable
+                // pattern matching.
                 inline else => |apps, tag| {
-                    // Get or put a level of nesting
+                    // Get or put a level of nesting as an empty node branch to
+                    // a new pattern.
                     // No need to copy here because empty slices have 0 length
                     const get_or_put = try result.map.getOrPutValue(
                         allocator,
@@ -841,7 +854,10 @@ pub fn PatternWithContext(
                         .pattern = &self.map.values()[next_index],
                     };
                 } else null,
-                .pattern => panic("unimplemented", .{}),
+                .pattern => @panic(""),
+                // |pattern| {
+
+                // },
                 inline else => |sub_apps, tag| blk: {
                     // Check Var as Alternative here, but this probably can't be
                     // a recursive call without a SO
@@ -1024,13 +1040,10 @@ pub fn PatternWithContext(
             var match_result = try self.match(&var_map, apps);
             defer match_result.deinit();
             if (match_result.value) |value| {
-                print("{s} of len {}: ", .{
-                    if (match_result.len == apps.len)
-                        "Match "
-                    else
-                        "Partial Match ",
-                    match_result.len,
-                });
+                print(
+                    "Matched {} of {} apps: ",
+                    .{ match_result.len, apps.len },
+                );
                 value.write(streams.err) catch unreachable;
                 print("\n", .{});
                 return self.rewrite(allocator, var_map, value.apps);
@@ -1062,9 +1075,9 @@ pub fn PatternWithContext(
             while (index < apps.len) {
                 print("Matching from index: {}\n", .{index});
                 const query = apps[index..];
-                var var_map = LiteralMap{};
-                defer var_map.deinit(allocator);
-                const matched = try self.match(allocator, &var_map, query);
+                var var_map = LiteralMap.init(allocator);
+                defer var_map.deinit();
+                const matched = try self.match(&var_map, query);
                 if (matched.len == 0) {
                     print("No match, skipping index {}.\n", .{index});
                     try result.append(

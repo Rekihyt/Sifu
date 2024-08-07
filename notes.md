@@ -861,7 +861,15 @@ to begin with for some feature is a possible code smell of that feature.
   ops.
   
 - Optional: an arbitrary match but finite limit argument that allows a certain
-  number of what would be non-terminating matches
+  number of what would be non-terminating evaluations
+
+- Subapps / subpatterns must be encoded as nested tries themselves to enable
+  matching using partial patterns. The current implementation isn't able to
+  preserve the ordering of keys between sub-apps (and may never be able to).
+  After a file is formatted, the pattern will be printed out such that all
+  sub-apps / sub-patterns are grouped together, not interspersed. As such, a
+  user won't be surprised by the order when, say, matching all apps as a list.
+
 
 ---
 
@@ -911,3 +919,4 @@ Bar Bar # select Bar, try and fail to match its Bar, then fallback to Bar. selec
 
 The scope should include the current pattern up to the top level, and any along
 the way.
+

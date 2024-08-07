@@ -158,18 +158,17 @@ const Level = struct {
     /// Returns a pointer to the op.
     fn appendOp(self: *Level, op: Ast, infix: ?Ast, allocator: Allocator) !void {
         var precedence = self.current();
-        const tail = precedence.tail;
         // Descend as many levels of precedence as necessary
         while (precedence.order(op) == .lt) : (precedence = self.current()) {
             print("Descending\n", .{});
             try precedence.writeTail(allocator);
             _ = self.precedences.pop();
         }
-        print("Appending {s} precedent to {s} tail with {s} op\n", .{
-            @tagName(precedence.order(op)),
-            @tagName(tail.*),
-            @tagName(meta.activeTag(op)),
-        });
+        // print("Appending {s} precedent to {s} tail with {s} op\n", .{
+        //     @tagName(precedence.order(op)),
+        //     @tagName(precedence.tail.*),
+        //     @tagName(meta.activeTag(op)),
+        // });
         if (infix) |infix_lit|
             try precedence.append(allocator, infix_lit);
         // Add an apps for the trailing args
@@ -217,9 +216,9 @@ const Level = struct {
         while (level.precedences.popOrNull()) |*precedence|
             try @constCast(precedence).writeTail(allocator);
 
-        print("Root apps {*}: ", .{&level.root});
-        level.root.writeIndent(streams.err, null) catch unreachable;
-        print("\n", .{});
+        // print("Root apps {*}: ", .{&level.root});
+        // level.root.writeIndent(streams.err, null) catch unreachable;
+        // print("\n", .{});
         // All arraylists have been written to slices, so don't need freeing
         level.precedences.deinit(allocator);
         return level.root;

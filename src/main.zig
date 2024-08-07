@@ -54,8 +54,6 @@ fn repl(
             "Pattern Allocated: {}\n",
             .{gpa.total_requested_bytes},
         );
-        // if (comptime !no_os)
-        //     _ = gpa.detectLeaks();
     } else |err| switch (err) {
         error.EndOfStream => return {},
         // error.StreamTooLong => return e, // TODO: handle somehow
@@ -79,14 +77,13 @@ fn replStep(
         "Parsed apps {} high and {} wide: ",
         .{ tree.height, apps.len },
     );
+    try ast.write(streams.err);
     print("\nof types: ", .{});
     for (apps) |app| {
         print("{s} ", .{@tagName(app)});
         app.writeSExp(streams.err, 0) catch unreachable;
         streams.err.writeByte(' ') catch unreachable;
     }
-    print("\n", .{});
-    try ast.write(streams.err);
     print("\n", .{});
 
     // for (fbs.getWritten()) |char| {
@@ -98,7 +95,6 @@ fn replStep(
     if (apps.len > 0 and apps[apps.len - 1] == .arrow) {
         const key = apps[0 .. apps.len - 1];
         const val = Ast.ofApps(apps[apps.len - 1].arrow);
-        // print("Parsed apps hash: {}\n", .{apps.hash()});
         // If not inserting, then try to match the expression
         try pattern.put(allocator, key, val);
     } else {
@@ -106,7 +102,7 @@ fn replStep(
         // // print("Parsed ast hash: {}\n", .{ast.hash()});
         // if (repl_pat.get(ast.apps)) |got| {
         //     print("Got: ", .{});
-        //     try got.write(stderr);
+        //     try got.write(streams.err);
         //     print("\n", .{});
         // } else print("Got null\n", .{});
 
@@ -121,12 +117,12 @@ fn replStep(
         //     Ast.ofApps(eval).deinit(allocator)
         // else
         //     eval.deinit();
-        // try out_stream.print("Eval: ", .{});
+        // try writer.print("Eval: ", .{});
         // for (eval) |app| {
-        //     try app.writeSExp(out_stream, 0);
-        //     try out_stream.writeByte(' ');
+        //     try app.writeSExp(writer, 0);
+        //     try writer.writeByte(' ');
         // }
-        // try out_stream.writeByte('\n');
+        // try writer.writeByte('\n');
     }
     try pattern.pretty(writer);
 }
