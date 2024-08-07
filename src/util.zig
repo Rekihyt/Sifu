@@ -11,6 +11,15 @@ const no_os = @import("builtin").target.os.tag == .freestanding;
 const wasm = @import("wasm.zig");
 pub const streams = @import("streams.zig").streams;
 pub const panic = if (no_os) wasm.panic else std.debug.panic;
+const detect_leaks = @import("build_options").detect_leaks;
+pub const GPA = std.heap.GeneralPurposeAllocator(
+    .{
+        .safety = detect_leaks,
+        .never_unmap = detect_leaks,
+        .retain_metadata = detect_leaks,
+        .verbose_log = false,
+    },
+);
 
 /// Remove the tag from a union type.
 pub fn toUntagged(comptime TaggedUnion: type) type {

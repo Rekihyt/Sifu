@@ -5,7 +5,6 @@ const Ast = Pat.Node;
 const syntax = @import("sifu/syntax.zig");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
-const Lexer = @import("sifu/Lexer.zig").Lexer;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const parse = @import("sifu/parser.zig").parse;
 const streams = @import("streams.zig").streams;
@@ -14,13 +13,14 @@ const mem = std.mem;
 const wasm = @import("wasm.zig");
 const builtin = @import("builtin");
 const no_os = builtin.target.os.tag == .freestanding;
-const panic = @import("util.zig").panic;
+const util = @import("util.zig");
+const panic = util.panic;
+const print = util.print;
 const detect_leaks = @import("build_options").detect_leaks;
 // TODO: merge these into just GPA, when it eventually implements wasm_allocator
 // itself
-var gpa = if (no_os) undefined else std.heap.GeneralPurposeAllocator(
-    .{ .safety = true, .verbose_log = false, .enable_memory_limit = true },
-){};
+var gpa = if (no_os) undefined else GPA{};
+const GPA = util.GPA;
 
 pub fn main() void {
     // @compileLog(@sizeOf(Pat));
@@ -32,9 +32,6 @@ pub fn main() void {
     else
         gpa.allocator();
 
-    if (comptime !no_os) {
-        defer _ = gpa.detectLeaks();
-    }
     repl(allocator) catch |e|
         panic("{}", .{e});
 
@@ -42,34 +39,23 @@ pub fn main() void {
         _ = gpa.detectLeaks();
 }
 
+// TODO: Implement repl/file specific behavior
 fn repl(
     allocator: Allocator,
 ) !void {
-    var arena_allocator = if (comptime detect_leaks)
-        std.heap.GeneralPurposeAllocator(.{
-            .safety = true,
-            .verbose_log = false,
-            .enable_memory_limit = true,
-        }){}
-    else
-        ArenaAllocator.init(std.heap.page_allocator);
-    const arena = arena_allocator.allocator();
-    var buff_writer_stdout = io.bufferedWriter(streams.out);
-    const buff_stdout = buff_writer_stdout.writer();
-    const io_streams = .{ streams.in, buff_stdout, streams.err };
-    // TODO: Implement repl specific behavior
+    var buff_writer_out = io.bufferedWriter(streams.out);
+    const buff_out = buff_writer_out.writer();
     var pattern = Pat{};
     defer pattern.deinit(allocator);
-    while (replStep(&pattern, allocator, arena, io_streams)) |_| {
-        try buff_writer_stdout.flush();
+
+    while (replStep(&pattern, allocator, buff_out)) |_| {
+        try buff_writer_out.flush();
         if (comptime !no_os) try streams.err.print(
             "Pattern Allocated: {}\n",
             .{gpa.total_requested_bytes},
         );
-        if (comptime detect_leaks)
-            _ = arena_allocator.detectLeaks()
-        else
-            _ = arena_allocator.reset(.free_all);
+        // if (comptime !no_os)
+        //     _ = gpa.detectLeaks();
     } else |err| switch (err) {
         error.EndOfStream => return {},
         // error.StreamTooLong => return e, // TODO: handle somehow
@@ -79,87 +65,68 @@ fn repl(
 
 fn replStep(
     pattern: *Pat,
-    pat_allocator: Allocator,
-    arena: Allocator,
-    io_streams: anytype,
-) !void {
-    const in_stream, const out_stream, const err_stream = io_streams;
-    const buff_size = 4096;
-    var buff: [buff_size]u8 = undefined;
-    var fbs = io.fixedBufferStream(&buff);
+    allocator: Allocator,
+    writer: anytype,
+) !?void {
+    var tree = try parse(allocator, streams.in) orelse
+        return error.EndOfStream;
+    defer tree.deinit();
 
-    try in_stream.streamUntilDelimiter(fbs.writer(), '\n', fbs.buffer.len);
-    var fbs_written = io.fixedBufferStream(fbs.getWritten());
-    var lexer = Lexer(@TypeOf(fbs_written).Reader)
-        .init(arena, fbs_written.reader());
-    defer lexer.buff.clearAndFree(arena);
+    const apps = tree.root;
+    const ast = Ast.ofApps(apps);
+
+    print(
+        "Parsed apps {} high and {} wide: ",
+        .{ tree.height, apps.len },
+    );
+    print("\nof types: ", .{});
+    for (apps) |app| {
+        print("{s} ", .{@tagName(app)});
+        app.writeSExp(streams.err, 0) catch unreachable;
+        streams.err.writeByte(' ') catch unreachable;
+    }
+    print("\n", .{});
+    try ast.write(streams.err);
+    print("\n", .{});
+
     // for (fbs.getWritten()) |char| {
     // escape (from pressing alt+enter in most shells)
     // if (char == 0x1b) {}
     // }
-    var apps = try parse(arena, &lexer);
-    defer if (comptime detect_leaks)
-        Ast.ofApps(apps).deinit(arena);
-    const ast = Ast.ofApps(apps);
-
-    try err_stream.print("Parsed {} apps: ", .{apps.len});
-    try ast.write(err_stream);
-    _ = try err_stream.write("\n");
-
     // TODO: put with shell command like @put instead of special
     // casing a top level insert
     if (apps.len > 0 and apps[apps.len - 1] == .arrow) {
         const key = apps[0 .. apps.len - 1];
         const val = Ast.ofApps(apps[apps.len - 1].arrow);
         // print("Parsed apps hash: {}\n", .{apps.hash()});
-        try pattern.put(pat_allocator, key, val);
+        // If not inserting, then try to match the expression
+        try pattern.put(allocator, key, val);
     } else {
+        // TODO: put into a comptime for eval kind
         // // print("Parsed ast hash: {}\n", .{ast.hash()});
         // if (repl_pat.get(ast.apps)) |got| {
         //     print("Got: ", .{});
         //     try got.write(stderr);
         //     print("\n", .{});
         // } else print("Got null\n", .{});
-        // var indices = try match_allocator.alloc(usize, ast.apps.len);
-        // defer match_allocator.free(indices);
-        // var match = try repl_pat.match(
-        //     match_allocator,
-        //     // indices,
-        //     ast.apps,
-        // );
-        // defer match.deinit(match_allocator);
-        // // If not inserting, then try to match the expression
-        // if (match.value) |value| {
-        //     try buff_stdout.writeAll(
-        //         if (match.len == ast.apps.len)
-        //             "Match "
-        //         else
-        //             "Partial Match ",
-        //     );
-        //     try buff_stdout.print("of len {}: ", .{match.len});
-        //     try value.write(buff_stdout);
-        //     try buff_stdout.writeByte('\n');
-        // } else {
-        //     try buff_stdout.print(
-        //         "No match, after {} nodes followed\n",
-        //         .{match.len},
-        //     );
+
+        const step = try pattern.evaluateStep(allocator, apps);
+        defer Ast.ofApps(step).deinit(allocator);
+        print("Match Rewrite: ", .{});
+        try Ast.ofApps(step).write(writer);
+        try writer.writeByte('\n');
+
+        // const eval = try pattern.evaluate(allocator, apps);
+        // defer if (comptime detect_leaks)
+        //     Ast.ofApps(eval).deinit(allocator)
+        // else
+        //     eval.deinit();
+        // try out_stream.print("Eval: ", .{});
+        // for (eval) |app| {
+        //     try app.writeSExp(out_stream, 0);
+        //     try out_stream.writeByte(' ');
         // }
-        // const rewrite = try repl_pat.rewrite(match_allocator, ast);
-        // defer rewrite.deinit(match_allocator);
-        // print("Rewrite: ", .{});
-        // try rewrite.write(buff_stdout);
-        // try buff_stdout.writeByte('\n');
-        const eval = try pattern.evaluate(arena, apps);
-        defer if (comptime detect_leaks)
-            Ast.ofApps(eval).deinit(arena);
-        try out_stream.print("Eval: ", .{});
-        for (eval) |app| {
-            try app.writeSExp(out_stream, 0);
-            try out_stream.writeByte(' ');
-        }
-        try out_stream.writeByte('\n');
+        // try out_stream.writeByte('\n');
     }
-    try pattern.pretty(out_stream);
-    fbs.reset();
+    try pattern.pretty(writer);
 }

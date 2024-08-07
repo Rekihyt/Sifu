@@ -850,7 +850,8 @@ to begin with for some feature is a possible code smell of that feature.
   if that submatch doesn't match itself. This is equivalent to using false with
   an implication in classical logic. The proof, and therefore program is valid.
 
-- Computation must flow upwards for streaming execution
+- Computation must be _bounded_ upwards for streaming execution, but should
+  _flow_ from the pattern's top to the current location
 - Patterns of differing length are fine: the lowest index, followed by longest
   match is chosen greedily
 - Nesting _does not_ reset the current index (otherwise infinite loops are

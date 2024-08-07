@@ -12,6 +12,7 @@ const util = @import("../util.zig");
 const fsize = util.fsize();
 const Pat = @import("ast.zig").Pat;
 const Ast = Pat.Node;
+const Tree = Pat.Tree;
 const Pattern = @import("../pattern.zig").Pattern;
 const syntax = @import("syntax.zig");
 const Token = syntax.Token(usize);
@@ -29,10 +30,10 @@ const meta = std.meta;
 const print = util.print;
 const panic = util.panic;
 const streams = @import("../streams.zig").streams;
+const fs = std.fs;
+const Lexer = @import("Lexer.zig").Lexer;
 
 // TODO add indentation tracking, and separate based on newlines+indent
-// TODO revert parsing to assume apps at all levels, with ops as appended,
-// single terms to apps (add a new branch for the current way of parsing)
 
 /// Convert this token to a term by parsing its literal value.
 pub fn parseTerm(term: Token) Oom!Term {
@@ -58,18 +59,6 @@ pub fn parseTerm(term: Token) Oom!Term {
         .F => std.fmt.parseFloat(fsize, term.lit) catch
             unreachable,
     };
-}
-
-fn consumeNewLines(lexer: anytype, reader: anytype) !bool {
-    var consumed: bool = false;
-    // Parse all newlines
-    while (try lexer.peek(reader)) |next_token|
-        if (next_token.type == .NewLine) {
-            _ = try lexer.next(reader);
-            consumed = true;
-        } else break;
-
-    return consumed;
 }
 
 const ParseError = error{
@@ -240,38 +229,35 @@ const Level = struct {
 /// Read from a Lexer until its stream is empty, and convert tokens into Asts.
 /// Caller owns the returned Asts (including the underlying token), which should
 /// be freed with `deinit`. This frees the underlying tokens as needed based on
-/// the memory manager, as tokens are copied into the returned Ast.
+/// the memory manager, as tokens are copied into the returned Ast. Apps are
+/// assumed at all levels, with ops as appended, single terms to apps (add a new
+/// branch for the current way of parsing)
+/// Returns null if the reader ended before an Ast could be parsed
 // - TODO: [] should be a flat Apps instead of as an infix / nesting ops (the
 // behavior of commas and semis is no longer list-like, but array-like)
 pub fn parse(
     allocator: Allocator,
-    lexer: anytype,
-) ![]const Ast {
-    // TODO (ParseError || @TypeOf(lexer).Error || Allocator.Error)
+    reader: anytype,
+) !?Tree {
+    var arena = ArenaAllocator.init(allocator);
+    var lexer = Lexer(@TypeOf(reader)).init(arena.allocator(), reader);
+    defer lexer.deinit();
+    var line = try ArrayList(Token).initCapacity(allocator, 1024);
+    defer line.deinit();
     // No need to destroy asts, they will all be returned or cleaned up
-    var levels = ArrayListUnmanaged(Level){};
-    defer levels.deinit(allocator);
-    errdefer {
-        // TODO: add test coverage
-        for (levels.items) |*level| {
-            for (level.precedences.items) |*precedence| {
-                precedence.apps.deinit(allocator);
-            }
-            level.precedences.deinit(allocator);
+    var levels = ArrayList(Level).init(allocator);
+    // This arena is only for `Tree` memory, not for auxilary memory needed
+    // for parsing
+    defer levels.deinit();
+    while (try lexer.nextLine(&line)) |_| {
+        defer line.clearRetainingCapacity();
+        if (try parseLine(arena.allocator(), &levels, line.items)) |parse_result| {
+            const ast, const height = parse_result;
+            return Tree{ .root = ast, .height = height, .arena = arena };
         }
-        levels.deinit(allocator);
     }
-    while (try lexer.nextLine()) |line| {
-        defer {
-            lexer.allocator.free(line);
-            lexer.clearRetainingCapacity();
-        }
-        if (try parseLine(allocator, &levels, line)) |ast|
-            return ast
-        else
-            continue;
-    }
-    return &.{};
+    arena.deinit(); // Just in case there were partial allocations
+    return null;
 }
 
 /// Does not allocate on errors or empty parses. Parses the line of tokens,
@@ -289,20 +275,25 @@ pub fn parse(
 // root or something lower will. If its the lowest precedence (or the end of line)
 // is reached it is written to the root. The tail is then set to the root's op
 // slice, and future low precedent ops will be linked there.
+// TODO: return null if unfinished apps/pattern left to parse
 pub fn parseLine(
     allocator: Allocator,
-    levels: *ArrayListUnmanaged(Level),
+    levels: *ArrayList(Level),
     line: []const Token,
-) !?[]const Ast {
+) !?struct { []const Ast, usize } {
     // These variables are relative to the current level of nesting being parsed
     var level = Level{};
     try level.init(allocator);
+    var height: usize = 0;
+    var max_height: usize = 0;
     for (line) |token| {
         const current_ast = switch (token.type) {
             .Name => Ast.ofKey(token.lit),
             inline .LeftParen, .LeftBrace => |tag| {
+                height += 1;
+                max_height = @max(height, max_height);
                 // Push the current level for later
-                try levels.append(allocator, level);
+                try levels.append(level);
                 // Start a new nesting level
                 level = Level{};
                 try level.init(allocator);
@@ -312,15 +303,10 @@ pub fn parseLine(
                 continue;
             },
             .RightParen, .RightBrace => blk: {
+                if (height > 0)
+                    height -= 1;
                 defer level = levels.pop();
                 break :blk try level.finalize(allocator);
-
-                // blk: {
-                //     // This intermediate allocation could be removed for patterns
-                //     defer allocator.free(current_slice);
-                //     break :blk pattern.fromList(current_slice);
-                // }
-
             },
             .Var => Ast.ofVar(token.lit),
             .VarApps => Ast.ofVarApps(token.lit),
@@ -349,8 +335,7 @@ pub fn parseLine(
         try level.current().append(allocator, current_ast);
     }
     const result = try level.finalize(allocator);
-    // TODO: return optional void and move to caller
-    return result.apps;
+    return .{ result.apps, max_height };
 }
 
 // Assumes apps are Infix encoded (they have at least one element).
@@ -409,7 +394,7 @@ fn getOpTailOrNull(ast: Ast) ?*Ast {
 const testing = std.testing;
 const expectEqualStrings = testing.expectEqualStrings;
 const io = std.io;
-const Lexer = @import("Lexer.zig")
+const TestLexer = @import("Lexer.zig")
     .Lexer(io.FixedBufferStream([]const u8).Reader);
 const List = ArrayListUnmanaged(Ast);
 
@@ -418,7 +403,7 @@ test "simple val" {
     defer arena.deinit();
 
     var fbs = io.fixedBufferStream("Asdf");
-    var lexer = Lexer.init(arena.allocator(), fbs.reader());
+    var lexer = TestLexer.init(arena.allocator(), fbs.reader());
     const ast = try parse(arena.allocator(), &lexer);
     try testing.expect(ast == .apps and ast.apps.len == 1);
     try testing.expectEqualStrings(ast.apps[0].key.lit, "Asdf");
@@ -429,7 +414,7 @@ fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
     defer arena.deinit();
     const allocator = arena.allocator();
     var fbs = io.fixedBufferStream(str);
-    var lexer = Lexer.init(allocator, fbs.reader());
+    var lexer = TestLexer.init(allocator, fbs.reader());
     const actuals = try parse(allocator, &lexer);
     for (expecteds, actuals.apps) |expected, actual| {
         try expectEqualApps(expected, actual);
@@ -758,9 +743,9 @@ test "Apps: pattern eql hash" {
     var fbs1 = io.fixedBufferStream("{1,{2},3  -> A}");
     var fbs2 = io.fixedBufferStream("{1, {2}, 3 -> A}");
     var fbs3 = io.fixedBufferStream("{1, {2}, 3 -> B}");
-    var lexer1 = Lexer.init(allocator, fbs1.reader());
-    var lexer2 = Lexer.init(allocator, fbs2.reader());
-    var lexer3 = Lexer.init(allocator, fbs3.reader());
+    var lexer1 = TestLexer.init(allocator, fbs1.reader());
+    var lexer2 = TestLexer.init(allocator, fbs2.reader());
+    var lexer3 = TestLexer.init(allocator, fbs3.reader());
 
     const ast1 = try parse(allocator, &lexer1);
     const ast2 = try parse(allocator, &lexer2);

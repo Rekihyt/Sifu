@@ -15,6 +15,8 @@ const print = util.print;
 const first = util.first;
 const last = util.last;
 const streams = util.streams;
+const GenericTree = @import("tree.zig").Tree;
+const verbose_errors = @import("build_options").verbose_errors;
 
 pub fn AutoPattern(
     comptime Literal: type,
@@ -102,6 +104,7 @@ pub fn PatternWithContext(
 ) type {
     return struct {
         pub const Self = @This();
+        pub const Tree = GenericTree(Node);
         pub const NodeMap = std.ArrayHashMapUnmanaged(
             Node, // The tree
             Self, // The next pattern in the trie for this key's tree
@@ -111,17 +114,12 @@ pub fn PatternWithContext(
         /// This is a pointer to the pattern at the end of some path of nodes,
         /// and an index to the start of the path.
         const GetOrPutResult = NodeMap.GetOrPutResult;
-        // struct {
-        //     pattern_ptr: *Self,
-        //     index: usize, // the index in the top level node map
-        //     found_existing: bool,
-        // };
         /// Used to store the children, which are the next patterns pointed to
         /// by literal keys.
         pub const PatternList = std.ArrayListUnmanaged(Self);
         /// This is used as a kind of temporary storage for variable during
         /// matching and rewriting
-        pub const LiteralMap = std.ArrayHashMapUnmanaged(
+        pub const LiteralMap = std.ArrayHashMap(
             Literal,
             Node,
             Ctx,
@@ -784,9 +782,11 @@ pub fn PatternWithContext(
             // TODO: append varmaps instead of mutating
             // var_map: LiteralMap = LiteralMap{}, // Bound variables
 
-            pub fn deinit(self: *Match, allocator: Allocator) void {
+            pub fn deinit(self: *Match) void {
+                _ = self;
+
                 // Node entries are just references, so they don't need freeing
-                self.var_map.deinit(allocator);
+                // self.var_map.deinit(allocator);
             }
         };
 
@@ -820,7 +820,6 @@ pub fn PatternWithContext(
         // TODO: match vars with first available index and increment it
         pub fn branchTerm(
             self: *Self,
-            allocator: Allocator,
             var_map: *LiteralMap,
             node: Node,
         ) Allocator.Error!?Branch {
@@ -851,7 +850,7 @@ pub fn PatternWithContext(
                         @unionInit(Node, @tagName(tag), &.{}),
                     ) orelse break :blk null;
                     const pat_node =
-                        try next.matchAll(allocator, var_map, sub_apps) orelse
+                        try next.matchAll(var_map, sub_apps) orelse
                         break :blk null;
                     break :blk Branch{ .pattern = &pat_node.pattern };
                 },
@@ -863,7 +862,7 @@ pub fn PatternWithContext(
                 print("\n", .{});
                 // print(" at index: {?}\n", .{result.index});
                 const var_result =
-                    try var_map.getOrPut(allocator, var_next.variable);
+                    try var_map.getOrPut(var_next.variable);
                 // If a previous var was bound, check that the
                 // current key matches it
                 if (var_result.found_existing) {
@@ -886,15 +885,14 @@ pub fn PatternWithContext(
         /// Caller owns.
         pub fn matchAll(
             self: *Self,
-            allocator: Allocator,
             var_map: *LiteralMap,
             apps: []const Node,
         ) Allocator.Error!?*Node {
-            const result = try self.match(allocator, var_map, apps);
+            const result = try self.match(var_map, apps);
             // TODO: rollback map if match fails partway
-            const prev_len = var_map.entries.len;
+            const prev_len = var_map.keys().len;
             _ = prev_len;
-            print("match all\n", .{});
+            print("Match All\n", .{});
             // print("Result and Query len equal: {}\n", .{result.len == apps.len});
             // print("Result value null: {}\n", .{result.value == null});
             return if (result.len == apps.len)
@@ -907,10 +905,10 @@ pub fn PatternWithContext(
         /// pattern node and its corresponding number of matched apps that
         /// was in the trie. Starts matching at [index, ..), in the
         /// longest path otherwise any index for a shorter path.
-        /// Caller owns and should free the result's value and var_map.
+        /// Caller owns and should free the result's value and var_map with
+        /// Match.deinit.
         pub fn match(
             self: *Self,
-            allocator: Allocator,
             var_map: *LiteralMap,
             // indices: []usize,
             apps: []const Node,
@@ -926,9 +924,8 @@ pub fn PatternWithContext(
                 print("Matching as var apps `{s}`\n", .{var_apps_next.variable});
                 var_apps_next.next.write(streams.err) catch unreachable;
                 print("\n", .{});
-                // print(" at index: {?}\n", .{result.index});
                 const var_result =
-                    try var_map.getOrPut(allocator, var_apps_next.variable);
+                    try var_map.getOrPut(var_apps_next.variable);
                 if (var_result.found_existing) {
                     if (var_result.value_ptr.*.eql(node)) {
                         print("found equal existing var apps mapping\n", .{});
@@ -944,7 +941,7 @@ pub fn PatternWithContext(
             } else for (apps, 1..) |app, len| {
                 // TODO: save var_map state and restore if partial match and var
                 // apps
-                if (try current.branchTerm(allocator, var_map, app)) |branch| {
+                if (try current.branchTerm(var_map, app)) |branch| {
                     current = branch.pattern;
                     if (current.value) |value| {
                         result.value = value;
@@ -1015,6 +1012,37 @@ pub fn PatternWithContext(
             return try result.toOwnedSlice(allocator);
         }
 
+        /// Performs a single full match and if possible a rewrite.
+        /// Caller owns and should free with deinit.
+        pub fn evaluateStep(
+            self: *Self,
+            allocator: Allocator,
+            apps: []const Node,
+        ) Allocator.Error![]const Node {
+            var var_map = LiteralMap.init(allocator);
+            defer var_map.deinit();
+            var match_result = try self.match(&var_map, apps);
+            defer match_result.deinit();
+            if (match_result.value) |value| {
+                print("{s} of len {}: ", .{
+                    if (match_result.len == apps.len)
+                        "Match "
+                    else
+                        "Partial Match ",
+                    match_result.len,
+                });
+                value.write(streams.err) catch unreachable;
+                print("\n", .{});
+                return self.rewrite(allocator, var_map, value.apps);
+            } else {
+                print(
+                    "No match, after {} nodes followed\n",
+                    .{match_result.len},
+                );
+                return &.{};
+            }
+        }
+
         /// Given a pattern and a query to match against it, this function
         /// continously matches until no matches are found, or a match repeats.
         /// Match result cases:
@@ -1023,12 +1051,12 @@ pub fn PatternWithContext(
         ///   expressions (fixed point)
         /// - a pattern of higher ordinal: break
         // TODO: fix ops as keys not being matched
+        // TODO: refactor with evaluateStep
         pub fn evaluate(
             self: *Self,
-            // var_map: *LiteralMap,
             allocator: Allocator,
             apps: []const Node,
-        ) Allocator.Error![]const Node {
+        ) Allocator.Error!Tree {
             var index: usize = 0;
             var result = ArrayListUnmanaged(Node){};
             while (index < apps.len) {
@@ -1042,6 +1070,7 @@ pub fn PatternWithContext(
                     try result.append(
                         allocator,
                         // Evaluate nested apps that failed to match
+                        // TODO: replace recursion with a continue
                         switch (apps[index]) {
                             inline .apps, .match, .arrow, .list => |slice, tag|
                             // Recursively eval but preserve node type

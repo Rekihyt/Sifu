@@ -26,6 +26,7 @@ const mem = std.mem;
 const math = std.math;
 const assert = std.debug.assert;
 const panic = util.panic;
+const print = util.print;
 const detect_leaks = @import("build_options").detect_leaks;
 
 pub fn Lexer(comptime Reader: type) type {
@@ -35,55 +36,62 @@ pub fn Lexer(comptime Reader: type) type {
         pub const Error = @typeInfo(@TypeOf(peekChar(undefined)))
             .ErrorUnion.error_set || Allocator.Error;
 
-        /// A element buffer to hold chars for the current token
-        buff: ArrayListUnmanaged(u8) = .{},
+        /// A separate buffer to hold chars for the current token
+        buff: ArrayList(u8),
         /// The position in the stream used as context
         pos: usize = 0,
         /// Current line in the source
         line: usize = 0,
         /// Current column in the source
         col: usize = 1,
-        /// Current token being parsed in the source
-        token: ?Token = null,
         /// A single element buffer to hold a char for `peekChar`
         char: ?u8 = null,
-        /// The allocator used for tokenizing
-        allocator: Allocator,
         /// The reader providing input
         reader: Reader,
 
         /// Creates a new lexer using the given allocator
         pub fn init(allocator: Allocator, reader: Reader) Self {
-            return .{ .allocator = allocator, .reader = reader };
+            return .{
+                .buff = ArrayList(u8).init(allocator),
+                .reader = reader,
+            };
         }
 
-        pub fn clearRetainingCapacity(self: *@This()) void {
+        pub fn clearRetainingCapacity(self: *Self) void {
+            self.reset();
             self.buff.clearRetainingCapacity();
         }
 
-        pub fn peek(
+        pub fn deinit(self: *Self) void {
+            self.reset();
+            self.buff.deinit();
+        }
+
+        fn reset(self: *Self) void {
+            self.* = Self{ .buff = self.buff, .reader = self.reader };
+        }
+
+        pub inline fn peek(
             self: *Self,
         ) !?Token {
             if (self.token == null)
                 self.token = try self.next();
 
+            print("peek: {s}\n", .{if (self.token) |t| t.lit else "null"});
             return self.token;
         }
 
+        /// Caller owns the token, and must free using the allocator backing
+        /// this arraylist (that was passed in init()).
         pub fn next(
             self: *Self,
         ) !?Token {
-            // Return the current token, if it exists
-            if (self.token) |token| {
-                defer self.token = null;
-                return token;
-            }
-            try self.skipSpace();
-            const char = try self.peekChar() orelse
+            const pos = self.pos;
+            try self.skipSpace() orelse
+                return null;
+            const char = try self.nextChar() orelse
                 return null;
 
-            const pos = self.pos;
-            try self.consume(); // tokens always have at least 1 char
             // Parse separators greedily. These can be vals or infixes, it
             // doesn't matter.
             const token_type: Type = switch (char) {
@@ -109,6 +117,7 @@ pub fn Lexer(comptime Reader: type) type {
                 else
                     .Infix,
                 '#' => try self.comment(),
+                0xAA => panic("Buffer Overflow debug char (0xAA) consumed\n", .{}),
                 else => if (isSep(char))
                     .Name
                 else if (isOp(char))
@@ -119,8 +128,6 @@ pub fn Lexer(comptime Reader: type) type {
                     try self.variable()
                 else if (isDigit(char))
                     try self.integer()
-                else if (char == 0xAA)
-                    panic("Buffer Overflow debug char (0xAA) consumed\n", .{})
                 else
                     // This is a debug error only, as we shouldn't encounter an error
                     // during lexing
@@ -129,10 +136,9 @@ pub fn Lexer(comptime Reader: type) type {
                         \\Note: Unicode not supported yet.
                     , .{ char, char, self.line, self.col }),
             };
-            // defer self.buff = .{};
             return Token{
                 .type = token_type,
-                .lit = try self.buff.toOwnedSlice(self.allocator),
+                .lit = try self.buff.toOwnedSlice(),
                 .context = pos,
             };
         }
@@ -142,72 +148,68 @@ pub fn Lexer(comptime Reader: type) type {
         /// newlines were parsed exclusively.
         pub fn nextLine(
             self: *Self,
-        ) Error!?[]const Token {
-            if (try self.peek() == null)
-                return null;
-
-            var line = ArrayListUnmanaged(Token){};
+            line: *ArrayList(Token),
+        ) !?void {
             while (try self.next()) |token| {
                 if (token.type == .NewLine)
-                    break;
+                    return;
 
-                try line.append(self.allocator, token);
+                try line.append(token);
             }
-            return try line.toOwnedSlice(self.allocator);
+            return null;
         }
 
-        /// Returns the next character but does not increase the Lexer's position, or
-        /// returns null if there are no more characters left.
         fn peekChar(self: *Self) !?u8 {
-            if (self.char == null)
-                self.char = self.reader.readByte() catch |e| switch (e) {
-                    error.EndOfStream => return null,
-                    else => return e,
-                };
-            return self.char;
+            self.char = self.char orelse
+                self.reader.readByte() catch |e| return switch (e) {
+                error.EndOfStream => null,
+                else => e,
+            };
+            return self.char.?;
         }
 
-        /// Advances one character, reading it into the current token list buff
-        /// unless it is a special character, which don't need allocation.
-        fn consume(self: *Self) !void {
-            const char = try self.nextChar();
-            switch (char) {
-                '\n', ',', '(', ')', '{', '}' => {},
-                else => try self.buff.append(self.allocator, char),
+        /// Advances one character, reading it into the current token list
+        /// buff unless it is a special character, which don't need allocation.
+        /// Should be used after peekChar.
+        inline fn consume(self: *Self) Error!void {
+            switch (self.char orelse
+                panic("Consume called without a char\n", .{})) {
+                ' ', '\t', '\r', '\n', ',', '(', ')', '{', '}' => {},
+                else => |char| {
+                    self.pos += 1;
+                    if (char == '\n') {
+                        self.col = 1;
+                        self.line += 1;
+                    } else self.col += 1;
+                    try self.buff.append(char);
+                },
             }
+            self.char = null;
         }
 
-        /// Advances one character, or panics (should only be called after `peekChar`)
-        fn nextChar(self: *Self) Error!u8 {
-            const char = if (self.char) |char|
-                char
-            else
-                try self.peekChar() orelse panic(
-                    "Lexer Bug: Attempted to advance to next AST but EOF reached.",
-                    .{},
-                );
-            self.char = null; // clear peek buffer
-            self.pos += 1;
-            if (char == '\n') {
-                self.col = 1;
-                self.line += 1;
-            } else self.col += 1;
-
+        /// Advances one character. Basically just `peekChar` followed by
+        /// `consume`.
+        fn nextChar(self: *Self) !?u8 {
+            const char = try self.peekChar() orelse
+                return null;
+            try self.consume();
             return char;
         }
 
-        /// Skips whitespace except for newlines until a non-whitespace character is
-        /// found. Not guaranteed to skip anything. Newlines are separators, and thus
-        /// treated as tokens.
-        fn skipSpace(self: *Self) Error!void {
-            while (try self.peekChar()) |char|
+        /// Skips whitespace except for newlines until a non-whitespace
+        /// character is found. Not guaranteed to skip anything. Newlines are
+        /// separators, and thus treated as tokens. Returns null on eof.
+        inline fn skipSpace(self: *Self) !?void {
+            while (try self.peekChar()) |char| {
                 switch (char) {
-                    ' ', '\t', '\r' => _ = try self.nextChar(),
-                    else => break,
-                };
+                    // Clear the char buffer
+                    ' ', '\t', '\r' => try self.consume(),
+                    else => return,
+                }
+            } else return null;
         }
 
-        fn nextIdent(self: *Self) Error!void {
+        inline fn nextIdent(self: *Self) Error!void {
             while (try self.peekChar()) |next_char|
                 if (isIdent(next_char))
                     try self.consume()
@@ -215,41 +217,33 @@ pub fn Lexer(comptime Reader: type) type {
                     break;
         }
 
-        fn value(self: *Self) !Type {
+        inline fn value(self: *Self) !Type {
             try self.nextIdent();
             return .Name;
         }
 
-        fn variable(self: *Self) !Type {
+        inline fn variable(self: *Self) !Type {
             try self.nextIdent();
             return .Var;
         }
 
-        fn var_apps(self: *Self) !Type {
+        inline fn var_apps(self: *Self) !Type {
             try self.nextIdent();
             return .VarApps;
         }
 
         /// Reads the next infix characters
-        fn op(self: *Self) Error!Type {
-            // Create a temporary buffer in case a builtin op is found, which
-            // shouldn't be allocated
-            var buff = self.buff;
-            defer {
-                self.buff.deinit(self.allocator);
-                self.buff = buff;
-            }
-            self.buff = ArrayListUnmanaged(u8){};
-            // Put the current char into the temp buffer
-            try self.buff.append(self.allocator, buff.pop());
+        inline fn op(self: *Self) Error!Type {
+            // The first character of the op
+            const pos = self.buff.items.len - 1;
             while (try self.peekChar()) |next_char|
                 if (isOp(next_char))
                     try self.consume()
                 else
                     break;
 
-            const lit = self.buff.items;
-            return if (mem.eql(u8, lit, ":"))
+            const lit = self.buff.items[pos..];
+            const kind: Type = if (mem.eql(u8, lit, ":"))
                 .Match
             else if (mem.eql(u8, lit, "::"))
                 .LongMatch
@@ -257,16 +251,19 @@ pub fn Lexer(comptime Reader: type) type {
                 .Arrow
             else if (mem.eql(u8, lit, "-->"))
                 .LongArrow
-            else blk: {
-                // Infix operators aren't builtin, so are allocator like any
-                // other literal.
-                try buff.appendSlice(self.allocator, self.buff.items);
-                break :blk .Infix;
-            };
+            else
+                .Infix;
+
+            // Clear any builtin tokens, they don't need allocating
+            switch (kind) {
+                .Infix => {},
+                else => self.buff.shrinkRetainingCapacity(pos),
+            }
+            return kind;
         }
 
         /// Reads the next digits and/or any underscores
-        fn integer(self: *Self) Error!Type {
+        inline fn integer(self: *Self) Error!Type {
             while (try self.peekChar()) |next_char|
                 if (isDigit(next_char) or next_char == '_')
                     try self.consume()
@@ -278,7 +275,7 @@ pub fn Lexer(comptime Reader: type) type {
 
         /// Reads the next characters as number. `parseFloat` only throws
         /// `InvalidCharacter`, so this function cannot fail.
-        fn float(self: *Self) Error!Type {
+        inline fn float(self: *Self) Error!Type {
             self.int();
             if (try self.peekChar() == '.') {
                 try self.consume();
@@ -290,7 +287,7 @@ pub fn Lexer(comptime Reader: type) type {
 
         /// Reads a value wrapped in double-quotes from the current character. If no
         /// matching quote is found, reads until EOF.
-        fn string(self: *Self) Error!Type {
+        inline fn string(self: *Self) Error!Type {
             while (try self.peekChar() != '"')
                 try self.consume();
 
@@ -298,7 +295,7 @@ pub fn Lexer(comptime Reader: type) type {
         }
 
         /// Reads until the end of the line or EOF
-        fn comment(self: *Self) Error!Type {
+        inline fn comment(self: *Self) Error!Type {
             while (try self.peekChar()) |next_char|
                 if (next_char != '\n')
                     try self.consume()
@@ -312,35 +309,35 @@ pub fn Lexer(comptime Reader: type) type {
 
         /// Returns true if the given character is a digit. Does not include
         /// underscores.
-        fn isDigit(char: u8) bool {
+        inline fn isDigit(char: u8) bool {
             return switch (char) {
                 '0'...'9' => true,
                 else => false,
             };
         }
 
-        fn isUpper(char: u8) bool {
+        inline fn isUpper(char: u8) bool {
             return switch (char) {
                 'A'...'Z' => true,
                 else => false,
             };
         }
 
-        fn isLower(char: u8) bool {
+        inline fn isLower(char: u8) bool {
             return switch (char) {
                 'a'...'z' => true,
                 else => false,
             };
         }
 
-        fn isSep(char: u8) bool {
+        inline fn isSep(char: u8) bool {
             return switch (char) {
                 ',', ';', '(', ')', '[', ']', '{', '}', '"', '\'', '`' => true,
                 else => false,
             };
         }
 
-        fn isOp(char: u8) bool {
+        inline fn isOp(char: u8) bool {
             return switch (char) {
                 // zig fmt: off
                 '.', ':', '-', '+', '=', '<', '>', '%', '^',
@@ -351,13 +348,13 @@ pub fn Lexer(comptime Reader: type) type {
             };
         }
 
-        fn isSpace(char: u8) bool {
+        inline fn isSpace(char: u8) bool {
             return char == ' ' or
                 char == '\t' or
                 char == '\n';
         }
 
-        fn isIdent(char: u8) bool {
+        inline fn isIdent(char: u8) bool {
             return !(isSpace(char) or isSep(char));
         }
     };
