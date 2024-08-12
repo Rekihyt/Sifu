@@ -18,7 +18,7 @@ const err_stream = util.err_stream;
 /// meta-info about syntax
 pub const Ast = Pat.Node;
 pub const Pat = @import("../pattern.zig").StringPattern();
-pub const Tree = @import("../tree.zig").Tree(Ast);
+pub const Tree = Pat.Tree;
 
 test "simple ast to pattern" {
     const term = Token{

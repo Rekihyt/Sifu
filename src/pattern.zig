@@ -15,7 +15,6 @@ const print = util.print;
 const first = util.first;
 const last = util.last;
 const streams = util.streams;
-const GenericTree = @import("tree.zig").Tree;
 const verbose_errors = @import("build_options").verbose_errors;
 
 pub fn AutoPattern(
@@ -104,9 +103,8 @@ pub fn PatternWithContext(
 ) type {
     return struct {
         pub const Self = @This();
-        pub const Tree = GenericTree(Node);
         pub const NodeMap = std.ArrayHashMapUnmanaged(
-            Node, // The tree
+            Node, // The key, a single key
             Self, // The next pattern in the trie for this key's tree
             util.IntoArrayContext(Node),
             true,
@@ -119,12 +117,9 @@ pub fn PatternWithContext(
         pub const PatternList = std.ArrayListUnmanaged(Self);
         /// This is used as a kind of temporary storage for variable during
         /// matching and rewriting
-        pub const LiteralMap = std.ArrayHashMap(
-            Literal,
-            Node,
-            Ctx,
-            true,
-        );
+        pub const LiteralMap = std.ArrayHashMap(Literal, Node, Ctx, true);
+        pub const LiteralMapUnmanaged = std
+            .ArrayHashMapUnmanaged(Literal, Node, Ctx, true);
         pub const Manager = MemManager orelse CopyByValue(Literal);
 
         /// Maps terms to the next pattern, if there is one. These form
@@ -133,10 +128,21 @@ pub fn PatternWithContext(
         /// fields in this struct (except values) which are responsible for
         /// storing things by value. Nested apps and patterns are encoded by
         /// a layer of pointer indirection.
-        map: NodeMap = NodeMap{},
+        map: NodeMap = .{},
         /// A null value represents an undefined pattern, for example in `Foo
         /// Bar -> 123`, the value at `Foo` would be null.
         value: ?*Node = null,
+
+        /// An apps Node with a height.
+        pub const Tree = struct {
+            root: []const Node = &.{},
+            height: usize = 0,
+
+            // Clears all memory and resets this Tree's root to an empty apps.
+            pub fn deinit(self: Tree, allocator: Allocator) void {
+                Node.ofApps(self).deinit(allocator);
+            }
+        };
 
         /// Nodes form the keys and values of a pattern type (its recursive
         /// structure forces both to be the same type). In Sifu, it is also the
@@ -163,38 +169,38 @@ pub fn PatternWithContext(
             variable: Literal,
             /// Spaces separated juxtaposition, or lists/parens for nested apps.
             /// Infix operators add their rhs as a nested apps after themselves.
-            apps: []const Node,
+            apps: Tree,
             /// Variables that match apps as a term. These are only strictly
             /// needed for matching patterns with ops, where the nested apps
             /// is implicit.
             var_apps: Literal,
             /// The list following a non-builtin operator.
-            infix: []const Node,
+            infix: Tree,
             /// A postfix encoded match pattern, i.e. `x : Int -> x * 2` where
             /// some node (`x`) must match some subpattern (`Int`) in order for
             /// the rest of the match to continue. Like infixes, the apps to
             /// the left form their own subapps, stored here, but the `:` token
             /// is elided.
-            match: []const Node,
+            match: Tree,
             /// A postfix encoded arrow expression denoting a rewrite, i.e. `A B
             /// C -> 123`. This includes "long" versions of ops, which have same
             /// semantics, but only play a in part parsing/printing. Parsing
             /// shouldn't concern this abstract data structure, and there is
             /// enough information preserved such that during printing, the
             /// correct precedence operator can be recreated.
-            arrow: []const Node,
+            arrow: Tree,
             /// TODO: remove. These are here temporarily until the parser is
             /// refactored to determine precedence by tracking tokens instead of
             /// nodes. The pretty printer must also then reconstruct the correct
             /// tokens based on the precedence needed to preserve a given Ast's
             /// structure.
-            long_match: []const Node,
-            long_arrow: []const Node,
-            long_list: []const Node,
+            long_match: Tree,
+            long_arrow: Tree,
+            long_list: Tree,
             /// A single element in comma separated list, with the comma elided.
             /// Lists are operators that are recognized as separators for
             /// patterns.
-            list: []const Node,
+            list: Tree,
             // A pointer here saves space depending on the size of `Literal`
             /// An expression in braces.
             pattern: Self,
@@ -211,12 +217,15 @@ pub fn PatternWithContext(
                     .variable => |variable| Node.ofVar(try Manager.copy(allocator, variable)),
                     .var_apps => |var_apps| Node.ofVarApps(try Manager.copy(allocator, var_apps)),
                     .pattern => |p| Node.ofPattern(try p.copy(allocator)),
-                    inline else => |apps, tag| blk: {
-                        const apps_copy = try allocator.alloc(Node, apps.len);
-                        for (apps, apps_copy) |app, *app_copy|
+                    inline else => |tree, tag| blk: {
+                        const apps_copy = try allocator.alloc(Node, tree.root.len);
+                        for (tree.root, apps_copy) |app, *app_copy|
                             app_copy.* = try app.copy(allocator);
 
-                        break :blk @unionInit(Node, @tagName(tag), apps_copy);
+                        break :blk @unionInit(Node, @tagName(tag), Tree{
+                            .root = apps_copy,
+                            .height = tree.height,
+                        });
                     },
                 };
             }
@@ -239,13 +248,10 @@ pub fn PatternWithContext(
                     .variable => |variable| Manager.deinit(allocator, variable),
                     .var_apps => |var_apps| Manager.deinit(allocator, var_apps),
                     .pattern => |*p| @constCast(p).deinit(allocator),
-                    inline else => |apps, tag| {
-                        _ = tag;
-                        for (apps) |*app|
+                    inline else => |tree| {
+                        for (tree.root) |*app|
                             @constCast(app).deinit(allocator);
-                        allocator.free(apps);
-                        // Overwrite the freed pointer
-                        // self = @unionInit(Node, @tagName(tag), &.{});
+                        allocator.free(tree.root);
                     },
                 }
             }
@@ -263,8 +269,10 @@ pub fn PatternWithContext(
                         &mem.toBytes(Ctx.hash(undefined, key)),
                     ),
                     .pattern => |pattern| pattern.hasherUpdate(hasher),
-                    inline else => |apps, tag| {
-                        for (apps) |app|
+                    inline else => |tree, tag| {
+                        // Height isn't hashed because it wouldn't add any new
+                        // information
+                        for (tree.root) |app|
                             app.hasherUpdate(hasher);
                         switch (tag) {
                             .arrow, .long_arrow => hasher.update("->"),
@@ -287,10 +295,10 @@ pub fn PatternWithContext(
                     .variable => other == .variable,
                     .var_apps => other == .var_apps,
                     .pattern => |p| p.eql(other.pattern),
-                    inline else => |apps, tag| blk: {
-                        const other_slice = @field(other, @tagName(tag));
-                        break :blk apps.len == other_slice.len and
-                            for (apps, other_slice) |app, other_app|
+                    inline else => |tree, tag| blk: {
+                        const other_tree = @field(other, @tagName(tag));
+                        break :blk tree.root.len == other_tree.root.len and
+                            for (tree.root, other_tree.root) |app, other_app|
                         {
                             if (!app.eql(other_app))
                                 break false;
@@ -308,7 +316,7 @@ pub fn PatternWithContext(
                 return .{ .var_apps = var_apps };
             }
 
-            pub fn ofApps(apps: []const Node) Node {
+            pub fn ofApps(apps: Tree) Node {
                 return .{ .apps = apps };
             }
 
@@ -324,7 +332,7 @@ pub fn PatternWithContext(
             /// Lifetime of `apps` must be longer than this Node.
             pub fn createApps(
                 allocator: Allocator,
-                apps: []const Node,
+                apps: Tree,
             ) Allocator.Error!*Node {
                 const node = try allocator.create(Node);
                 node.* = Node{ .apps = apps };
@@ -356,7 +364,7 @@ pub fn PatternWithContext(
                     .pattern => Node{ .pattern = Self{} },
                     inline else => |_, tag|
                     // All slice types hash to themselves
-                    @unionInit(Node, @tagName(tag), &.{}),
+                    @unionInit(Node, @tagName(tag), .{}),
                 };
             }
 
@@ -435,7 +443,8 @@ pub fn PatternWithContext(
             ) @TypeOf(writer).Error!void {
                 switch (self) {
                     // Ignore top level parens
-                    inline .apps, .list, .arrow, .match, .infix => |apps| {
+                    inline .apps, .list, .arrow, .match, .infix => |tree| {
+                        const apps = tree.root;
                         if (apps.len == 0)
                             return;
                         // print("tag: {s}\n", .{@tagName(apps[0])});
@@ -672,19 +681,19 @@ pub fn PatternWithContext(
                 // The resulting encoding appears counter-intuitive when printed
                 // because each level of nesting must be a branch to enable
                 // pattern matching.
-                inline else => |apps, tag| {
+                inline else => |tree, tag| {
                     // Get or put a level of nesting as an empty node branch to
                     // a new pattern.
                     // No need to copy here because empty slices have 0 length
                     const get_or_put = try result.map.getOrPutValue(
                         allocator,
-                        @unionInit(Node, @tagName(tag), &.{}),
+                        @unionInit(Node, @tagName(tag), .{}),
                         Self{},
                     );
                     // All op types are encoded the same way after their top level
                     // hash. These don't need special treatment because their
                     // structure is simple, and their operator unique.
-                    result = try get_or_put.value_ptr.getOrPut(allocator, apps);
+                    result = try get_or_put.value_ptr.getOrPut(allocator, tree.root);
                     const next = result.value orelse blk: {
                         const pat = try Node.createPattern(allocator, Self{});
                         result.value = pat;
@@ -863,7 +872,7 @@ pub fn PatternWithContext(
                     // a recursive call without a SO
                     print("Branching subapps\n", .{});
                     var next = self.map.get(
-                        @unionInit(Node, @tagName(tag), &.{}),
+                        @unionInit(Node, @tagName(tag), .{}),
                     ) orelse break :blk null;
                     const pat_node =
                         try next.matchAll(var_map, sub_apps) orelse
@@ -902,16 +911,16 @@ pub fn PatternWithContext(
         pub fn matchAll(
             self: *Self,
             var_map: *LiteralMap,
-            apps: []const Node,
+            tree: Tree,
         ) Allocator.Error!?*Node {
-            const result = try self.match(var_map, apps);
+            const result = try self.match(var_map, tree);
             // TODO: rollback map if match fails partway
             const prev_len = var_map.keys().len;
             _ = prev_len;
             print("Match All\n", .{});
             // print("Result and Query len equal: {}\n", .{result.len == apps.len});
             // print("Result value null: {}\n", .{result.value == null});
-            return if (result.len == apps.len)
+            return if (result.len == tree.root.len)
                 result.value
             else
                 null;
@@ -927,7 +936,7 @@ pub fn PatternWithContext(
             self: *Self,
             var_map: *LiteralMap,
             // indices: []usize,
-            apps: []const Node,
+            tree: Tree,
         ) Allocator.Error!Match {
             var current = self;
             var result = Match{
@@ -936,7 +945,7 @@ pub fn PatternWithContext(
             };
             if (current.getVarApps()) |var_apps_next| {
                 // Store as a Node for convenience
-                const node = Node.ofApps(apps);
+                const node = Node.ofApps(tree);
                 print("Matching as var apps `{s}`\n", .{var_apps_next.variable});
                 var_apps_next.next.write(streams.err) catch unreachable;
                 print("\n", .{});
@@ -953,8 +962,8 @@ pub fn PatternWithContext(
                     var_result.value_ptr.* = node;
                 }
                 result.value = var_apps_next.next.value;
-                result.len = apps.len;
-            } else for (apps, 1..) |app, len| {
+                result.len = tree.root.len;
+            } else for (tree.root, 1..) |app, len| {
                 // TODO: save var_map state and restore if partial match and var
                 // apps
                 if (try current.branchTerm(var_map, app)) |branch| {
@@ -977,10 +986,10 @@ pub fn PatternWithContext(
             pattern: Self,
             allocator: Allocator,
             var_map: LiteralMap,
-            nodes: []const Node,
-        ) Allocator.Error![]const Node {
+            tree: Tree,
+        ) Allocator.Error!Tree {
             var result = ArrayListUnmanaged(Node){};
-            for (nodes) |node| switch (node) {
+            for (tree.root) |node| switch (node) {
                 .key => |key| try result.append(
                     allocator,
                     Node.ofKey(try Manager.copy(allocator, key)),
@@ -1006,7 +1015,7 @@ pub fn PatternWithContext(
                         print("null", .{});
                     print("\n", .{});
                     if (var_map.get(var_apps)) |apps_node| {
-                        for (apps_node.apps) |app|
+                        for (apps_node.apps.root) |app|
                             try result.append(
                                 allocator,
                                 try app.copy(allocator),
@@ -1025,7 +1034,11 @@ pub fn PatternWithContext(
                 // },
                 else => panic("unimplemented", .{}),
             };
-            return try result.toOwnedSlice(allocator);
+            // TODO: add heights
+            return Tree{
+                .root = try result.toOwnedSlice(allocator),
+                .height = tree.height,
+            };
         }
 
         /// Performs a single full match and if possible a rewrite.
@@ -1033,16 +1046,16 @@ pub fn PatternWithContext(
         pub fn evaluateStep(
             self: *Self,
             allocator: Allocator,
-            apps: []const Node,
-        ) Allocator.Error![]const Node {
+            tree: Tree,
+        ) Allocator.Error!Tree {
             var var_map = LiteralMap.init(allocator);
             defer var_map.deinit();
-            var match_result = try self.match(&var_map, apps);
+            var match_result = try self.match(&var_map, tree);
             defer match_result.deinit();
             if (match_result.value) |value| {
                 print(
                     "Matched {} of {} apps: ",
-                    .{ match_result.len, apps.len },
+                    .{ match_result.len, tree.root.len },
                 );
                 value.write(streams.err) catch unreachable;
                 print("\n", .{});
@@ -1052,7 +1065,7 @@ pub fn PatternWithContext(
                     "No match, after {} nodes followed\n",
                     .{match_result.len},
                 );
-                return &.{};
+                return .{};
             }
         }
 
@@ -1068,7 +1081,7 @@ pub fn PatternWithContext(
         pub fn evaluate(
             self: *Self,
             allocator: Allocator,
-            apps: []const Node,
+            apps: Tree,
         ) Allocator.Error!Tree {
             var index: usize = 0;
             var result = ArrayListUnmanaged(Node){};

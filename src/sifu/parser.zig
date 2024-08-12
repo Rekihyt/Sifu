@@ -78,7 +78,11 @@ const Level = struct {
         tail: *Ast,
         apps: ArrayListUnmanaged(Ast) = .{},
 
-        pub fn writeTail(self: *Precedence, allocator: Allocator) !void {
+        pub fn writeTail(
+            self: *Precedence,
+            allocator: Allocator,
+            height: usize,
+        ) !void {
             if (self.apps.items.len == 0)
                 return;
             var slice = try self.apps.toOwnedSlice(allocator);
@@ -90,7 +94,11 @@ const Level = struct {
                 .list,
                 .long_arrow,
                 .long_match,
-                => |_, tag| @unionInit(Ast, @tagName(tag), slice),
+                => |_, tag| @unionInit(
+                    Ast,
+                    @tagName(tag),
+                    Tree{ .root = slice, .height = height },
+                ),
                 else => panic(
                     "Non-op tail {}\n",
                     .{meta.activeTag(self.tail.*)},
@@ -128,7 +136,7 @@ const Level = struct {
     precedences: ArrayListUnmanaged(Precedence) =
         ArrayListUnmanaged(Precedence){},
     // Tracks the first link in the operator list, if any
-    root: Ast = Ast.ofApps(&.{}), // root starts as an apps by default
+    root: Ast = Ast.ofApps(.{}), // root starts as an apps by default
 
     /// This function should be used on a new, stack allocated level
     pub fn init(self: *Level, allocator: Allocator) !void {
@@ -156,12 +164,18 @@ const Level = struct {
     }
 
     /// Returns a pointer to the op.
-    fn appendOp(self: *Level, op: Ast, infix: ?Ast, allocator: Allocator) !void {
+    fn appendOp(
+        self: *Level,
+        allocator: Allocator,
+        op: Ast,
+        infix: ?Ast,
+        height: usize,
+    ) !void {
         var precedence = self.current();
         // Descend as many levels of precedence as necessary
         while (precedence.order(op) == .lt) : (precedence = self.current()) {
             print("Descending\n", .{});
-            try precedence.writeTail(allocator);
+            try precedence.writeTail(allocator, height);
             _ = self.precedences.pop();
         }
         // print("Appending {s} precedent to {s} tail with {s} op\n", .{
@@ -183,7 +197,7 @@ const Level = struct {
                 );
             },
             .lt => unreachable,
-            .eq => try precedence.writeTail(allocator),
+            .eq => try precedence.writeTail(allocator, height),
         }
     }
 
@@ -212,16 +226,17 @@ const Level = struct {
     pub fn finalize(
         level: *Level,
         allocator: Allocator,
-    ) !Ast {
+        height: usize,
+    ) !Tree {
         while (level.precedences.popOrNull()) |*precedence|
-            try @constCast(precedence).writeTail(allocator);
+            try @constCast(precedence).writeTail(allocator, height);
 
         // print("Root apps {*}: ", .{&level.root});
         // level.root.writeIndent(streams.err, null) catch unreachable;
         // print("\n", .{});
         // All arraylists have been written to slices, so don't need freeing
         level.precedences.deinit(allocator);
-        return level.root;
+        return level.root.apps;
     }
 };
 
@@ -238,8 +253,8 @@ pub fn parse(
     allocator: Allocator,
     reader: anytype,
 ) !?Tree {
-    var arena = ArenaAllocator.init(allocator);
-    var lexer = Lexer(@TypeOf(reader)).init(arena.allocator(), reader);
+    // var arena = ArenaAllocator.init(allocator);
+    var lexer = Lexer(@TypeOf(reader)).init(allocator, reader);
     defer lexer.deinit();
     var line = try ArrayList(Token).initCapacity(allocator, 1024);
     defer line.deinit();
@@ -250,12 +265,10 @@ pub fn parse(
     defer levels.deinit();
     while (try lexer.nextLine(&line)) |_| {
         defer line.clearRetainingCapacity();
-        if (try parseLine(arena.allocator(), &levels, line.items)) |parse_result| {
-            const ast, const height = parse_result;
-            return Tree{ .root = ast, .height = height, .arena = arena };
-        }
+        if (try parseLine(allocator, &levels, line.items)) |tree|
+            return tree;
     }
-    arena.deinit(); // Just in case there were partial allocations
+    // arena.deinit(); // Just in case there were partial allocations
     return null;
 }
 
@@ -279,7 +292,7 @@ pub fn parseLine(
     allocator: Allocator,
     levels: *ArrayList(Level),
     line: []const Token,
-) !?struct { []const Ast, usize } {
+) !?Tree {
     // These variables are relative to the current level of nesting being parsed
     var level = Level{};
     try level.init(allocator);
@@ -305,7 +318,7 @@ pub fn parseLine(
                 if (height > 0)
                     height -= 1;
                 defer level = levels.pop();
-                break :blk try level.finalize(allocator);
+                break :blk Ast.ofApps(try level.finalize(allocator, height));
             },
             .Var => Ast.ofVar(token.lit),
             .VarApps => Ast.ofVarApps(token.lit),
@@ -324,17 +337,18 @@ pub fn parseLine(
                 };
                 // Right hand args for previous op with higher precedence
                 try level.appendOp(
-                    @unionInit(Ast, @tagName(op_tag), &.{}),
-                    if (tag == .Infix) Ast.ofKey(token.lit) else null,
                     allocator,
+                    @unionInit(Ast, @tagName(op_tag), .{}),
+                    if (tag == .Infix) Ast.ofKey(token.lit) else null,
+                    height,
                 );
                 continue;
             },
         };
         try level.current().append(allocator, current_ast);
     }
-    const result = try level.finalize(allocator);
-    return .{ result.apps, max_height };
+    assert(height == 0); // Root always has a height of zero
+    return try level.finalize(allocator, height);
 }
 
 // Assumes apps are Infix encoded (they have at least one element).

@@ -66,12 +66,12 @@ fn replStep(
     allocator: Allocator,
     writer: anytype,
 ) !?void {
-    var tree = try parse(allocator, streams.in) orelse
+    const tree = try parse(allocator, streams.in) orelse
         return error.EndOfStream;
-    defer tree.deinit();
+    defer tree.deinit(allocator);
 
     const apps = tree.root;
-    const ast = Ast.ofApps(apps);
+    const ast = Ast.ofApps(tree);
 
     print(
         "Parsed apps {} high and {} wide: ",
@@ -106,7 +106,7 @@ fn replStep(
         //     print("\n", .{});
         // } else print("Got null\n", .{});
 
-        const step = try pattern.evaluateStep(allocator, apps);
+        const step = try pattern.evaluateStep(allocator, tree);
         defer Ast.ofApps(step).deinit(allocator);
         print("Match Rewrite: ", .{});
         try Ast.ofApps(step).write(writer);

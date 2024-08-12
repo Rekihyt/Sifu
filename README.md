@@ -60,11 +60,11 @@ data instead of evaluating it.
     - [ ] Parser (Tokens → AST)
       - [x] Non-recursive parsing
       - [ ] Newline delimited apps for top level and operators' rhs
-      - [ ] Nested apps for parentheses
+      - [x] Nested apps for parentheses
       - [ ] Patterns
-      - [ ] Infix
-      - [ ] Match
-      - [ ] Arrow
+      - [x] Infix
+      - [x] Match
+      - [x] Arrow
       - Syntax
         - [x] Apps (parens)
         - [x] Patterns (braces)
@@ -75,8 +75,10 @@ data instead of evaluating it.
       - [ ] Error handling
     - [x] Matching
       - [x] Vals
-      - [ ] Apps
-      - [ ] Vars
+      - [x] Apps
+      - [x] Vars
+    - [ ] Evaluation
+      - [ ] Index-based limiting
       - [ ] Multi
 
 ### Sifu Interpreter

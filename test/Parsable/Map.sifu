@@ -1,6 +1,6 @@
 
 # `[]` is the empty list literal
-Map fn [] -> []
+Map fn () -> ()
 # `:>` is the cons operator
 Map fn (x :> xs) -> fn x :> Map fn xs
 
