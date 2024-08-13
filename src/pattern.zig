@@ -136,7 +136,7 @@ pub fn PatternWithContext(
         /// An apps Node with a height.
         pub const Tree = struct {
             root: []const Node = &.{},
-            height: usize = 0,
+            height: usize = 1, // apps have a height because they are a branch
 
             // Clears all memory and resets this Tree's root to an empty apps.
             pub fn deinit(self: Tree, allocator: Allocator) void {
@@ -414,7 +414,7 @@ pub fn PatternWithContext(
                         try self.writeIndent(writer, optional_indent);
                         try writer.writeByte(')');
                     },
-                    inline else => |slice, tag| {
+                    inline else => |tree, tag| {
                         switch (tag) {
                             .arrow => try writer.writeAll("-> "),
                             .match => try writer.writeAll(": "),
@@ -424,7 +424,7 @@ pub fn PatternWithContext(
                             else => {},
                         }
                         // Don't write an s-exp as its redundant for ops
-                        try Node.ofApps(slice).writeIndent(writer, optional_indent);
+                        try Node.ofApps(tree).writeIndent(writer, optional_indent);
                     },
                 }
             }

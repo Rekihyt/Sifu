@@ -16,7 +16,6 @@ const Tree = Pat.Tree;
 const Pattern = @import("../pattern.zig").Pattern;
 const syntax = @import("syntax.zig");
 const Token = syntax.Token(usize);
-const Term = syntax.Term;
 const Type = syntax.Type;
 const Set = util.Set;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
@@ -35,29 +34,21 @@ const Lexer = @import("Lexer.zig").Lexer;
 
 // TODO add indentation tracking, and separate based on newlines+indent
 
-/// Convert this token to a term by parsing its literal value.
-pub fn parseTerm(term: Token) Oom!Term {
+/// Convert this token to a term by parsing its literal value. This is done
+/// manually on a case by case basis by the user because by default everything
+/// is a string
+pub fn parseTerm(term: Token) Oom!union { str: []const u8, usize: usize, fsize: fsize, isize: isize } {
     return switch (term.type) {
         .Name, .Str, .Var, .Comment => term.lit,
         .Infix => term.lit,
-        .I => if (std.fmt.parseInt(usize, term.lit, 10)) |i|
-            i
-        else |err| switch (err) {
-            // token should only have consumed digits
-            error.InvalidCharacter => unreachable,
-            // TODO: arbitrary ints here
-            error.Overflow => unreachable,
-        },
-
-        .U => if (std.fmt.parseUnsigned(usize, term.lit, 10)) |i|
-            i
-        else |err| switch (err) {
-            error.InvalidCharacter => unreachable,
-            // TODO: arbitrary ints here
-            error.Overflow => unreachable,
-        },
-        .F => std.fmt.parseFloat(fsize, term.lit) catch
-            unreachable,
+        .I => std.fmt.parseInt(usize, term.lit, 0),
+        .U => std.fmt.parseUnsigned(usize, term.lit, 0),
+        .F => std.fmt.parseFloat(fsize, term.lit),
+    } catch |err| switch (err) {
+        // token should only have consumed digits
+        error.InvalidCharacter => unreachable,
+        // TODO: arbitrary ints here
+        error.Overflow => unreachable,
     };
 }
 
@@ -148,13 +139,13 @@ const Level = struct {
     }
 
     // The pointer is safe until the current list is resized.
-    fn current(self: Level) *Precedence {
+    inline fn current(self: Level) *Precedence {
         const len = self.precedences.items.len;
         assert(len != 0); // Check Level.init was called
         return &self.precedences.items[len - 1];
     }
 
-    fn precedenceLevel(op: Ast) usize {
+    inline fn precedenceLevel(op: Ast) usize {
         return switch (op) {
             .arrow, .match, .list => 3,
             .infix => 2,
@@ -174,15 +165,9 @@ const Level = struct {
         var precedence = self.current();
         // Descend as many levels of precedence as necessary
         while (precedence.order(op) == .lt) : (precedence = self.current()) {
-            print("Descending\n", .{});
             try precedence.writeTail(allocator, height);
             _ = self.precedences.pop();
         }
-        // print("Appending {s} precedent to {s} tail with {s} op\n", .{
-        //     @tagName(precedence.order(op)),
-        //     @tagName(precedence.tail.*),
-        //     @tagName(meta.activeTag(op)),
-        // });
         if (infix) |infix_lit|
             try precedence.append(allocator, infix_lit);
         // Add an apps for the trailing args
@@ -202,7 +187,7 @@ const Level = struct {
     }
 
     // Convert a list of nodes into a single node, depending on its type
-    pub fn intoNode(
+    inline fn intoNode(
         allocator: Allocator,
         kind: Ast,
         nodes: []const Ast,
@@ -223,7 +208,7 @@ const Level = struct {
 
     /// Allocate the current apps to slices. There should be at least one apps
     /// on the precedences.
-    pub fn finalize(
+    fn finalize(
         level: *Level,
         allocator: Allocator,
         height: usize,
@@ -231,9 +216,6 @@ const Level = struct {
         while (level.precedences.popOrNull()) |*precedence|
             try @constCast(precedence).writeTail(allocator, height);
 
-        // print("Root apps {*}: ", .{&level.root});
-        // level.root.writeIndent(streams.err, null) catch unreachable;
-        // print("\n", .{});
         // All arraylists have been written to slices, so don't need freeing
         level.precedences.deinit(allocator);
         return level.root.apps;
@@ -253,6 +235,7 @@ pub fn parse(
     allocator: Allocator,
     reader: anytype,
 ) !?Tree {
+    // TODO: parse into an arena
     // var arena = ArenaAllocator.init(allocator);
     var lexer = Lexer(@TypeOf(reader)).init(allocator, reader);
     defer lexer.deinit();
@@ -297,26 +280,23 @@ pub fn parseLine(
     var level = Level{};
     try level.init(allocator);
     var height: usize = 0;
-    var max_height: usize = 0;
     for (line) |token| {
         const current_ast = switch (token.type) {
             .Name => Ast.ofKey(token.lit),
             inline .LeftParen, .LeftBrace => |tag| {
-                height += 1;
-                max_height = @max(height, max_height);
+                if (height > 0)
+                    height -= 1;
                 // Push the current level for later
                 try levels.append(level);
                 // Start a new nesting level
                 level = Level{};
                 try level.init(allocator);
-                print("Init\n", .{});
                 if (tag == .LeftBrace)
                     level.root = Ast.ofPattern(Pat{});
                 continue;
             },
             .RightParen, .RightBrace => blk: {
-                if (height > 0)
-                    height -= 1;
+                height += 1;
                 defer level = levels.pop();
                 break :blk Ast.ofApps(try level.finalize(allocator, height));
             },
@@ -347,7 +327,7 @@ pub fn parseLine(
         };
         try level.current().append(allocator, current_ast);
     }
-    assert(height == 0); // Root always has a height of zero
+    // assert(height == 0); // Root always has a height of zero
     return try level.finalize(allocator, height);
 }
 
