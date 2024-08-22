@@ -920,3 +920,8 @@ Bar Bar # select Bar, try and fail to match its Bar, then fallback to Bar. selec
 The scope should include the current pattern up to the top level, and any along
 the way.
 
+---
+
+### Tests
+
+- Deep/Shallow copy idempotency

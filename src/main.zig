@@ -90,13 +90,17 @@ fn replStep(
     // escape (from pressing alt+enter in most shells)
     // if (char == 0x1b) {}
     // }
-    // TODO: put with shell command like @put instead of special
-    // casing a top level insert
+    // TODO: read a "file" from stdin first, until eof, then start eval/matching
+    // until another eof.
     if (apps.len > 0 and apps[apps.len - 1] == .arrow) {
         const key = apps[0 .. apps.len - 1];
-        const val = Ast.ofApps(apps[apps.len - 1].arrow);
+        const val = apps[apps.len - 1].arrow;
         // If not inserting, then try to match the expression
-        try pattern.put(allocator, key, val);
+        try pattern.put(
+            allocator,
+            .{ .root = key, .height = tree.height },
+            val,
+        );
     } else {
         // TODO: put into a comptime for eval kind
         // // print("Parsed ast hash: {}\n", .{ast.hash()});

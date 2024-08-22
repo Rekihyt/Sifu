@@ -12,7 +12,7 @@ const util = @import("../util.zig");
 const fsize = util.fsize();
 const Pat = @import("ast.zig").Pat;
 const Ast = Pat.Node;
-const Tree = Pat.Tree;
+const Apps = Pat.Apps;
 const Pattern = @import("../pattern.zig").Pattern;
 const syntax = @import("syntax.zig");
 const Token = syntax.Token(usize);
@@ -88,7 +88,7 @@ const Level = struct {
                 => |_, tag| @unionInit(
                     Ast,
                     @tagName(tag),
-                    Tree{ .root = slice, .height = height },
+                    Apps{ .root = slice, .height = height },
                 ),
                 else => panic(
                     "Non-op tail {}\n",
@@ -212,7 +212,7 @@ const Level = struct {
         level: *Level,
         allocator: Allocator,
         height: usize,
-    ) !Tree {
+    ) !Apps {
         while (level.precedences.popOrNull()) |*precedence|
             try @constCast(precedence).writeTail(allocator, height);
 
@@ -234,7 +234,7 @@ const Level = struct {
 pub fn parse(
     allocator: Allocator,
     reader: anytype,
-) !?Tree {
+) !?Apps {
     // TODO: parse into an arena
     // var arena = ArenaAllocator.init(allocator);
     var lexer = Lexer(@TypeOf(reader)).init(allocator, reader);
@@ -243,13 +243,13 @@ pub fn parse(
     defer line.deinit();
     // No need to destroy asts, they will all be returned or cleaned up
     var levels = ArrayList(Level).init(allocator);
-    // This arena is only for `Tree` memory, not for auxilary memory needed
+    // This arena is only for `Apps` memory, not for auxilary memory needed
     // for parsing
     defer levels.deinit();
     while (try lexer.nextLine(&line)) |_| {
         defer line.clearRetainingCapacity();
-        if (try parseLine(allocator, &levels, line.items)) |tree|
-            return tree;
+        if (try parseLine(allocator, &levels, line.items)) |apps|
+            return apps;
     }
     // arena.deinit(); // Just in case there were partial allocations
     return null;
@@ -275,7 +275,7 @@ pub fn parseLine(
     allocator: Allocator,
     levels: *ArrayList(Level),
     line: []const Token,
-) !?Tree {
+) !?Apps {
     // These variables are relative to the current level of nesting being parsed
     var level = Level{};
     try level.init(allocator);
