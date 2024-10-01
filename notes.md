@@ -905,6 +905,19 @@ precedence either. Sometimes expressions with operators don't evaluate their
 operator away, so them being evaluated first isn't enough to give them
 precedence in following evaluations with surrounding operators.
 
+#### Recursion
+Recursive evaluations can only appear once in a definition (subsequent recursive
+expressions won't be matched). If not, diverging rules can be implemented.
+However, many algorithms, such as merge sort require them. The work-around is to
+implement merge sort as two definitions, one for each half. Then each definition
+only has to recurse on its half, and call the other half. In general, each extra
+recursive call needed must be implemented as another top-level function.
+```
+SortL x -> MergeSort ...
+SortR x -> MergeSort ...
+MergeSort x -> SortL (Half x) ++ SortR (OtherHalf x) 
+```
+
 ```
 Foo -> 321
 Foo Foo -> 123
@@ -925,3 +938,4 @@ the way.
 ### Tests
 
 - Deep/Shallow copy idempotency
+

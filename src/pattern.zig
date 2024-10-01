@@ -77,10 +77,10 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const t = @import("test.zig");
 
 ///
-/// A trie-like type based on the given term type. Each pattern contains zero or
-/// more children.
+/// A trie-like type based on the given literal type. Each pattern contains zero
+/// or more children.
 ///
-/// The term and var type must be hashable, and must NOT contain any cycles.
+/// The literal and var type must be hashable, and must NOT contain any cycles.
 /// TODO: reword this: Nodes track context, the recursive structures (map,
 /// match) do not.
 ///
@@ -94,7 +94,8 @@ const t = @import("test.zig");
 ///    - `eql` a function to compare two `T`s, of type `fn (T, T) bool`
 ///
 /// MemManager: an optional set of functions for allocating and freeing copies
-/// of Keys and Vars. Must have a copy and deinit function for each.
+/// of Keys and Vars. Must have a copy and deinit function for each. For
+/// borrowing, simply pass null or a no-op manager.
 pub fn PatternWithContext(
     comptime Literal: type,
     comptime Ctx: type,
@@ -109,6 +110,14 @@ pub fn PatternWithContext(
             util.IntoArrayContext(Node),
             true,
         );
+        /// Indices are unique, and therefore either point to a value, or to a
+        /// branch in the trie (represented by an index into the nodemap) that
+        /// if followed ends in a value.
+        pub const Index = union(enum) {
+            branch: usize,
+            value: *Node,
+        };
+        pub const IndexMap = std.AutoHashMapUnmanaged(usize, Index);
         /// This is a pointer to the pattern at the end of some path of nodes,
         /// and an index to the start of the path.
         const GetOrPutResult = NodeMap.GetOrPutResult;
@@ -119,7 +128,6 @@ pub fn PatternWithContext(
         /// matching and rewriting
         pub const LiteralMap = std
             .ArrayHashMapUnmanaged(Literal, Node, Ctx, true);
-        pub const Manager = MemManager orelse CopyByValue(Literal);
 
         /// Maps terms to the next pattern, if there is one. These form
         /// the branches of the trie for a level of nesting. All vars hash to
@@ -128,9 +136,12 @@ pub fn PatternWithContext(
         /// storing things by value. Nested apps and patterns are encoded by
         /// a layer of pointer indirection.
         map: NodeMap = .{},
-        /// A null value represents an undefined pattern, for example in `Foo
-        /// Bar -> 123`, the value at `Foo` would be null.
-        value: ?*Node = null,
+        /// Records the order of entries in the trie. An index for an entry is
+        /// saved at every branch in the trie for a given key.
+        /// A `next` index represents an undefined pattern, for example in `Foo
+        /// Bar -> 123`, the value at `Foo` would be a pointer to the pattern
+        /// containing `Bar`.
+        indices: IndexMap = .{},
 
         /// An apps (a list of nodes) Node with its height cached.
         pub const Apps = struct {
@@ -150,9 +161,10 @@ pub fn PatternWithContext(
 
             // Clears all memory and resets this Apps's root to an empty apps.
             pub fn deinit(apps: Apps, allocator: Allocator) void {
-                for (apps.root) |*app|
-                    @constCast(app).deinit(allocator);
-
+                for (apps.root) |*app| {
+                    comptime if (MemManager)
+                        @constCast(app).deinit(allocator);
+                }
                 allocator.free(apps.root);
             }
 
@@ -246,9 +258,13 @@ pub fn PatternWithContext(
                 allocator: Allocator,
             ) Allocator.Error!Node {
                 return switch (self) {
-                    .key => |key| Node.ofKey(try Manager.copy(allocator, key)),
-                    .variable => |variable| Node.ofVar(try Manager.copy(allocator, variable)),
-                    .var_apps => |var_apps| Node.ofVarApps(try Manager.copy(allocator, var_apps)),
+                    inline .key, .variable, .var_apps => |literal, tag| {
+                        const literal_copy = if (MemManager) |Manager|
+                            try Manager.copy(allocator, literal)
+                        else
+                            literal;
+                        return @unionInit(Node, @tagName(tag), literal_copy);
+                    },
                     .pattern => |p| Node.ofPattern(try p.copy(allocator)),
                     inline else => |apps, tag| @unionInit(
                         Node,
@@ -272,9 +288,10 @@ pub fn PatternWithContext(
 
             pub fn deinit(self: Node, allocator: Allocator) void {
                 switch (self) {
-                    .key => |key| Manager.deinit(allocator, key),
-                    .variable => |variable| Manager.deinit(allocator, variable),
-                    .var_apps => |var_apps| Manager.deinit(allocator, var_apps),
+                    inline .key, .variable, .var_apps => |literal| {
+                        if (comptime MemManager) |Manager|
+                            Manager.deinit(allocator, literal);
+                    },
                     .pattern => |*p| @constCast(p).deinit(allocator),
                     inline else => |apps| apps.deinit(allocator),
                 }
@@ -505,6 +522,76 @@ pub fn PatternWithContext(
             };
         }
 
+        /// Returns an iterator over the pairs in this map. Appending
+        /// to the pattern is safe, and new entries will be visited by this
+        /// iterator.
+        pub fn iterator(self: Self) Iterator {
+            return .{
+                .pattern = self,
+                .index = 0,
+            };
+        }
+
+        /// An index and value for a pattern. The indices returned by the
+        /// iterator aren't necessary sequential if the pattern in question
+        /// isn't the root.
+        pub const Entry = struct {
+            index: usize,
+            value: *Node,
+        };
+
+        /// Iterates over the values in this pattern. If the keys are required,
+        /// call `rebuildKey()` for each, as rebuilding the keys from the trie
+        /// requires allocation.
+        pub const Iterator = struct {
+            pattern: Self,
+            index: u32 = 0,
+
+            pub fn next(it: *Iterator) ?Entry {
+                if (it.index >= it.self.indices.len)
+                    return null;
+                defer it.index += 1;
+                return it.pattern.getIndex(it.index);
+            }
+
+            /// Reset the iterator to the initial index
+            pub fn reset(it: *Iterator) void {
+                it.index = 0;
+            }
+        };
+
+        /// Asserts that the index exists.
+        pub fn getIndex(self: Self, index: usize) !*Node {
+            return self.getIndexOrNull(index) orelse
+                panic("Index {} doesn't exist\n", .{index});
+        }
+        /// Returns null if the index doesn't exist in the pattern.
+        pub fn getIndexOrNull(self: Self, index: usize) !?*Node {
+            // This if is a little redundant but checks that for any index that
+            // _is_ in the map, it or its children have a value.
+            if (self.indices.contains(index)) {
+                var current = self;
+                while (current.indices.get(index)) |next| : (current = next) {
+                    if (next == .value)
+                        return next;
+                } else panic(
+                    \\Reached the end of an index chain without
+                    \\ finding a value.\n
+                , .{});
+            }
+            return null;
+        }
+
+        /// Rebuilds the key for a given index using an allocator for the
+        /// arrays necessary to support the tree structure, but pointers to the
+        /// underlying keys.
+        pub fn rebuildKey(self: Self, allocator: Allocator, index: usize) !Apps {
+            _ = index; // autofix
+            _ = allocator; // autofix
+            _ = self; // autofix
+            @panic("unimplemented");
+        }
+
         /// Deep copy a pattern by value, as well as Keys and Variables.
         /// Use deinit to free.
         pub fn copy(self: Self, allocator: Allocator) Allocator.Error!Self {
@@ -516,8 +603,23 @@ pub fn PatternWithContext(
                     try entry.key_ptr.copy(allocator),
                     try entry.value_ptr.copy(allocator),
                 );
-            if (self.value) |value|
-                result.value = try value.clone(allocator);
+
+            // If values are owned refs, then a clone would point to the
+            // original's values, so we need to manually copy the indices map.
+            if (MemManager) |_| {
+                var index_iter = self.indices.iterator();
+                while (index_iter.next()) |entry| {
+                    const index = entry.key_ptr.*;
+                    const index_node = entry.value_ptr.*;
+                    const index_node_copy = if (index_node == .value)
+                        Index{ .value = try index_node.value.clone(allocator) }
+                    else
+                        index_node;
+                    // Insert a borrowed pointer to the new key copy
+                    try result.indices
+                        .putNoClobber(allocator, index, index_node_copy);
+                }
+            } else result.indices = try self.indices.clone(allocator);
 
             return result;
         }
@@ -539,16 +641,24 @@ pub fn PatternWithContext(
         }
 
         /// The opposite of `copy`.
+        /// TODO: check frees properly for owned and borrowed managers
         pub fn deinit(self: *Self, allocator: Allocator) void {
             defer self.map.deinit(allocator);
             var iter = self.map.iterator();
             while (iter.next()) |entry| {
-                entry.key_ptr.deinit(allocator);
+                // Keys aren't owned, but values are patterns themselves and
+                // need to be handled.
                 entry.value_ptr.deinit(allocator);
             }
-            if (self.value) |value|
-                // Value nodes are also allocated recursively
-                value.destroy(allocator);
+            defer self.indices.deinit(allocator);
+            var index_iter = self.indices.iterator();
+            while (index_iter.next()) |entry| {
+                switch (entry.value_ptr.*) {
+                    .value => |value| value.destroy(allocator),
+                    // Next pointers are borrowed, and will be freed anyways.
+                    .branch => {},
+                }
+            }
         }
 
         pub fn hash(self: Self) u32 {
@@ -563,8 +673,10 @@ pub fn PatternWithContext(
                 entry.key_ptr.*.hasherUpdate(hasher);
                 entry.value_ptr.*.hasherUpdate(hasher);
             }
-            if (self.value) |value|
-                value.hasherUpdate(hasher);
+            var index_iter = self.indices.iterator();
+            while (index_iter.next()) |*entry| {
+                hasher.update(mem.asBytes(entry));
+            }
         }
 
         fn keyEql(k1: Literal, k2: Literal) bool {
@@ -575,19 +687,36 @@ pub fn PatternWithContext(
         /// sub-patterns and if their debruijn variables are equal. The patterns
         /// are assumed to be in debruijn form already.
         pub fn eql(self: Self, other: Self) bool {
+            if (self.map.count() != other.map.count() or
+                self.indices.size != other.indices.size)
+                return false;
             var map_iter = self.map.iterator();
-            var other_iter = other.map.iterator();
+            var other_map_iter = other.map.iterator();
             while (map_iter.next()) |entry| {
-                const other_entry = other_iter.next() orelse
+                const other_entry = other_map_iter.next() orelse
                     return false;
-                if (!(entry.key_ptr.*.eql(other_entry.key_ptr.*) and
-                    entry.value_ptr == other_entry.value_ptr))
+                if (!(entry.key_ptr.*.eql(other_entry.key_ptr.*)) or
+                    entry.value_ptr != other_entry.value_ptr)
                     return false;
             }
-            return if (self.value) |self_value| if (other.value) |other_value|
-                self_value.eql(other_value.*)
-            else
-                false else other.value == null;
+            var index_iter = self.indices.iterator();
+            var other_index_iter = other.indices.iterator();
+            while (index_iter.next()) |entry| {
+                const other_entry = other_index_iter.next() orelse
+                    return false;
+                const val = entry.value_ptr.*;
+                const other_index = other_entry.value_ptr.*;
+                if (entry.key_ptr.* != other_entry.key_ptr.* or
+                    meta.activeTag(val) != meta.activeTag(other_index))
+                    return false;
+                switch (val) {
+                    .branch => |branch| if (branch != other_index.branch)
+                        return false,
+                    .value => |value| if (!value.eql(other_index.value.*))
+                        return false,
+                }
+            }
+            return true;
         }
 
         pub fn create(allocator: Allocator) !*Self {
@@ -657,25 +786,47 @@ pub fn PatternWithContext(
                 null;
         }
 
+        pub fn put(
+            pattern: *Self,
+            allocator: Allocator,
+            key: Apps,
+            optional_value: ?*Node,
+        ) Allocator.Error!*Self {
+            const len = pattern.indices.size;
+            var branch = pattern;
+            branch = try branch.ensurePath(allocator, len, key);
+            // If there isn't a value, use the key as the value instead.
+            try branch.indices.put(
+                allocator,
+                pattern.indices.size,
+                Index{ .value = optional_value orelse
+                    try Node.ofApps(key).clone(allocator) },
+            );
+            return branch;
+        }
+
         /// As a pattern is matched, a hashmap for vars is populated with
         /// each var's bound variable. These can the be used by the caller for
         /// rewriting.
-        /// All nodes are copied, not moved, into the pattern.
-        pub fn getOrPutTerm(
+        /// Nodes are borrowed into the pattern unless a memory manager was
+        /// provided, in which case they are copied.
+        /// Returns a pointer to the updated pattern node.
+        pub fn putTerm(
             pattern: *Self,
             allocator: Allocator,
-            node: Node,
-        ) Allocator.Error!*Self {
+            term: Node,
+        ) Allocator.Error!*Node {
             var result = pattern;
-            switch (node) {
+            const len = pattern.indices.size;
+            switch (term) {
                 inline .key, .variable, .var_apps => {
                     const get_or_put = try pattern.map
-                        .getOrPutValue(allocator, node, Self{});
+                        .getOrPutValue(allocator, term, Self{});
                     if (get_or_put.found_existing) {
                         print("Found existing\n", .{});
                     } else {
                         // New keys must be copied because we don't own Node
-                        get_or_put.key_ptr.* = try node.copy(allocator);
+                        get_or_put.key_ptr.* = try term.copy(allocator);
                     }
                     result = get_or_put.value_ptr;
                 },
@@ -706,52 +857,60 @@ pub fn PatternWithContext(
                     // All op types are encoded the same way after their top level
                     // hash. These don't need special treatment because their
                     // structure is simple, and their operator unique.
-                    result = try get_or_put.value_ptr.getOrPut(allocator, apps);
-                    const next = result.value orelse blk: {
-                        const pat = try Node.createPattern(allocator, Self{});
-                        result.value = pat;
-                        break :blk pat;
-                    };
-                    result = &next.pattern;
+                    result = try get_or_put.value_ptr
+                        .ensurePath(allocator, len, apps);
+                    // TODO
+                    // const pat = try Self.create(allocator);
+                    // try result.indices.put(allocator, len, Index{ .branch = pat });
+                    // result = &pat.pattern;
                 },
             }
-            return result;
+            // The length of values will be the next entry index after insertion
+            const get_or_put = try result.indices
+                .getOrPut(allocator, result.indices.size);
+            get_or_put.value_ptr.* = Index{ .value = undefined };
+            return get_or_put.value_ptr.*.value;
         }
 
-        pub fn getOrPut(
+        /// Follows or creates a path as necessary in the pattern's trie and
+        /// indices.
+        fn ensurePath(
             pattern: *Self,
             allocator: Allocator,
+            len: usize,
             apps: Apps,
-        ) Allocator.Error!*Self {
-            var result = pattern;
-            for (apps.root) |app|
-                result = try result.getOrPutTerm(allocator, app);
-            return result;
+        ) !*Self {
+            _ = len; // autofix
+            _ = apps; // autofix
+            _ = allocator; // autofix
+            // TODO
+            return pattern;
         }
 
-        /// Add a node to the pattern by following `key`.
+        /// Add a value to the pattern by following `key`. If the value is null,
+        /// a reference to the key will be added instead in its place.
         /// Allocations:
         /// - The path followed by apps is allocated and copied recursively
         /// - The node, if given, is allocated and copied recursively
         /// Returns a pointer to the pattern directly containing
-        /// `optional_val`.
-        pub fn put(
-            self: *Self,
+        /// `optional_value`.
+        pub fn getOrPutAtIndex(
+            pattern: *Self,
             allocator: Allocator,
-            apps: Apps,
-            maybe_value: ?Apps,
-        ) Allocator.Error!void {
-            const result = try self.getOrPut(allocator, apps);
-            if (maybe_value) |value| {
-                if (result.value) |prev_value| {
-                    print("Deleting old value: {*}\n", .{prev_value});
-                    prev_value.writeIndent(streams.err, null) catch unreachable;
-                    print("\n", .{});
-                    prev_value.destroy(allocator);
-                }
-                // print("Put Hash: {}\n", .{node.hash()});
-                result.value = try Node.ofApps(value).clone(allocator);
+            key: Apps,
+            optional_value: ?Apps,
+        ) Allocator.Error!*Self {
+            var result = pattern;
+            const index = pattern.indices.size;
+            for (key.root) |app| {
+                result = try result.getOrPutTermAtIndex(
+                    allocator,
+                    index,
+                    app,
+                    optional_value,
+                );
             }
+            return result;
         }
 
         /// Add a node to the pattern by following `keys`, wrapping them into an
@@ -770,7 +929,12 @@ pub fn PatternWithContext(
             var apps = allocator.alloc(Literal, keys.len);
             defer apps.free(allocator);
             for (apps, keys) |*app, key|
-                app.* = Node.ofKey(try Manager.copy(allocator, key));
+                app.* = Node.ofKey(
+                    if (MemManager) |Manager|
+                        try Manager.copy(allocator, key)
+                    else
+                        key,
+                );
 
             return self.put(
                 allocator,
@@ -809,14 +973,20 @@ pub fn PatternWithContext(
             };
         }
 
-        /// The longest length of a match of apps against a pattern. If an apps
-        /// matched, leaf will be the last match term result that wasn't null.
+        /// An iterator for all matches of a given apps against a pattern. If
+        /// an apps matched, leaf will be the last match term result that wasn't
+        /// null.
         const Match = struct {
             value: ?*Node = null, // Null if a branch was found, but no value
             len: usize = 0, // Checks if complete or partial match
             index: usize = 0, // The bounds subsequent matches should be within
             // TODO: append varmaps instead of mutating
             // var_map: LiteralPtrMap = LiteralPtrMap{}, // Bound variables
+
+            pub fn next(self: *Match) ?*Node {
+                _ = self;
+                return null;
+            }
 
             pub fn deinit(self: *Match) void {
                 _ = self;
@@ -956,8 +1126,7 @@ pub fn PatternWithContext(
         ) Allocator.Error!Match {
             var current = self;
             var result = Match{
-                .value = self.value,
-                // .indices = indices
+                // .value = nu,
             };
             if (current.getVarApps()) |var_apps_next| {
                 // Store as a Node for convenience
@@ -977,17 +1146,18 @@ pub fn PatternWithContext(
                     print("New Var Apps: {s}\n", .{var_result.key_ptr.*});
                     var_result.value_ptr.* = node;
                 }
-                result.value = var_apps_next.next.value;
+                // result.value = var_apps_next.next.value;
                 result.len = apps.root.len;
             } else for (apps.root, 1..) |app, len| {
                 // TODO: save var_map state and restore if partial match and var
                 // apps
                 if (try current.branchTerm(allocator, var_map, app)) |branch| {
                     current = branch.pattern;
-                    if (current.value) |value| {
-                        result.value = value;
-                        result.len = len;
-                    }
+                    // if (current.value) |value| {
+                    //     result.value = value;
+                    //     result.len = len;
+                    // }
+                    _ = len;
                 } else break;
             }
             return result;
@@ -1006,10 +1176,12 @@ pub fn PatternWithContext(
         ) Allocator.Error!Apps {
             var result = ArrayListUnmanaged(Node){};
             for (apps.root) |node| switch (node) {
-                .key => |key| try result.append(
-                    allocator,
-                    Node.ofKey(try Manager.copy(allocator, key)),
-                ),
+                .key => |key| try result.append(allocator, Node.ofKey(
+                    if (MemManager) |Manager|
+                        try Manager.copy(allocator, key)
+                    else
+                        key,
+                )),
                 .variable => |variable| {
                     print("Var get: ", .{});
                     if (var_map.get(variable)) |var_node|
@@ -1180,11 +1352,15 @@ pub fn PatternWithContext(
             writer: anytype,
             optional_indent: ?usize,
         ) @TypeOf(writer).Error!void {
-            if (self.value) |value| {
-                try writer.writeAll("❬");
-                try value.writeIndent(writer, null);
-                try writer.writeAll("❭ ");
+            try writer.writeAll("❬");
+            var value_iter = self.indices.valueIterator();
+            while (value_iter.next()) |index| {
+                if (index.* == .value)
+                    try index.value.writeIndent(writer, null);
+
+                try writer.writeAll(", ");
             }
+            try writer.writeAll("❭ ");
             const optional_indent_inc = if (optional_indent) |indent|
                 indent + indent_increment
             else

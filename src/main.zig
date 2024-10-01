@@ -96,10 +96,10 @@ fn replStep(
         const key = apps[0 .. apps.len - 1];
         const val = apps[apps.len - 1].arrow;
         // If not inserting, then try to match the expression
-        try pattern.put(
+        _ = try pattern.put(
             allocator,
             .{ .root = key, .height = tree.height },
-            val,
+            try Pat.Node.createApps(allocator, val),
         );
     } else {
         // TODO: put into a comptime for eval kind
