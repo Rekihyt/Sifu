@@ -939,3 +939,7 @@ the way.
 
 - Deep/Shallow copy idempotency
 
+### Memory Manager
+- Probably necessary for deletion, which is maybe necessary for long running
+programs? Matching requires temporary allocation but can simply use a separate
+allocator.

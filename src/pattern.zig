@@ -31,7 +31,6 @@ pub fn StringPattern() type {
     return PatternWithContext(
         []const u8,
         StringContext,
-        StringMemManager,
     );
 }
 
@@ -47,16 +46,6 @@ pub fn Pattern(
         null,
     );
 }
-
-const StringMemManager = struct {
-    fn copy(allocator: Allocator, str: []const u8) ![]const u8 {
-        return allocator.dupe(u8, str);
-    }
-    fn deinit(allocator: Allocator, str: []const u8) void {
-        // print("Freeing {s}\n", .{str});
-        return allocator.free(str);
-    }
-};
 
 pub fn CopyByValue(comptime T: type) type {
     // No-ops for unmanaged copying by value
@@ -99,7 +88,6 @@ const t = @import("test.zig");
 pub fn PatternWithContext(
     comptime Literal: type,
     comptime Ctx: type,
-    comptime MemManager: ?type,
 ) type {
     return struct {
         pub const Self = @This();
@@ -116,6 +104,15 @@ pub fn PatternWithContext(
         pub const Index = union(enum) {
             branch: usize,
             value: *Node,
+
+            pub fn copy(self: Index, allocator: Allocator) !Index {
+                return switch (self) {
+                    .branch => self,
+                    .value => |value| .{
+                        .value = try value.clone(allocator),
+                    },
+                };
+            }
         };
         pub const IndexMap = std.AutoHashMapUnmanaged(usize, Index);
         /// This is a pointer to the pattern at the end of some path of nodes,
@@ -162,8 +159,7 @@ pub fn PatternWithContext(
             // Clears all memory and resets this Apps's root to an empty apps.
             pub fn deinit(apps: Apps, allocator: Allocator) void {
                 for (apps.root) |*app| {
-                    comptime if (MemManager)
-                        @constCast(app).deinit(allocator);
+                    @constCast(app).deinit(allocator);
                 }
                 allocator.free(apps.root);
             }
@@ -259,11 +255,7 @@ pub fn PatternWithContext(
             ) Allocator.Error!Node {
                 return switch (self) {
                     inline .key, .variable, .var_apps => |literal, tag| {
-                        const literal_copy = if (MemManager) |Manager|
-                            try Manager.copy(allocator, literal)
-                        else
-                            literal;
-                        return @unionInit(Node, @tagName(tag), literal_copy);
+                        return @unionInit(Node, @tagName(tag), literal);
                     },
                     .pattern => |p| Node.ofPattern(try p.copy(allocator)),
                     inline else => |apps, tag| @unionInit(
@@ -288,10 +280,7 @@ pub fn PatternWithContext(
 
             pub fn deinit(self: Node, allocator: Allocator) void {
                 switch (self) {
-                    inline .key, .variable, .var_apps => |literal| {
-                        if (comptime MemManager) |Manager|
-                            Manager.deinit(allocator, literal);
-                    },
+                    .key, .variable, .var_apps => {},
                     .pattern => |*p| @constCast(p).deinit(allocator),
                     inline else => |apps| apps.deinit(allocator),
                 }
@@ -604,23 +593,16 @@ pub fn PatternWithContext(
                     try entry.value_ptr.copy(allocator),
                 );
 
-            // If values are owned refs, then a clone would point to the
-            // original's values, so we need to manually copy the indices map.
-            if (MemManager) |_| {
-                var index_iter = self.indices.iterator();
-                while (index_iter.next()) |entry| {
-                    const index = entry.key_ptr.*;
-                    const index_node = entry.value_ptr.*;
-                    const index_node_copy = if (index_node == .value)
-                        Index{ .value = try index_node.value.clone(allocator) }
-                    else
-                        index_node;
-                    // Insert a borrowed pointer to the new key copy
-                    try result.indices
-                        .putNoClobber(allocator, index, index_node_copy);
-                }
-            } else result.indices = try self.indices.clone(allocator);
-
+            // Deep copy the indices map
+            var index_iter = self.indices.iterator();
+            while (index_iter.next()) |entry| {
+                const index = entry.key_ptr.*;
+                const index_node = entry.value_ptr.*;
+                const index_node_copy = try index_node.copy(allocator);
+                // Insert a borrowed pointer to the new key copy
+                try result.indices
+                    .putNoClobber(allocator, index, index_node_copy);
+            }
             return result;
         }
 
@@ -929,12 +911,7 @@ pub fn PatternWithContext(
             var apps = allocator.alloc(Literal, keys.len);
             defer apps.free(allocator);
             for (apps, keys) |*app, key|
-                app.* = Node.ofKey(
-                    if (MemManager) |Manager|
-                        try Manager.copy(allocator, key)
-                    else
-                        key,
-                );
+                app.* = Node.ofKey(key);
 
             return self.put(
                 allocator,
@@ -1176,12 +1153,7 @@ pub fn PatternWithContext(
         ) Allocator.Error!Apps {
             var result = ArrayListUnmanaged(Node){};
             for (apps.root) |node| switch (node) {
-                .key => |key| try result.append(allocator, Node.ofKey(
-                    if (MemManager) |Manager|
-                        try Manager.copy(allocator, key)
-                    else
-                        key,
-                )),
+                .key => |key| try result.append(allocator, Node.ofKey(key)),
                 .variable => |variable| {
                     print("Var get: ", .{});
                     if (var_map.get(variable)) |var_node|
