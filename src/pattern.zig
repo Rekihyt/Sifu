@@ -729,7 +729,7 @@ pub fn PatternWithContext(
             return switch (node) {
                 .key, .variable => pattern.map.get(node),
                 .apps => |sub_apps| blk: {
-                    const sub_pat = pattern.map.get(Node.ofApps(&.{})) orelse
+                    const sub_pat = pattern.map.get(Node.ofApps(.{})) orelse
                         break :blk null;
                     if (sub_pat.get(sub_apps)) |maybe_sub_value|
                         if (maybe_sub_value.value) |value|
@@ -744,12 +744,12 @@ pub fn PatternWithContext(
         /// following `apps`
         pub fn getPrefix(
             pattern: Self,
-            apps: []const Node,
+            apps: Apps,
         ) ExactPrefix {
             var current = pattern;
             const index: usize = undefined; // TODO
             // Follow the longest branch that exists
-            const prefix_len = for (apps, 0..) |app, i| {
+            const prefix_len = for (apps.root, 0..) |app, i| {
                 current = current.getTerm(app) orelse
                     break i;
             } else apps.len;
@@ -759,7 +759,7 @@ pub fn PatternWithContext(
 
         pub fn get(
             pattern: Self,
-            apps: []const Node,
+            apps: Apps,
         ) ?Self {
             const prefix = pattern.getPrefix(apps);
             return if (prefix.len == apps.len)
