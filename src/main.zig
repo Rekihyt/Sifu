@@ -98,13 +98,13 @@ fn replStep(
     if (apps.len > 0 and apps[apps.len - 1] == .arrow) {
         const key = apps[0 .. apps.len - 1];
         const val = apps[apps.len - 1].arrow;
-        // If not inserting, then try to match the expression
         _ = try pattern.put(
             allocator,
             .{ .root = key, .height = tree.height },
-            try Pat.Node.createApps(allocator, val),
+            try Pat.Node.ofApps(val).clone(allocator),
         );
     } else {
+        // If not inserting, then try to match the expression
         // TODO: put into a comptime for eval kind
         // print("Parsed ast hash: {}\n", .{ast.hash()});
         // TODO: change to get by index or something
