@@ -796,12 +796,53 @@ pub fn PatternWithContext(
         pub fn putTerm(
             pattern: *Self,
             allocator: Allocator,
-            term: Node,
+            apps: Apps,
+            optional_value: ?Node,
         ) Allocator.Error!*Node {
-            var result = pattern;
+            // The length of values will be the next entry index after insertion
             const len = pattern.indices.size;
-            switch (term) {
-                inline .key, .variable, .var_apps => {
+            return pattern.ensurePath(
+                allocator,
+                len,
+                apps,
+                try (optional_value orelse apps).clone(allocator),
+            );
+        }
+
+        fn ensurePath(
+            pattern: *Self,
+            allocator: Allocator,
+            index: usize,
+            apps: Apps,
+        ) !*Self {
+            var current = pattern;
+            for (apps.root) |app| {
+                current = try pattern
+                    .ensurePathTerm(allocator, index, app);
+            }
+            return current;
+        }
+
+        /// Follows or creates a path as necessary in the pattern's trie and
+        /// indices.
+        fn ensurePathTerm(
+            pattern: *Self,
+            allocator: Allocator,
+            index: usize,
+            term: Node,
+        ) Allocator.Error!*Self {
+
+            // TODO
+            // const pat = try Self.create(allocator);
+            // try result.indices.put(allocator, len, Index{ .branch = pat });
+            // result = &pat.pattern;
+
+            // const get_or_put = try pattern.indices
+            //     .getOrPut(allocator, index);
+            // get_or_put.value_ptr.* = Index{ .value = undefined };
+            // return get_or_put.value_ptr.*.value;
+            return switch (term) {
+                inline .key, .variable, .var_apps => blk: {
                     const get_or_put = try pattern.map
                         .getOrPutValue(allocator, term, Self{});
                     if (get_or_put.found_existing) {
@@ -810,10 +851,10 @@ pub fn PatternWithContext(
                         // New keys must be copied because we don't own Node
                         get_or_put.key_ptr.* = try term.copy(allocator);
                     }
-                    result = get_or_put.value_ptr;
+                    break :blk get_or_put.value_ptr;
                 },
                 .pattern => |sub_pat| {
-                    const get_or_put = try result.map.getOrPutValue(
+                    const get_or_put = try pattern.map.getOrPutValue(
                         allocator,
                         Node.ofPattern(Self{}),
                         Self{},
@@ -827,11 +868,11 @@ pub fn PatternWithContext(
                 // The resulting encoding appears counter-intuitive when printed
                 // because each level of nesting must be a branch to enable
                 // pattern matching.
-                inline else => |apps, tag| {
+                inline else => |apps, tag| blk: {
                     // Get or put a level of nesting as an empty node branch to
                     // a new pattern.
                     // No need to copy here because empty slices have 0 length
-                    const get_or_put = try result.map.getOrPutValue(
+                    const get_or_put = try pattern.map.getOrPutValue(
                         allocator,
                         @unionInit(Node, @tagName(tag), .{}),
                         Self{},
@@ -839,36 +880,13 @@ pub fn PatternWithContext(
                     // All op types are encoded the same way after their top level
                     // hash. These don't need special treatment because their
                     // structure is simple, and their operator unique.
-                    result = try get_or_put.value_ptr
-                        .ensurePath(allocator, len, apps);
-                    // TODO
-                    // const pat = try Self.create(allocator);
-                    // try result.indices.put(allocator, len, Index{ .branch = pat });
-                    // result = &pat.pattern;
+                    break :blk try get_or_put.value_ptr
+                        .ensurePath(allocator, index, apps);
                 },
-            }
-            // The length of values will be the next entry index after insertion
-            const get_or_put = try result.indices
-                .getOrPut(allocator, result.indices.size);
-            get_or_put.value_ptr.* = Index{ .value = undefined };
-            return get_or_put.value_ptr.*.value;
+            };
         }
 
-        /// Follows or creates a path as necessary in the pattern's trie and
-        /// indices.
-        fn ensurePath(
-            pattern: *Self,
-            allocator: Allocator,
-            len: usize,
-            apps: Apps,
-        ) !*Self {
-            _ = len; // autofix
-            _ = apps; // autofix
-            _ = allocator; // autofix
-            // TODO
-            return pattern;
-        }
-
+        // TODO: remove, getOrPut doesn't make sense
         /// Add a value to the pattern by following `key`. If the value is null,
         /// a reference to the key will be added instead in its place.
         /// Allocations:
