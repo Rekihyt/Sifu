@@ -776,12 +776,15 @@ pub fn PatternWithContext(
             // The length of values will be the next entry index after insertion
             const len = pattern.indices.size;
             var branch = pattern;
-            branch = try branch.ensurePath(allocator, len, key);
+            branch = (try branch.ensurePath(allocator, len, key)).value_ptr;
             // If there isn't a value, use the key as the value instead
             const value = Index{
                 .value = optional_value orelse
                     try Node.ofApps(key).clone(allocator),
             };
+            print("pattern len: {}\n", .{len});
+            print("indices len: {}\n", .{branch.indices.size});
+            // print("indices addr: {*}\n", .{&branch.indices});
             try branch.indices.put(allocator, len, value);
             return branch;
         }
@@ -797,10 +800,11 @@ pub fn PatternWithContext(
             allocator: Allocator,
             index: usize,
             apps: Apps,
-        ) !*Self {
-            var current = pattern;
+        ) !GetOrPutResult {
+            var current: GetOrPutResult = undefined;
+            current.value_ptr = pattern;
             for (apps.root) |app| {
-                current = try current
+                current = try current.value_ptr
                     .ensurePathTerm(allocator, index, app);
             }
             return current;
@@ -813,8 +817,8 @@ pub fn PatternWithContext(
             allocator: Allocator,
             index: usize,
             term: Node,
-        ) Allocator.Error!*Self {
-            const result = switch (term) {
+        ) Allocator.Error!GetOrPutResult {
+            const get_or_put = switch (term) {
                 inline .key, .variable, .var_apps => blk: {
                     const get_or_put = try pattern.keys
                         .getOrPutValue(allocator, term, Self{});
@@ -824,7 +828,7 @@ pub fn PatternWithContext(
                         // New keys must be copied because we don't own Node
                         get_or_put.key_ptr.* = try term.copy(allocator);
                     }
-                    break :blk get_or_put.value_ptr;
+                    break :blk get_or_put;
                 },
                 .pattern => |sub_pat| {
                     const get_or_put = try pattern.keys.getOrPutValue(
@@ -850,6 +854,11 @@ pub fn PatternWithContext(
                         @unionInit(Node, @tagName(tag), .{}),
                         Self{},
                     );
+                    try pattern.indices.putNoClobber(
+                        allocator,
+                        index,
+                        Index{ .branch = get_or_put.index },
+                    );
                     // All op types are encoded the same way after their top level
                     // hash. These don't need special treatment because their
                     // structure is simple, and their operator unique.
@@ -857,10 +866,15 @@ pub fn PatternWithContext(
                         .ensurePath(allocator, index, apps);
                 },
             };
-            // Index{ .branch = pattern.keys.size - 1 };
-            // try result.indices
-            //     .getOrPut(allocator, index);
-            return result;
+            // Add the next index (always unique, hence putNoClobber because
+            // patterns are append only) to the inner index of the node's key
+            // map
+            try pattern.indices.putNoClobber(
+                allocator,
+                index,
+                Index{ .branch = get_or_put.index },
+            );
+            return get_or_put;
         }
 
         // TODO: remove, getOrPut doesn't make sense
