@@ -1,16 +1,28 @@
 # Sifu, A Concatenative Language Based on Tries
 
-See some examples here: [https://sifu-lang.pages.dev/playground](playground)
+See some examples here: [playground](https://sifu-lang.pages.dev/playground)
+
+---
+
+### About
+
+Sifu is a Turing-incomplete programming language based on concatenative pattern
+matching. It aims to fill a niche for solving problems with finite time/
+memory requirements. Any program in Sifu will terminate, making it easier to
+reason about its effects. This also provides the possibility of proving
+arbitrary things about programs for safety-critical software, as the halting
+problem doesn't apply.
 
 ---
 
 ### Main Ideas
   
-  - Computation is a pattern match
+  - Computation is an ordered pattern match. Ordering is important, because it
+  ensures there is always a clear path to completion.
 
   - No turing completeness, everything terminates by matching entries whose
     index in the map is less than (or recursive/equal, but with structural
-    simplification) until a fixed point (any remaining indices contain no more
+    recursion) until a fixed point (any remaining indices contain no more
     matches).
 
   - Everything is a pattern map (like tries, but lookups have to deal with sub-lookups)

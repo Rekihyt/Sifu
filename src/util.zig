@@ -139,6 +139,25 @@ pub fn IntoArrayContext(comptime Key: type) type {
     };
 }
 
+/// Convert a type with a hash and eql function with typical signatures to a
+/// context compatible with std.hash_map.
+pub fn IntoContext(comptime Key: type) type {
+    return struct {
+        pub fn hash(self: @This(), key: Key) u64 {
+            _ = self;
+            return key.hash();
+        }
+        pub fn eql(
+            self: @This(),
+            key: Key,
+            other: Key,
+        ) bool {
+            _ = self;
+            return key.eql(other);
+        }
+    };
+}
+
 /// Curry a function. Necessary in cases where a type is unknown until after its
 /// parent's instantiation.
 pub fn Curry(
