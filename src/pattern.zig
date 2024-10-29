@@ -16,6 +16,7 @@ const first = util.first;
 const last = util.last;
 const streams = util.streams;
 const verbose_errors = @import("build_options").verbose_errors;
+const debug_mode = @import("builtin").mode == .Debug;
 
 pub fn AutoPattern(
     comptime Literal: type,
@@ -163,9 +164,6 @@ pub fn PatternWithContext(
                 allocator.free(apps.root);
             }
 
-            // pub fn writeSExp(self: Apps, writer: anytype, indent: ?usize) !void {
-            //     Node.ofApps(self);
-            // }
             pub fn eql(self: Apps, other: Apps) bool {
                 return self.height == other.height and
                     self.root.len == other.root.len and
@@ -796,20 +794,20 @@ pub fn PatternWithContext(
                 null;
         }
 
-        pub fn put(
+        pub fn append(
             pattern: *Self,
             allocator: Allocator,
             key: Apps,
             optional_value: ?*Node,
         ) Allocator.Error!*Self {
             // The length of values will be the next entry index after insertion
-            const len = pattern.indices.count();
+            const len = pattern.count();
             var branch = pattern;
             branch = (try branch.ensurePath(allocator, len, key)).value_ptr;
             // If there isn't a value, use the key as the value instead
             const value = optional_value orelse
                 try Node.ofApps(key).clone(allocator);
-            try branch.values.put(allocator, len, value);
+            try branch.values.putNoClobber(allocator, len, value);
             return branch;
         }
 
@@ -852,20 +850,22 @@ pub fn PatternWithContext(
             term: Node,
         ) Allocator.Error!NodeMap.Entry {
             const detached = term.detach();
-            const entry = switch (term) {
-                inline .key, .variable, .var_apps => blk: {
-                    const entry = try pattern.keys
-                        .getOrPutValue(allocator, detached, Self{});
-                    break :blk entry;
-                },
+            // Get or put a literal or a level of nesting as an empty node
+            // branch to a new pattern.
+            // No need to copy here because empty slices have 0 length
+            var entry = try pattern.keys.getOrPutValue(
+                allocator,
+                detached,
+                Self{},
+            );
+            try pattern.indices.putNoClobber(allocator, index, Branch{
+                .term = entry.key_ptr,
+                .next = entry.value_ptr,
+            });
+            switch (term) {
+                inline .key, .variable, .var_apps => {},
                 .pattern => |sub_pat| {
-                    const get_or_put = try pattern.keys.getOrPutValue(
-                        allocator,
-                        DetachedNode{ .pattern = {} },
-                        Self{},
-                    );
                     _ = sub_pat;
-                    _ = get_or_put;
                     @panic("unimplemented\n");
                 },
                 // App pattern's values will always be patterns too, which will
@@ -873,33 +873,21 @@ pub fn PatternWithContext(
                 // The resulting encoding appears counter-intuitive when printed
                 // because each level of nesting must be a branch to enable
                 // pattern matching.
-                inline else => |apps, tag| blk: {
-                    // Get or put a level of nesting as an empty node branch to
-                    // a new pattern.
-                    // No need to copy here because empty slices have 0 length
-                    const entry = try pattern.keys.getOrPutValue(
-                        allocator,
-                        @unionInit(DetachedNode, @tagName(tag), {}),
-                        Self{},
-                    );
-                    try pattern.indices.putNoClobber(allocator, index, Branch{
-                        .term = entry.key_ptr,
-                        .next = entry.value_ptr,
-                    });
+                inline else => |apps| {
                     // All op types are encoded the same way after their top level
                     // hash. These don't need special treatment because their
                     // structure is simple, and their operator unique.
-                    break :blk try entry.value_ptr
+                    entry = try entry.value_ptr
                         .ensurePath(allocator, index, apps);
+                    // Add the next index (always unique because patterns are
+                    // append only, hence putNoClobber) to the inner index of
+                    // the node's key map
+                    try entry.value_ptr.indices.putNoClobber(allocator, index, Branch{
+                        .term = entry.key_ptr,
+                        .next = entry.value_ptr,
+                    });
                 },
-            };
-            // Add the next index (always unique because patterns are append
-            // only, hence putNoClobber) to the inner index of the node's key
-            // map
-            try pattern.indices.putNoClobber(allocator, index, Branch{
-                .term = entry.key_ptr,
-                .next = entry.value_ptr,
-            });
+            }
             return entry;
         }
 
@@ -948,7 +936,8 @@ pub fn PatternWithContext(
 
         /// The resulting pattern and match index (if any) from a partial,
         /// successful matching (otherwise null is returned from `match`),
-        /// therefore `pattern` is always a child of the root.
+        /// therefore `pattern` is always a child of the root. This type is
+        /// similar to IndexMap.Entry.
         const BranchResult = struct {
             pattern: *Self,
             index: usize, // where this term matched in the node map
@@ -958,7 +947,8 @@ pub fn PatternWithContext(
         /// anything in the pattern, and vars in the pattern match anything in
         /// the expression. Includes partial prefixes (ones that don't match all
         /// apps). This function returns any pattern branches, even if their
-        /// value is null, unlike `match`.
+        /// value is null, unlike `match`. The position defines the index where
+        /// allowable matches begin.
         /// - Any node matches a var pattern including a var (the var node is
         ///   then stored in the var map like any other node)
         /// - A var node doesn't match a non-var pattern (var matching is one
@@ -979,7 +969,7 @@ pub fn PatternWithContext(
             self: *Self,
             allocator: Allocator,
             bindings: *VarBindings,
-            index: usize,
+            position: usize,
             node: Node,
         ) Allocator.Error!?BranchResult {
             const detached_node = node.detach();
@@ -996,22 +986,22 @@ pub fn PatternWithContext(
                     // previously matched indices
                     // TODO: Check vars if this fails, and prioritize index
                     // ordering over exact literal matches
-                    const next_index = for (next.indices.keys()) |next_index| {
-                        if (next_index >= index)
-                            break next_index;
+                    const index = for (next.indices.keys()) |index| {
+                        if (index >= position)
+                            break index;
                     } else {
                         print(
                             \\Next index of {} is greater than current index
                             \\ {}, not matching.
                             \\
                         ,
-                            .{ next.indices.count(), index },
+                            .{ next.indices.count(), position },
                         );
                         break :blk null;
                     };
-                    print(" at index: {}", .{next_index});
+                    print(" at index: {}\n", .{index});
                     break :blk BranchResult{
-                        .index = next_index,
+                        .index = index,
                         .pattern = entry.value_ptr,
                     };
                 } else null,
@@ -1019,18 +1009,22 @@ pub fn PatternWithContext(
                 .pattern => @panic("unimplemented"), // |pattern| {},
                 inline else => |sub_apps, tag| blk: {
                     // Check Var as Alternative here, but this probably can't be
-                    // a recursive call without a SO
+                    // a recursive call without a stack overflow
                     print("Branching subapps\n", .{});
                     var next = self.keys.get(
                         @unionInit(DetachedNode, @tagName(tag), {}),
                     ) orelse break :blk null;
-                    _ = sub_apps;
-                    next = next; // autofix
-                    // const pat_node =
-                    //     try next.matchAll(allocator, bindings, sub_apps) orelse
-                    //     break :blk null;
-                    @panic("unimplemented");
-                    // break :blk BranchResult{ .pattern = &pat_node.values };
+                    var matches =
+                        try next.matchAll(allocator, bindings, sub_apps) orelse
+                        break :blk null;
+                    const entry = while (matches.values.next()) |entry| {
+                        if (entry.key_ptr.* >= position)
+                            break entry;
+                    } else break :blk null;
+                    break :blk BranchResult{
+                        .index = entry.key_ptr.*,
+                        .pattern = &entry.value_ptr.*.pattern,
+                    };
                 },
             } orelse if (self.var_cache.count() > 0) blk: {
                 // index += 1; // TODO use as limit
@@ -1075,7 +1069,7 @@ pub fn PatternWithContext(
         ) Allocator.Error!?Match {
             const result = try self.match(allocator, bindings, apps);
             // TODO: rollback map if match fails partway
-            const prev_len = bindings.keys().len;
+            const prev_len = bindings.size;
             _ = prev_len;
             print("Match All\n", .{});
             // print("Result and Query len equal: {}\n", .{result.len == apps.len});
@@ -1312,6 +1306,10 @@ pub fn PatternWithContext(
             return result.toOwnedSlice(allocator);
         }
 
+        pub fn count(self: Self) usize {
+            return self.indices.count() + self.values.count();
+        }
+
         /// Pretty print a pattern on multiple lines
         pub fn pretty(self: Self, writer: anytype) !void {
             try self.writeIndent(writer, 0);
@@ -1320,6 +1318,52 @@ pub fn PatternWithContext(
         /// Print a pattern without newlines
         pub fn write(self: Self, writer: anytype) !void {
             try self.writeIndent(writer, null);
+        }
+
+        /// Writes a single entry in the pattern canonically. Index must be
+        /// valid.
+        pub fn writeIndex(self: Self, writer: anytype, index: usize) !void {
+            var nested = std.BoundedArray(enum { apps, pattern }, 4096){};
+            var current = self;
+            if (comptime debug_mode)
+                try writer.print("{} | ", .{index});
+            while (current.indices.get(index)) |branch| {
+                // Get the next continuation of the pattern after a level of
+                // nesting, which is wrapped as a value
+                if (current.values.get(index)) |next| {
+                    switch (nested.popOrNull() orelse break) {
+                        .apps => try writer.writeByte(')'),
+                        .pattern => try writer.writeByte('}'),
+                    }
+                    current = next.pattern;
+                }
+                switch (branch.term.*) {
+                    .key, .variable, .var_apps => |term| {
+                        try writer.writeAll(term);
+                        try writer.writeByte(' ');
+                    },
+                    .apps => {
+                        try nested.append(.apps);
+                        try writer.writeByte('(');
+                    },
+                    .pattern => {
+                        try nested.append(.pattern);
+                        try writer.writeByte('{');
+                    },
+                    else => @panic("unimplemented"),
+                }
+                current = branch.next.*;
+            }
+            try writer.writeAll("-> ");
+            try current.values.get(index).?.write(writer);
+        }
+
+        /// Print a pattern in order based on indices.
+        pub fn writeCanonical(self: Self, writer: anytype) !void {
+            for (0..self.count()) |index| {
+                try self.writeIndex(writer, index);
+                try writer.writeByte('\n');
+            }
         }
 
         pub const indent_increment = 2;

@@ -99,7 +99,7 @@ fn replStep(
         const key = apps[0 .. apps.len - 1];
         const val = apps[apps.len - 1].arrow;
         // TODO: calculate correct tree height
-        _ = try pattern.put(
+        _ = try pattern.append(
             allocator,
             .{ .root = key, .height = tree.height },
             try Pat.Node.ofApps(val).clone(allocator),
@@ -134,4 +134,5 @@ fn replStep(
         // try writer.writeByte('\n');
     }
     try pattern.pretty(writer);
+    try pattern.writeCanonical(writer);
 }
