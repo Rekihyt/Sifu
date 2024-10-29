@@ -803,7 +803,7 @@ pub fn PatternWithContext(
             // The length of values will be the next entry index after insertion
             const len = pattern.count();
             var branch = pattern;
-            branch = (try branch.ensurePath(allocator, len, key)).value_ptr;
+            branch = try branch.ensurePath(allocator, len, key);
             // If there isn't a value, use the key as the value instead
             const value = optional_value orelse
                 try Node.ofApps(key).clone(allocator);
@@ -827,16 +827,11 @@ pub fn PatternWithContext(
             allocator: Allocator,
             index: usize,
             apps: Apps,
-        ) !NodeMap.Entry {
-            var current: NodeMap.Entry = .{
-                .key_ptr = undefined, // TODO: determine if this is ok
-                .value_ptr = pattern,
-                // .index = undefined,
-                // .found_existing = true,
-            };
+        ) !*Self {
+            var current = pattern;
             for (apps.root) |app| {
-                current = try current.value_ptr
-                    .ensurePathTerm(allocator, index, app);
+                const entry = try current.ensurePathTerm(allocator, index, app);
+                current = entry.value_ptr;
             }
             return current;
         }
@@ -877,15 +872,20 @@ pub fn PatternWithContext(
                     // All op types are encoded the same way after their top level
                     // hash. These don't need special treatment because their
                     // structure is simple, and their operator unique.
-                    entry = try entry.value_ptr
+                    var next = try entry.value_ptr
                         .ensurePath(allocator, index, apps);
                     // Add the next index (always unique because patterns are
                     // append only, hence putNoClobber) to the inner index of
                     // the node's key map
-                    try entry.value_ptr.indices.putNoClobber(allocator, index, Branch{
-                        .term = entry.key_ptr,
-                        .next = entry.value_ptr,
-                    });
+                    const get_or_put = try next.values.getOrPut(
+                        allocator,
+                        index,
+                    );
+                    if (!get_or_put.found_existing) {
+                        get_or_put.value_ptr.* = try Node
+                            .createPattern(allocator, Self{});
+                    }
+                    entry.value_ptr = &get_or_put.value_ptr.*.pattern;
                 },
             }
             return entry;
@@ -1328,15 +1328,6 @@ pub fn PatternWithContext(
             if (comptime debug_mode)
                 try writer.print("{} | ", .{index});
             while (current.indices.get(index)) |branch| {
-                // Get the next continuation of the pattern after a level of
-                // nesting, which is wrapped as a value
-                if (current.values.get(index)) |next| {
-                    switch (nested.popOrNull() orelse break) {
-                        .apps => try writer.writeByte(')'),
-                        .pattern => try writer.writeByte('}'),
-                    }
-                    current = next.pattern;
-                }
                 switch (branch.term.*) {
                     .key, .variable, .var_apps => |term| {
                         try writer.writeAll(term);
@@ -1353,9 +1344,19 @@ pub fn PatternWithContext(
                     else => @panic("unimplemented"),
                 }
                 current = branch.next.*;
+                // Get the next continuation of the pattern after a level of
+                // nesting, which is wrapped as a value
+                if (current.values.get(index)) |next| {
+                    switch (nested.popOrNull() orelse break) {
+                        .apps => try writer.writeByte(')'),
+                        .pattern => try writer.writeByte('}'),
+                    }
+                    try writer.writeByte(' ');
+                    current = next.pattern;
+                }
             }
             try writer.writeAll("-> ");
-            try current.values.get(index).?.write(writer);
+            try current.values.get(index).?.writeIndent(writer, null);
         }
 
         /// Print a pattern in order based on indices.
