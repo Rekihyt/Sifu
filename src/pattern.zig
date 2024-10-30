@@ -813,12 +813,11 @@ pub fn PatternWithContext(
 
         /// Creates the necessary branches and key entries in the pattern for
         /// apps, and returns a pointer to the branch at the end of the path.
-        /// While similar, this is not a get_or_put equivalent, as that isn't a
-        /// supported operation for patterns (put only appends, never updates).
+        /// While similar to a hashmap's getOrPut function, ensurePath always
+        /// adds a new index, asserting that it did not already exist. There is
+        /// no getOrPut equivalent for patterns because they are append-only.
         ///
-        /// As a pattern is matched, a hashmap for vars is populated
-        /// with each var's bound variable. These can the be used by the caller
-        /// for rewriting.
+        /// The index must not already be in the pattern.
         /// Apps are copied.
         /// Returns a pointer to the updated pattern node. If the given apps is
         /// empty (0 len), the returned key and index are undefined.
@@ -869,14 +868,14 @@ pub fn PatternWithContext(
                 // because each level of nesting must be a branch to enable
                 // pattern matching.
                 inline else => |apps| {
-                    // All op types are encoded the same way after their top level
-                    // hash. These don't need special treatment because their
-                    // structure is simple, and their operator unique.
+                    // All op types are encoded the same way after their top
+                    // level hash. These don't need special treatment because
+                    // their structure is simple, and their operator unique.
                     var next = try entry.value_ptr
                         .ensurePath(allocator, index, apps);
                     // Add the next index (always unique because patterns are
                     // append only, hence putNoClobber) to the inner index of
-                    // the node's key map
+                    // the node's key map.
                     const get_or_put = try next.values.getOrPut(
                         allocator,
                         index,
@@ -939,7 +938,7 @@ pub fn PatternWithContext(
         /// therefore `pattern` is always a child of the root. This type is
         /// similar to IndexMap.Entry.
         const BranchResult = struct {
-            pattern: *Self,
+            pattern: Self,
             index: usize, // where this term matched in the node map
         };
 
@@ -948,7 +947,9 @@ pub fn PatternWithContext(
         /// the expression. Includes partial prefixes (ones that don't match all
         /// apps). This function returns any pattern branches, even if their
         /// value is null, unlike `match`. The position defines the index where
-        /// allowable matches begin.
+        /// allowable matches begin. As a pattern is matched, a hashmap for vars
+        /// is populated with each var's bound variable. These can the be used
+        /// by the caller for rewriting.
         /// - Any node matches a var pattern including a var (the var node is
         ///   then stored in the var map like any other node)
         /// - A var node doesn't match a non-var pattern (var matching is one
@@ -976,9 +977,10 @@ pub fn PatternWithContext(
             print("Branching `", .{});
             node.writeSExp(streams.err, null) catch unreachable;
             print("`, ", .{});
+            var index = position;
             return switch (node) {
                 .key => if (self.keys.getEntry(detached_node)) |entry| blk: {
-                    const next = entry.value_ptr.*;
+                    const current = entry.value_ptr.*;
                     print("exactly: {s}\n", .{node.key});
 
                     // Check that in the branch matched, there is a valid index
@@ -986,23 +988,35 @@ pub fn PatternWithContext(
                     // previously matched indices
                     // TODO: Check vars if this fails, and prioritize index
                     // ordering over exact literal matches
-                    const index = for (next.indices.keys()) |index| {
-                        if (index >= position)
-                            break index;
+                    if (current.indices.get(position)) |branch|
+                        break :blk BranchResult{
+                            .pattern = branch.next.*,
+                            .index = index,
+                        }
+                    else if (current.values.contains(position))
+                        break :blk BranchResult{
+                            .pattern = current,
+                            .index = index,
+                        }
+                    else for (current.indices.keys()) |next_index| {
+                        if (index > position) {
+                            index = next_index;
+                            break;
+                        }
                     } else {
                         print(
-                            \\Next index of {} is greater than current index
-                            \\ {}, not matching.
+                            \\Highest index of {} is smaller than current
+                            \\ position {}, not matching.
                             \\
                         ,
-                            .{ next.indices.count(), position },
+                            .{ index, position },
                         );
                         break :blk null;
-                    };
+                    }
                     print(" at index: {}\n", .{index});
                     break :blk BranchResult{
                         .index = index,
-                        .pattern = entry.value_ptr,
+                        .pattern = current,
                     };
                 } else null,
                 .variable, .var_apps => @panic("unimplemented"),
@@ -1023,7 +1037,7 @@ pub fn PatternWithContext(
                     } else break :blk null;
                     break :blk BranchResult{
                         .index = entry.key_ptr.*,
-                        .pattern = &entry.value_ptr.*.pattern,
+                        .pattern = entry.value_ptr.*.pattern,
                     };
                 },
             } orelse if (self.var_cache.count() > 0) blk: {
@@ -1087,7 +1101,7 @@ pub fn PatternWithContext(
         /// Caller owns and should free the result's value and bindings with
         /// Match.deinit.
         pub fn match(
-            self: *Self,
+            self: Self,
             allocator: Allocator,
             bindings: *VarBindings,
             apps: Apps,
