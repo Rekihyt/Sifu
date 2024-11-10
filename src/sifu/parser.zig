@@ -31,6 +31,7 @@ const panic = util.panic;
 const streams = @import("../streams.zig").streams;
 const fs = std.fs;
 const Lexer = @import("Lexer.zig").Lexer;
+const debug_mode = @import("builtin").mode == .Debug;
 
 // TODO add indentation tracking, and separate based on newlines+indent
 
@@ -229,29 +230,39 @@ const Level = struct {
 /// assumed at all levels, with ops as appended, single terms to apps (add a new
 /// branch for the current way of parsing)
 /// Returns null if the reader ended before an Ast could be parsed
+/// Returns an arena containing all string allocations (from lexing)
 // - TODO: [] should be a flat Apps instead of as an infix / nesting ops (the
 // behavior of commas and semis is no longer list-like, but array-like)
 pub fn parse(
     allocator: Allocator,
     reader: anytype,
-) !?Apps {
-    // TODO: parse into an arena
-    // var arena = ArenaAllocator.init(allocator);
-    var lexer = Lexer(@TypeOf(reader)).init(allocator, reader);
-    defer lexer.deinit();
-    var line = try ArrayList(Token).initCapacity(allocator, 1024);
-    defer line.deinit();
+) !?struct { Apps, ArenaAllocator } {
+    var str_arena = ArenaAllocator.init(allocator);
+    errdefer str_arena.deinit();
+    // Read strings into an arena so that the caller can do what they want with
+    // them
+    var lexer = Lexer(@TypeOf(reader)).init(str_arena.allocator(), reader);
+    var line = try ArrayList(Token).initCapacity(allocator, 16);
     // No need to destroy asts, they will all be returned or cleaned up
     var levels = ArrayList(Level).init(allocator);
     // This arena is only for `Apps` memory, not for auxilary memory needed
     // for parsing
-    defer levels.deinit();
     while (try lexer.nextLine(&line)) |_| {
         defer line.clearRetainingCapacity();
         if (try parseLine(allocator, &levels, line.items)) |apps|
-            return apps;
+            return .{ apps, str_arena };
     }
-    // arena.deinit(); // Just in case there were partial allocations
+    if (comptime debug_mode) {
+        assert(lexer.buff.items.len == 0);
+        assert(line.items.len == 0);
+        assert(levels.items.len == 0);
+    } else {
+        // Just in case there were partial parses, tokens, or allocations (there
+        // shouldn't be any)
+        lexer.deinit();
+        line.deinit();
+        levels.deinit();
+    }
     return null;
 }
 
@@ -327,7 +338,7 @@ pub fn parseLine(
         };
         try level.current().append(allocator, current_ast);
     }
-    // assert(height == 0); // Root always has a height of zero
+    assert(height == 0); // Root always has a height of zero
     return try level.finalize(allocator, height);
 }
 

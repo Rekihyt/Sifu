@@ -17,9 +17,10 @@ const util = @import("util.zig");
 const panic = util.panic;
 const print = util.print;
 const detect_leaks = @import("build_options").detect_leaks;
+const debug_mode = @import("builtin").mode == .Debug;
 // TODO: merge these into just GPA, when it eventually implements wasm_allocator
 // itself
-var gpa = if (no_os) undefined else GPA{};
+var gpa = if (no_os) {} else GPA{};
 const GPA = util.GPA;
 
 pub fn main() void {
@@ -35,7 +36,7 @@ pub fn main() void {
     repl(allocator) catch |e|
         panic("{}", .{e});
 
-    if (comptime !no_os)
+    if (comptime !no_os and detect_leaks)
         _ = gpa.detectLeaks();
 }
 
@@ -43,18 +44,14 @@ pub fn main() void {
 fn repl(
     allocator: Allocator,
 ) !void {
-    // An arena for pattern lifetimes: parsed strings and apps/sub patterns
-    var pattern_arena = ArenaAllocator.init(allocator);
-    defer pattern_arena.deinit();
-
     var buff_writer_out = io.bufferedWriter(streams.out);
     const buff_out = buff_writer_out.writer();
     var pattern = Pat{}; // This will be cleaned up with the arena
 
-    while (replStep(&pattern, pattern_arena.allocator(), buff_out)) |_| {
+    while (replStep(&pattern, allocator, buff_out)) |_| {
         try buff_writer_out.flush();
-        if (comptime !no_os) try streams.err.print(
-            "Pattern Allocated: {}\n",
+        if (comptime !no_os and detect_leaks) try streams.err.print(
+            "GPA Allocated: {} bytes\n",
             .{gpa.total_requested_bytes},
         );
     } else |err| switch (err) {
@@ -69,7 +66,9 @@ fn replStep(
     allocator: Allocator,
     writer: anytype,
 ) !?void {
-    const tree = try parse(allocator, streams.in) orelse
+    // An arena for match lifetimes: parsed strings and apps/sub patterns
+
+    const tree, var str_arena = try parse(allocator, streams.in) orelse
         return error.EndOfStream;
     defer tree.deinit(allocator);
 
@@ -105,6 +104,7 @@ fn replStep(
             try Pat.Node.ofApps(val).clone(allocator),
         );
     } else {
+        defer str_arena.deinit();
         // If not inserting, then try to match the expression
         // TODO: put into a comptime for eval kind
         // print("Parsed ast hash: {}\n", .{ast.hash()});

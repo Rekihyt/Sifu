@@ -78,6 +78,8 @@ pub fn PatternWithContext(
 ) type {
     return struct {
         pub const Self = @This();
+        /// Used when writing out a pattern for the size of stack allocation
+        pub const max_nesting_level = 64;
         /// Keys must be efficiently iterable, but that is provided by the index
         /// map anyways so an array map here isn't needed.
         pub const NodeMap = std.HashMapUnmanaged(
@@ -1337,7 +1339,7 @@ pub fn PatternWithContext(
         /// Writes a single entry in the pattern canonically. Index must be
         /// valid.
         pub fn writeIndex(self: Self, writer: anytype, index: usize) !void {
-            var nested = std.BoundedArray(enum { apps, pattern }, 4096){};
+            var nested = std.BoundedArray(enum { apps, pattern }, max_nesting_level){};
             var current = self;
             if (comptime debug_mode)
                 try writer.print("{} | ", .{index});

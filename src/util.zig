@@ -17,7 +17,8 @@ pub const GPA = std.heap.GeneralPurposeAllocator(
         .safety = detect_leaks,
         .never_unmap = detect_leaks,
         .retain_metadata = detect_leaks,
-        .verbose_log = false,
+        .enable_memory_limit = detect_leaks, // for tracking allocation amount
+        .verbose_log = detect_leaks,
     },
 );
 
