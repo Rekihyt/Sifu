@@ -32,6 +32,7 @@ const streams = @import("../streams.zig").streams;
 const fs = std.fs;
 const Lexer = @import("Lexer.zig").Lexer;
 const debug_mode = @import("builtin").mode == .Debug;
+const detect_leaks = @import("build_options").detect_leaks;
 
 // TODO add indentation tracking, and separate based on newlines+indent
 
@@ -243,27 +244,32 @@ pub fn parse(
     // them
     var lexer = Lexer(@TypeOf(reader)).init(str_arena.allocator(), reader);
     var line = try ArrayList(Token).initCapacity(allocator, 16);
+    defer line.deinit();
     // No need to destroy asts, they will all be returned or cleaned up
     var levels = ArrayList(Level).init(allocator);
+    defer levels.deinit();
     // This arena is only for `Apps` memory, not for auxilary memory needed
     // for parsing
-    while (try lexer.nextLine(&line)) |_| {
+    const result = while (try lexer.nextLine(&line)) |_| {
         defer line.clearRetainingCapacity();
+        if (comptime detect_leaks) try streams.err.print(
+            "String Arena Allocated: {} bytes\n",
+            .{str_arena.queryCapacity()},
+        );
         if (try parseLine(allocator, &levels, line.items)) |apps|
-            return .{ apps, str_arena };
-    }
-    if (comptime debug_mode) {
-        assert(lexer.buff.items.len == 0);
-        assert(line.items.len == 0);
-        assert(levels.items.len == 0);
-    } else {
+            break .{ apps, str_arena };
+    } else null;
+
+    assert(lexer.buff.items.len == 0);
+    assert(line.items.len == 0);
+    assert(levels.items.len == 0);
+    if (comptime !debug_mode) {
         // Just in case there were partial parses, tokens, or allocations (there
         // shouldn't be any)
         lexer.deinit();
-        line.deinit();
-        levels.deinit();
     }
-    return null;
+
+    return result;
 }
 
 /// Does not allocate on errors or empty parses. Parses the line of tokens,
@@ -338,7 +344,6 @@ pub fn parseLine(
         };
         try level.current().append(allocator, current_ast);
     }
-    assert(height == 0); // Root always has a height of zero
     return try level.finalize(allocator, height);
 }
 
