@@ -11,6 +11,7 @@ const array_hash_map = std.array_hash_map;
 const AutoContext = std.array_hash_map.AutoContext;
 const StringContext = std.array_hash_map.StringContext;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
+const DoublyLinkedList = std.DoublyLinkedList;
 const print = util.print;
 const first = util.first;
 const last = util.last;
@@ -103,14 +104,14 @@ pub fn PatternWithContext(
         /// The term/next is a reference to a key/value in the NodeMap, which
         /// owns both. This type is isomorphic to a key-value entry in NodeMap
         /// to form a bijection.
-        pub const Branch = struct {
+        pub const Entry = struct {
             term: *const DetachedNode,
             next: *const Self,
         };
         /// This maps to branches, but the type is Branch instead of just *Self
         /// to retrieve keys if necessary. The Self pointer references another
         /// field in this pattern, such as `keys`.
-        const IndexMap = std.AutoArrayHashMapUnmanaged(usize, Branch);
+        const IndexMap = std.AutoArrayHashMapUnmanaged(usize, Entry);
         /// ArrayMaps are used as both branches and values need to support
         /// efficient iteration, to support recursive matching variables.
         const ValueMap = std.AutoArrayHashMapUnmanaged(usize, *Node);
@@ -279,13 +280,13 @@ pub fn PatternWithContext(
             /// match something specific, so Vars always successfully match (if
             /// there is a Var) after a Key or Subpat match fails.
             variable: Literal,
-            /// Spaces separated juxtaposition, or lists/parens for nested apps.
-            /// Infix operators add their rhs as a nested apps after themselves.
-            apps: Apps,
             /// Variables that match apps as a term. These are only strictly
             /// needed for matching patterns with ops, where the nested apps
             /// is implicit.
             var_apps: Literal,
+            /// Spaces separated juxtaposition, or lists/parens for nested apps.
+            /// Infix operators add their rhs as a nested apps after themselves.
+            apps: Apps,
             /// The list following a non-builtin operator.
             infix: Apps,
             /// A postfix encoded match pattern, i.e. `x : Int -> x * 2` where
@@ -757,7 +758,7 @@ pub fn PatternWithContext(
             return switch (node) {
                 .key, .variable => pattern.keys.get(node),
                 .apps => |sub_apps| blk: {
-                    const sub_pat = pattern.keys.get(Node.ofApps(.{})) orelse
+                    const sub_pat = pattern.keys.get(DetachedNode{ .apps = {} }) orelse
                         break :blk null;
                     if (sub_pat.get(sub_apps)) |maybe_sub_value|
                         if (maybe_sub_value.value) |value|
@@ -854,7 +855,7 @@ pub fn PatternWithContext(
                 detached,
                 Self{},
             );
-            try pattern.indices.putNoClobber(allocator, index, Branch{
+            try pattern.indices.putNoClobber(allocator, index, Entry{
                 .term = entry.key_ptr,
                 .next = entry.value_ptr,
             });
@@ -917,21 +918,21 @@ pub fn PatternWithContext(
             );
         }
 
-        /// An iterator for all matches of a given apps against a pattern. If
-        /// an apps matched, leaf will be the last match term result that wasn't
-        /// null.
+        /// A partial or complete match of a given apps against a pattern.
         const Match = struct {
-            values: Iterator, // Iterator for the matched values, if any
             len: usize = 0, // Checks if complete or partial match
             index: usize = 0, // The bounds subsequent matches should be within
-            // TODO: append varmaps instead of mutating
-            // bindings: LiteralPtrMap = LiteralPtrMap{}, // Bound variables
+            bindings: VarBindings = .{}, // Bound variables
+            // Matching branches that can be backtracked to. Indices are tracked
+            // because they are always matched in ascending order, but not
+            // necessarily sequentially.
+            branches: DoublyLinkedList(Branch) = .{},
 
-            pub fn deinit(self: *Match) void {
-                _ = self;
-
-                // Node entries are just references, so they don't need freeing
-                // self.bindings.deinit(allocator);
+            /// Node entries are just references, so they aren't freed by this
+            /// function.
+            pub fn deinit(self: *Match, allocator: Allocator) void {
+                defer self.bindings.deinit(allocator);
+                defer self.branches.deinit(allocator);
             }
         };
 
@@ -939,7 +940,7 @@ pub fn PatternWithContext(
         /// successful matching (otherwise null is returned from `match`),
         /// therefore `pattern` is always a child of the root. This type is
         /// similar to IndexMap.Entry.
-        const BranchResult = struct {
+        const Branch = struct {
             pattern: Self,
             index: usize, // where this term matched in the node map
         };
@@ -968,21 +969,26 @@ pub fn PatternWithContext(
         // TODO: move bindings from params to result
         // TODO: match vars with first available index and increment it
         // TODO: prioritize indices order over exact matching when possible
-        pub fn branchTerm(
-            self: *Self,
+        fn branchTerm(
+            self: Self,
             allocator: Allocator,
-            bindings: *VarBindings,
-            position: usize,
+            match_state: *Match,
             node: Node,
-        ) Allocator.Error!?BranchResult {
+        ) Allocator.Error!?struct { Self, Match } {
             const detached_node = node.detach();
             print("Branching `", .{});
             node.writeSExp(streams.err, null) catch unreachable;
             print("`, ", .{});
-            var index = position;
-            return switch (node) {
-                .key => if (self.keys.getEntry(detached_node)) |entry| blk: {
-                    const current = entry.value_ptr.*;
+            var current = self;
+            var index, const len, var bindings, const branches = .{
+                match_state.index,
+                match_state.len,
+                match_state.bindings,
+                match_state.branches,
+            };
+            switch (node) {
+                .key => if (self.keys.getEntry(detached_node)) |entry| {
+                    current = entry.value_ptr.*;
                     print("exactly: {s}\n", .{node.key});
 
                     // Check that in the branch matched, there is a valid index
@@ -990,59 +996,63 @@ pub fn PatternWithContext(
                     // previously matched indices
                     // TODO: Check vars if this fails, and prioritize index
                     // ordering over exact literal matches
-                    if (current.indices.get(position)) |branch|
-                        break :blk BranchResult{
+                    if (current.indices.get(index)) |branch| {
+                        _ = Branch{
                             .pattern = branch.next.*,
                             .index = index,
-                        }
-                    else if (current.values.contains(position))
-                        break :blk BranchResult{
+                        };
+                    } else if (current.values.contains(index)) {
+                        _ = Branch{
                             .pattern = current,
                             .index = index,
-                        }
-                    else for (current.indices.keys()) |next_index| {
-                        if (index > position) {
+                        };
+                    } else for (current.indices.keys()) |next_index| {
+                        if (index > index) {
                             index = next_index;
                             break;
                         }
                     } else {
                         print(
                             \\Highest index of {} is smaller than current
-                            \\ position {}, not matching.
+                            \\ index {}, not matching.
                             \\
                         ,
-                            .{ index, position },
+                            .{ index, index },
                         );
-                        break :blk null;
                     }
                     print(" at index: {}\n", .{index});
-                    break :blk BranchResult{
-                        .index = index,
-                        .pattern = current,
-                    };
-                } else null,
+                },
                 .variable, .var_apps => @panic("unimplemented"),
                 .pattern => @panic("unimplemented"), // |pattern| {},
-                inline else => |sub_apps, tag| blk: {
+                inline else => |sub_apps, tag| {
+                    _ = tag; // autofix
+                    _ = sub_apps; // autofix
                     // Check Var as Alternative here, but this probably can't be
                     // a recursive call without a stack overflow
                     print("Branching subapps\n", .{});
-                    var next = self.keys.get(
-                        @unionInit(DetachedNode, @tagName(tag), {}),
-                    ) orelse break :blk null;
-                    var matches =
-                        try next.matchAll(allocator, bindings, sub_apps) orelse
-                        break :blk null;
-                    const entry = while (matches.values.next()) |entry| {
-                        if (entry.key_ptr.* >= position)
-                            break entry;
-                    } else break :blk null;
-                    break :blk BranchResult{
-                        .index = entry.key_ptr.*,
-                        .pattern = entry.value_ptr.*.pattern,
-                    };
+                    // var next = self.keys.get(
+                    //     @unionInit(DetachedNode, @tagName(tag), {}),
+                    // ) orelse {
+                    //     _ = null;
+                    // };
+                    // var matches =
+                    //     try next.matchAll(allocator, match_state, sub_apps) orelse
+                    //     {
+                    //     _ = null;
+                    // };
+                    // while (matches.values.next()) |entry| {
+                    //     // Choose the next available index
+                    //     if (entry.key_ptr.* >= match_state.index) {
+                    //         _ = Branch{
+                    //             .index = entry.key_ptr.*,
+                    //             .pattern = entry.value_ptr.*.pattern,
+                    //         };
+                    //         break;
+                    //     }
+                    // }
                 },
-            } orelse if (self.var_cache.count() > 0) blk: {
+            }
+            if (self.var_cache.count() > 0) {
                 // index += 1; // TODO use as limit
                 // result.index = var_next.index;
                 // TODO: check correct index for next var
@@ -1052,8 +1062,8 @@ pub fn PatternWithContext(
                     .{ var_next.key, var_next.value },
                 );
                 // print(" at index: {?}\n", .{result.index});
-                const var_result =
-                    try bindings.getOrPut(allocator, var_next.key);
+                const var_result = try bindings
+                    .getOrPut(allocator, var_next.key);
                 // If a previous var was bound, check that the
                 // current key matches it
                 if (var_result.found_existing) {
@@ -1066,11 +1076,15 @@ pub fn PatternWithContext(
                     print("New Var: {s}\n", .{var_result.key_ptr.*});
                     var_result.value_ptr.* = node;
                 }
-                break :blk {
-                    @panic("unimplemented");
-                };
+                @panic("unimplemented");
                 // break :blk BranchResult{ .pattern = var_next.value };
-            } else null;
+            }
+            return .{ current, Match{
+                .index = index,
+                .len = len,
+                .bindings = bindings,
+                .branches = branches,
+            } };
         }
 
         /// Same as match, but with matchTerm's signature. Returns a complete
@@ -1102,55 +1116,27 @@ pub fn PatternWithContext(
         /// longest path otherwise any index for a shorter path.
         /// Caller owns and should free the result's value and bindings with
         /// Match.deinit.
+        /// If nothing matches, then an empty, default Match is returned.
         pub fn match(
             self: Self,
             allocator: Allocator,
-            bindings: *VarBindings,
             apps: Apps,
         ) Allocator.Error!Match {
+            var match_state = Match{};
             var current = self;
-            var len: usize = 0;
-            var index: usize = 0;
-            // if (current.next.variable) |var_next| {
-            // _ = var_next; // autofix
-            // @panic("unimplemented");
-            // } else if (current.next.var_apps) |var_apps| {
-            //     // Store as a Node for convenience
-            //     const node = Node.ofApps(apps);
-            //     print("Matching as var apps `{s}`\n", .{current.var_apps});
-            //     var_apps_next.next.write(streams.err) catch unreachable;
-            //     print("\n", .{});
-            //     const var_result =
-            //         try bindings.getOrPut(allocator, var_apps_next.variable);
-            //     if (var_result.found_existing) {
-            //         if (var_result.value_ptr.*.eql(node)) {
-            //             print("found equal existing var apps mapping\n", .{});
-            //         } else {
-            //             print("found existing non-equal var apps mapping\n", .{});
-            //         }
-            //     } else {
-            //         print("New Var Apps: {s}\n", .{var_result.key_ptr.*});
-            //         var_result.value_ptr.* = node;
-            //     }
-            //     // result.value = var_apps_next.next.value;
-            //     result.len = apps.root.len;
 
             for (apps.root) |app| {
-                // TODO: save bindings state and restore if partial match and var
-                // apps
-                if (try current.branchTerm(allocator, bindings, index, app)) |branch| {
-                    current = branch.pattern;
-                    index = branch.index;
-                    if (index < current.values.count()) {
-                        len += 1;
+                // TODO: reset match if failed match had variable bindings
+                if (try current
+                    .branchTerm(allocator, &match_state, app)) |next_state|
+                {
+                    match_state = next_state;
+                    if (match_state.index < current.count()) {
+                        match_state.len += 1;
                     } else break;
                 }
             }
-            return Match{
-                .values = current.values.iterator(),
-                .len = len,
-                .index = index,
-            };
+            return match_state;
         }
 
         /// The second half of an evaluation step. Rewrites all variable
@@ -1215,29 +1201,31 @@ pub fn PatternWithContext(
 
         /// Performs a single full match and if possible a rewrite.
         /// Caller owns and should free with deinit.
+        // TODO: untangle the mess of how to free unused strings through
+        // mutliple rewrite steps (deep copying)
         pub fn evaluateStep(
-            self: *Self,
+            self: Self,
             allocator: Allocator,
+            index: usize,
             apps: Apps,
         ) Allocator.Error!Apps {
-            var bindings = VarBindings{};
-            defer bindings.deinit(allocator);
-            var match_result = try self.match(allocator, &bindings, apps);
-            defer match_result.deinit();
-            while (match_result.values.next()) |entry| {
-                const index, const value =
+            _ = index;
+            const next_match = try self.match(allocator, apps);
+            defer next_match.deinit();
+            while (next_match.values.next()) |entry| {
+                const next_index, const value =
                     .{ entry.key_ptr.*, entry.value_ptr.* };
                 print(
                     "Matched {} of {} apps at index {}: ",
-                    .{ match_result.len, apps.root.len, index },
+                    .{ next_match.len, apps.root.len, next_index },
                 );
                 value.write(streams.err) catch unreachable;
                 print("\n", .{});
-                return self.rewrite(allocator, bindings, value.apps);
+                return self.rewrite(allocator, next_match.bindings, value.apps);
             } else {
                 print(
                     "No match, after {} nodes followed\n",
-                    .{match_result.len},
+                    .{next_match.len},
                 );
                 return .{};
             }

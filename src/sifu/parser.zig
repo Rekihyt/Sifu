@@ -116,7 +116,6 @@ const Level = struct {
         }
     };
 
-    // var precedences_buff: [3]ArrayListUnmanaged(Ast) = undefined;
     // This points to the last op parsed for a level of nesting. This tracks
     // infixes for each level of nesting, in congruence with the parse stack.
     // These are nullable because each level of nesting gets a new relative
@@ -243,14 +242,18 @@ pub fn parse(
     // Read strings into an arena so that the caller can do what they want with
     // them
     var lexer = Lexer(@TypeOf(reader)).init(str_arena.allocator(), reader);
+    defer lexer.deinit();
     var line = try ArrayList(Token).initCapacity(allocator, 16);
     defer line.deinit();
     // No need to destroy asts, they will all be returned or cleaned up
     var levels = ArrayList(Level).init(allocator);
     defer levels.deinit();
-    // This arena is only for `Apps` memory, not for auxilary memory needed
-    // for parsing
-    const result = while (try lexer.nextLine(&line)) |_| {
+    defer {
+        assert(lexer.buff.items.len == 0);
+        assert(line.items.len == 0);
+        assert(levels.items.len == 0);
+    }
+    return while (try lexer.nextLine(&line)) |_| {
         defer line.clearRetainingCapacity();
         if (comptime detect_leaks) try streams.err.print(
             "String Arena Allocated: {} bytes\n",
@@ -259,23 +262,12 @@ pub fn parse(
         if (try parseLine(allocator, &levels, line.items)) |apps|
             break .{ apps, str_arena };
     } else null;
-
-    assert(lexer.buff.items.len == 0);
-    assert(line.items.len == 0);
-    assert(levels.items.len == 0);
-    if (comptime !debug_mode) {
-        // Just in case there were partial parses, tokens, or allocations (there
-        // shouldn't be any)
-        lexer.deinit();
-    }
-
-    return result;
 }
 
 /// Does not allocate on errors or empty parses. Parses the line of tokens,
 /// returning a partial Ast on trailing operators or unfinished nesting. In such
 /// a case, null is returned and the same parser_stack must be reused to finish
-/// parsing. Otherwise, an Ast is returned from an ownded slice of parser_stack.
+/// parsing. Otherwise, an Ast is returned from an owned slice of parser_stack.
 // The parsing algorithm pushes a list whenever an operator with lower precedence
 // is parsed. Operators with same or higher precedence than their previous
 // adjacent operator are simply added to the tail of the current list. To parse
@@ -283,10 +275,11 @@ pub fn parse(
 // stack.
 // All tokens in Sifu do not affect the semantics of previously parsed ones.
 // This makes the precedence of the links in an operators chain monotonically
-// decreasing. Once a lower precedence operator is seen, it will either become the
-// root or something lower will. If its the lowest precedence (or the end of line)
-// is reached it is written to the root. The tail is then set to the root's op
-// slice, and future low precedent ops will be linked there.
+// decreasing once the highest level hast been found. Once a lower precedence
+// operator is seen, it will either become the root or something lower will.
+// If its the lowest precedence (or the end of line) is reached it is written
+// to the root. The tail is then set to the root's op slice, and future low
+// precedent ops will be linked there.
 // TODO: return null if unfinished apps/pattern left to parse
 pub fn parseLine(
     allocator: Allocator,

@@ -28,16 +28,23 @@ pub fn main() void {
     // @compileLog(@sizeOf(Pat.Node));
     // @compileLog(@sizeOf(ArrayListUnmanaged(Pat.Node)));
 
-    const allocator = if (no_os)
+    const backing_allocator = if (no_os)
         std.heap.wasm_allocator
     else
-        gpa.allocator();
+        std.heap.page_allocator;
 
-    repl(allocator) catch |e|
+    var arena = if (comptime detect_leaks)
+        gpa
+    else
+        ArenaAllocator.init(backing_allocator);
+
+    repl(arena.allocator()) catch |e|
         panic("{}", .{e});
 
-    if (comptime !no_os and detect_leaks)
-        _ = gpa.detectLeaks();
+    if (comptime detect_leaks)
+        _ = gpa.detectLeaks()
+    else
+        arena.deinit();
 }
 
 // TODO: Implement repl/file specific behavior
@@ -104,22 +111,24 @@ fn replStep(
             try Pat.Node.ofApps(val).clone(allocator),
         );
     } else {
+        // Free the rest of the match's string allocations. Those used in
+        // rewriting must be completely copied.
         defer str_arena.deinit();
         // If not inserting, then try to match the expression
         // TODO: put into a comptime for eval kind
         // print("Parsed ast hash: {}\n", .{ast.hash()});
         // TODO: change to get by index or something
-        // if (pattern.get(ast.apps)) |got| {
-        //     print("Got: ", .{});
-        //     try got.write(streams.err);
-        //     print("\n", .{});
-        // } else print("Got null\n", .{});
+        if (pattern.get(ast.apps)) |got| {
+            print("Got: ", .{});
+            try got.write(streams.err);
+            print("\n", .{});
+        } else print("Got null\n", .{});
 
-        const step = try pattern.evaluateStep(allocator, tree);
-        defer Ast.ofApps(step).deinit(allocator);
-        print("Match Rewrite: ", .{});
-        try Ast.ofApps(step).write(writer);
-        try writer.writeByte('\n');
+        // const step = try pattern.evaluateStep(allocator, 0, tree);
+        // defer Ast.ofApps(step).deinit(allocator);
+        // print("Match Rewrite: ", .{});
+        // try Ast.ofApps(step).write(writer);
+        // try writer.writeByte('\n');
 
         // const eval = try pattern.evaluate(allocator, apps);
         // defer if (comptime detect_leaks)
