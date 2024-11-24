@@ -1,7 +1,6 @@
 const std = @import("std");
 const sifu = @import("sifu.zig");
-const Pat = @import("sifu/ast.zig").Pat;
-const Ast = Pat.Node;
+const Pattern = @import("sifu/pattern.zig").Pattern;
 const syntax = @import("sifu/syntax.zig");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
@@ -53,9 +52,9 @@ fn repl(
 ) !void {
     var buff_writer_out = io.bufferedWriter(streams.out);
     const buff_out = buff_writer_out.writer();
-    var pattern = Pat{}; // This will be cleaned up with the arena
+    var trie = Pat{}; // This will be cleaned up with the arena
 
-    while (replStep(&pattern, allocator, buff_out)) |_| {
+    while (replStep(&trie, allocator, buff_out)) |_| {
         try buff_writer_out.flush();
         if (comptime !no_os and detect_leaks) try streams.err.print(
             "GPA Allocated: {} bytes\n",
@@ -69,26 +68,26 @@ fn repl(
 }
 
 fn replStep(
-    pattern: *Pat,
+    trie: *Pat,
     allocator: Allocator,
     writer: anytype,
 ) !?void {
-    // An arena for match lifetimes: parsed strings and apps/sub patterns
+    // An arena for match lifetimes: parsed strings and pattern/sub tries
 
-    const tree, var str_arena = try parse(allocator, streams.in) orelse
+    const pattern, var str_arena = try parse(allocator, streams.in) orelse
         return error.EndOfStream;
     defer tree.deinit(allocator);
 
-    const apps = tree.root;
-    const ast = Ast.ofApps(tree);
+    const pattern = tree.root;
+    const ast = Ast.ofPattern(tree);
 
     print(
-        "Parsed apps {} high and {} wide: ",
-        .{ tree.height, apps.len },
+        "Parsed pattern {} high and {} wide: ",
+        .{ tree.height, pattern.len },
     );
-    try ast.write(streams.err);
+    try pattern.write(streams.err);
     print("\nof types: ", .{});
-    for (apps) |app| {
+    for (pattern) |app| {
         print("{s} ", .{@tagName(app)});
         app.writeSExp(streams.err, 0) catch unreachable;
         streams.err.writeByte(' ') catch unreachable;
@@ -101,14 +100,14 @@ fn replStep(
     // }
     // TODO: read a "file" from stdin first, until eof, then start eval/matching
     // until another eof.
-    if (apps.len > 0 and apps[apps.len - 1] == .arrow) {
-        const key = apps[0 .. apps.len - 1];
-        const val = apps[apps.len - 1].arrow;
+    if (pattern.len > 0 and pattern[pattern.len - 1] == .arrow) {
+        const key = pattern[0 .. pattern.len - 1];
+        const val = pattern[pattern.len - 1].arrow;
         // TODO: calculate correct tree height
-        _ = try pattern.append(
+        _ = try trie.append(
             allocator,
             .{ .root = key, .height = tree.height },
-            try Pat.Node.ofApps(val).clone(allocator),
+            try Pat.Node.ofPattern(val).clone(allocator),
         );
     } else {
         // Free the rest of the match's string allocations. Those used in
@@ -118,30 +117,30 @@ fn replStep(
         // TODO: put into a comptime for eval kind
         // print("Parsed ast hash: {}\n", .{ast.hash()});
         // TODO: change to get by index or something
-        if (pattern.get(ast.apps)) |got| {
+        if (trie.get(ast.pattern)) |got| {
             print("Got: ", .{});
             try got.write(streams.err);
             print("\n", .{});
         } else print("Got null\n", .{});
 
-        // const step = try pattern.evaluateStep(allocator, 0, tree);
-        // defer Ast.ofApps(step).deinit(allocator);
+        // const step = try trie.evaluateStep(allocator, 0, tree);
+        // defer Ast.ofPattern(step).deinit(allocator);
         // print("Match Rewrite: ", .{});
-        // try Ast.ofApps(step).write(writer);
+        // try Ast.ofPattern(step).write(writer);
         // try writer.writeByte('\n');
 
-        // const eval = try pattern.evaluate(allocator, apps);
+        // const eval = try trie.evaluate(allocator, pattern);
         // defer if (comptime detect_leaks)
-        //     Ast.ofApps(eval).deinit(allocator)
+        //     Ast.ofPattern(eval).deinit(allocator)
         // else
         //     eval.deinit();
         // try writer.print("Eval: ", .{});
-        // for (eval) |app| {
-        //     try app.writeSExp(writer, 0);
+        // for (eval) |pattern| {
+        //     try pattern.writeSExp(writer, 0);
         //     try writer.writeByte(' ');
         // }
         // try writer.writeByte('\n');
     }
-    try pattern.pretty(writer);
-    try pattern.writeCanonical(writer);
+    try trie.pretty(writer);
+    try trie.writeCanonical(writer);
 }

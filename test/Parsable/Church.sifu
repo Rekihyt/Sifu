@@ -1,5 +1,5 @@
-# A Church numeral encoding that stores a natural number in an app of nones. `()`
-# is a zero-byte type, so the app will only store its length which is the value
+# A Church numeral encoding that stores a natural number in a pattern of nones. `()`
+# is a zero-byte type, so the pattern will only store its length which is the value
 # of the Church numeral.
 
 Nat 0            -> ()

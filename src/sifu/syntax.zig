@@ -18,9 +18,9 @@ const Wyhash = std.hash.Wyhash;
 pub const Type = enum {
     Name,
     Var,
-    VarApps,
+    VarPattern,
     Str,
-    // Ints/UInts are be applied to a number which signifies their size
+    // Ints/UInts are be patternlied to a number which signifies their size
     I, // signed
     U, // unsigned
     F, // float
@@ -50,7 +50,7 @@ pub fn Token(comptime Context: type) type {
         /// The string value of this token.
         lit: []const u8,
 
-        /// The token type, to be used in patterns
+        /// The token type, to be used in tries
         type: Type,
 
         /// `Context` is intended for optional debug/tooling information like

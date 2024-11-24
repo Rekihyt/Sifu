@@ -17,10 +17,10 @@ const err_stream = util.err_stream;
 /// values. Tokens aren't used because the interpreter doesn't need to track
 /// meta-info about syntax
 pub const Ast = Pat.Node;
-pub const Pat = @import("../pattern.zig").StringPattern();
+pub const Pat = @import("../trie.zig").StringPattern();
 pub const Tree = Pat.Tree;
 
-test "simple ast to pattern" {
+test "simple ast to trie" {
     const term = Token{
         .type = .Name,
         .lit = "My-Token",

@@ -41,8 +41,8 @@ pub fn popMany(
 ) !@typeInfo(@TypeOf(unmanaged_list_ptr)).Pointer.child {
     var result = try @typeInfo(@TypeOf(unmanaged_list_ptr)).Pointer.child
         .initCapacity(allocator, unmanaged_list_ptr.items.len - index);
-    for (unmanaged_list_ptr.items[index..]) |app| {
-        result.appendAssumeCapacity(app);
+    for (unmanaged_list_ptr.items[index..]) |pattern| {
+        result.appendAssumeCapacity(pattern);
     }
     unmanaged_list_ptr.shrinkRetainingCapacity(index);
     return result;

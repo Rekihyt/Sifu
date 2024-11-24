@@ -3,7 +3,7 @@
 /// separates vars and vals based on the first character's case, and lexes
 /// numbers. There are no errors, any utf-8 text is parsable.
 
-// Parsing begins with a new `App` ast node. Each term is lexed, parsed into
+// Parsing begins with a new `Pattern` ast node. Each term is lexed, parsed into
 // a `Token`, then added  to the top-level `Ast`. Pattern construction happens
 // after this, as does error reporting on invalid asts.
 
@@ -12,8 +12,8 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const util = @import("../util.zig");
 const fsize = fsize;
-const pattern = @import("pattern.zig");
-const Ast = pattern.AstType;
+const trie = @import("trie.zig");
+const Ast = trie.AstType;
 const Lit = Ast.Lit;
 const syntax = @import("syntax.zig");
 const Token = syntax.Token(usize);
@@ -104,7 +104,7 @@ pub fn Lexer(comptime Reader: type) type {
                 '}' => .RightBrace,
                 '*' => if (try self.peekChar()) |next_char|
                     if (isLower(next_char))
-                        try self.var_apps()
+                        try self.var_pattern()
                     else
                         try self.op()
                 else
@@ -227,9 +227,9 @@ pub fn Lexer(comptime Reader: type) type {
             return .Var;
         }
 
-        inline fn var_apps(self: *Self) !Type {
+        inline fn var_pattern(self: *Self) !Type {
             try self.nextIdent();
-            return .VarApps;
+            return .VarPattern;
         }
 
         /// Reads the next infix characters

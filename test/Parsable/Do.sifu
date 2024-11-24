@@ -8,7 +8,7 @@ Do ((x :> xs) : List _ (Eff eff-set)) -> x <> Do xs
 Do ((x -| xs) : Set _ (Eff eff-set)) -> x <> Do xs
 
 
-MyApp -> Do {
+MyPattern -> Do {
 	SomeIO Arg1
 	result <- OtherIO Arg2
 	FinalIO Arg3

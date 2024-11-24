@@ -9,7 +9,7 @@ _   -> 789
 # This pattern is redundant because the above three match first.
 Foo -> 123
 
-# For any App of len `x`, at most `x` patterns will be tried. While there
+# For any Pattern of len `x`, at most `x` patterns will be tried. While there
 # are four unique possible patterns, at least half are always eliminated each
 # time a term is matched or not.
 Foo Bar -> "asdf"

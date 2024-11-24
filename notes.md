@@ -60,7 +60,7 @@ A computation model that facilitates language, not vice-versa.
   - builtin sets, which are used to implement types
   - builtin hashmaps, which are used to implement records
   - hashmaps of types (tags) can trivially implement row types
-  - type checking is just a pattern match on patterns
+  - type checking is just a pattern match on tries
   - compliler treats type values as compile time and interprets them to type
   check. the interpreter treats them as normal sets
   - Strats are literals preceded by the `$` symbol that can perform operations
@@ -70,7 +70,7 @@ A computation model that facilitates language, not vice-versa.
   of _what_ it evaluates to. For example, file IO, spawn/join threads. When
   pattern matching, strats in the match of a tag are matched as usual, but when
   encountered on the right they evaluated by invoking their matching compiler
-  plugin, with any apps as args.
+  plugin, with any pattern as args.
   - `$ lazy`: don't evaluate the expression until necessary
   - `$lazy 2` evaluate 2 expression deep
   - `$strict` force all evaluations to whatever depth
@@ -187,7 +187,7 @@ lambda x y of
   - A rewrite rule terminates if:
     - The only recursive calls are to itself with a structurally reduced match
     - There are no cycles, where the same ast is matched more than once (with the exception of recursion)
-      - Cycles are detected at compile time. Before a tag is added, its value is matched recursively against the current pattern state. Each recursive call is checked to not match the original key's pattern.
+      - Cycles are detected at compile time. Before a tag is added, its value is matched recursively against the current trie state. Each recursive call is checked to not match the original key's pattern.
   - Infinite loops are implemented in layers, where they aren't allowed in pure computations but are allowed in process level or higher.
   - Both the lower level, dynamic rewriting language and the high level statically typed language are available to a programmer. The former for rapid prototyping and metaprogramming, and the latter for safety and speed.
 - Replacement for effects?: layers like pure (single thread, no IO), threaded (multi thread, no IO), process (multi thread, IO), consoleIO and/or guiIO, deviceIO (file IO, gpus, etc), networkIO
@@ -258,7 +258,7 @@ void fizz_buzz(i64 x) {
   - '#' for line comments
   - Compiler needs a switch to not ignore comments during evaluation
 
-### Core Language: a subset of Sifu that consists of (|), (,), (=), (->) and is interpreted by the Haskell compiler during macro expansion into the Rich Ast. This lets things like section operators (x+) work, by parsing as (App x +) then transforming into (App + x).
+### Core Language: a subset of Sifu that consists of (|), (,), (=), (->) and is interpreted by the Haskell compiler during macro expansion into the Rich Ast. This lets things like section operators (x+) work, by parsing as (Pattern x +) then transforming into (Pattern + x).
 - Ops
   - (|) The or operator, creates a value that is either the fst or snd arg, with type Fst | Snd
   - (&) The and operator, creates a value that is both the fst and snd arg, with type Fst & Snd
@@ -292,7 +292,7 @@ Functions only apply to one argument. To pass multiple arguments, use tuples.
 
 
 ### TODO:
-- fix sections left section / function app conflict
+- fix sections left section / function pattern conflict
 - sections must be converted into lambdas
 
 ### Compile steps
@@ -331,20 +331,13 @@ A pattern match must therefore do three things:
 
 ### Requirements
 
-1. Patterns must hash uniquely, yet any pattern must match vars
-2. Patterns must overwrite each other when one is more general
-3. Variables must match any ast
-4. Variables of different names but same place must evaluate the same way
-5. Variables always have one value, but that value may represent multiple computations using || with comma seperators. These are then pattern matched like lists but with a resulting expression that computes the cartesian product.
+TODO
 
 ### Merge Algorithm
 
-1. PLit hashes uniquely, just based on Ast's default hash. This is for patterns like `2 & x`, for which there is only one unique ast.
-2. When merging two literal patterns, replace their smallest branch difference with a PMap hashmap, which maps their unique differences to other asts. If the two nodes are entirely difference (their roots are not equal) the PMap is at the top level.
-3. To merge a literal into an existing map, because literals are always unique and have no subpatterns, it can simply be inserted.
-4.
-5. Anything merged with a var is instead discarded if it comes after the var (so you can try to match the more specific case first then fallback to the var).
-6. Patterns like `PApp` must handle nested patterns, so instead of mapping to a `PLit`, they map to another `PMap`.
+TODO
+
+---
 
 Application is just an operator, but uses juxtaposition instead of a symbol.
 
@@ -458,7 +451,7 @@ POf [
 -- |
 -- | Function application
 -- | (A -> B) A   => B
--- | (A op)       => App op A
+-- | (A op)       => Pattern op A
 -- |
 -- | `(A -> B -> C) (A & B) => C` apply function to first value
 -- | `((B -> C) & B)` by rewriting A
@@ -467,13 +460,13 @@ POf [
 -- |
 -- | `(A -> B -> C) (A & D) => (B -> C) & D`
 -- | `((B -> C) & D)` by rewriting A
--- | no recursive app, B /= D
+-- | no recursive pattern, B /= D
 -- | normal form.
 -- |
 -- | Reduce first elem. `A` must be the first element in the sum type.
 -- | `(A -> C) (A | B) => C | B`
 -- | `(A -> C) (A & B) => C & B`
--- | `(A -> C) (A -> B) => error` While `A -> (C & B)` is possible, its not needed, use (&) instead of app.
+-- | `(A -> C) (A -> B) => error` While `A -> (C & B)` is possible, its not needed, use (&) instead of pattern.
 -- |
 -- | `(A -> B -> C) (A | B) => (B -> C) | B`
 -- | `(A -> B) (A | B) => (B | B)` where the order of the sum type determines if
@@ -504,7 +497,7 @@ When matching a literal pattern
 ### Numbers
 
 Integers are implemented using a variant of Church numerals for the pattern
-calculus, where an App of empty apps is used. The length represents the integer
+calculus, where an Pattern of empty pattern is used. The length represents the integer
 value.
 
 
@@ -555,7 +548,7 @@ readable. Its not actually, `sifu_defs : Sifu -> Sifu sifu_defs` is clearer.
 # FOCUS ON THE MVP
 
 The goal is simplicity!
-- Patterns are just patterns, they don't handle effects, ffi, etc.
+- Patterns are just tries, they don't handle effects, ffi, etc.
 
 [x] Finalize the Ast/Pattern datastructures.
 [x] Decide how to deal with lit/var/term fiasco
@@ -614,7 +607,7 @@ These must be different, because computations are fundamentally more reducable t
 
 - Pattern matching is basically string matching on terms instead of chars. It therefore has the same problem of substring search, where we will need KMP or something  to avoid O(N^2) worst-case matching.
 
-- Being able to pattern match on apps, instead of nested ops, is very important for efficiency, because it is array based vs linked list. 
+- Being able to pattern match on patterns, instead of nested ops, is very important for efficiency, because it is array based vs linked list. 
 
 - Union, Set Difference, and friends must be definable by matching on sets and creating new ones based on their elements.
 
@@ -628,25 +621,25 @@ These must be different, because computations are fundamentally more reducable t
   1. Make infix operators stop? idk
   2. Ignore this issue and require parens (probably necessary)
   3. Add builtin precedence (eww)
-  4. Make variables only match terms, not apps
-  5. Preserve apps during binding/matching, i.e. rewrite to (x & y) | (w & z)
+  4. Make variables only match terms, not patterns
+  5. Preserve patterns during binding/matching, i.e. rewrite to (x & y) | (w & z)
 
-- Allowing {} to be made _after_ matching means dynamically creating patterns
-  1. Probably just ok, maybe even desirable in order to talk about {} syntax without making a pattern.
-  2. Asts should store patterns though, otherwise the semantics of patterns as tokens doesn't match that of the data structure.
+- Allowing {} to be made _after_ matching means dynamically creating tries
+  1. Probably just ok, maybe even desirable in order to talk about {} syntax without making a trie.
+  2. Asts should store tries though, otherwise the semantics of tries as tokens doesn't match that of the data structure.
     - Not a problem if we don't use Asts after Pattern-Construction phase.
-  3. Don't even have an Ast, just parse patterns directly
+  3. Don't even have an Ast, just parse tries directly
     - Asts are more efficient, as they aren't linked lists
     - Metaprogramming? Dynamic creation of arbitrary asts before they are given meaning lets you define syntax
-    - Asts aren't more efficient, everything must be a pattern eventually.
+    - Asts aren't more efficient, everything must be a trie eventually.
     - The only place Asts may be useful are as Vals
 
-- Everything must be an App by default. This makes it weird to define empty apps, because `()` for example is a _non-empty_ app of an empty app.
-  1. Make patterns match Apps by default as well.
-  2. Allow defining doubleline separated empty apps such as `Empty -> ` only at top-level scope.
+- Everything must be an Pattern by default. This makes it weird to define empty pattern, because `()` for example is a _non-empty_ pattern of an empty trie.
+  1. Make patterns match Pattern by default as well.
+  2. Allow defining doubleline separated empty pattern such as `Empty -> ` only at top-level scope.
     - This is awful for multiple short definitions, not an option, use single line + no indent as a sep
     - For interpreter, Alt-Enter gives attached newline capability
-  3. Any other empty apps are treated as partial applications of tags, using the previously defined `Empty` when needed.
+  3. Any other empty pattern are treated as partial applications of tags, using the previously defined `Empty` when needed.
 
 - Patterns that share the same prefix aren't exactly obvious how they match:
   ```
@@ -666,7 +659,7 @@ These must be different, because computations are fundamentally more reducable t
 
 - Variables must match multiple times, modeling cartesian products. These matches form a flattened trie? A trie could be seen as all the different matching trees as one. This leads me to the conclusion that a dynamic webpage is a trie...
   1. Use `,` and `;` to encode a flattened match.
-  2. Return a pruned sub-pattern instead of an AST, only containing the terms that matched
+  2. Return a pruned sub-trie instead of an AST, only containing the terms that matched
 
 ---
 
@@ -687,8 +680,8 @@ ComposeBranches (ord : Ord) -> Case [
 
 ---
 
-Pattern keys must also contain patterns, otherwise subpatterns (types) aren't possible.
-Pattern values must also contain patterns, in other words patterns must be built once during insert, not multiple times each rewrite.
+Pattern keys must also contain tries, otherwise subpatterns (types) aren't possible.
+Pattern values must also contain patterns, in other words tries must be built once during insert, not multiple times each rewrite.
 
 ---
 
@@ -715,7 +708,7 @@ Make frequent dynamic arrays/allocations to be optional, by having compile time 
 
 ---
 
-Maybe add regex-like variables for apps, such as zero-many, one-or-more,
+Maybe add regex-like variables for patterns, such as zero-many, one-or-more,
 optional, etc? A sufficiently smart compiler might be able to transform operator
 patterns into these.
 
@@ -739,7 +732,7 @@ make it a pointer.
 
 ---
 
-Evaluation must sub-evaluate nested apps recursively greedily i.e.
+Evaluation must sub-evaluate nested patterns recursively greedily i.e.
 ```
 G x -> x
 F -> G
@@ -766,34 +759,34 @@ when matching on arrows, like:
   A -> 1 :: { A -> 1, B, C }
 ```
 Using `(A -> 1) : {...}` instead doesn't work, because the arrow `A -> 1` isn't
-a subapp in the pattern. More generally, parenthesis are only a tool to express
+a subpattern in the pattern. More generally, parenthesis are only a tool to express
 nesting structure, not precedence.
 
 The operator `-->` is also probably needed for commas
 
 The operators `=>` and `==>` are probably needed to decrease levels of nesting,
 because sometimes 0 is desired. They would make `->` map only to its first
-app as a singleton not an array. This might make some precedence operators
+pattern as a singleton not an array. This might make some precedence operators
 redundant.
 
 The operator `@` is necessary for globbing. Matching using it needs
-some kind of substring search algorithm for apps though (but probably not for
-patterns). It could be combined like `{*}` to denote the current pattern or
+some kind of substring search algorithm for pattern though (but probably not for
+patterns). It could be combined like `{*}` to denote the current trie or
 everything in scope.
 
 Single arrow: rewrite to first match, looking back or else self
 Double arrow: rewrite to all matches in order looking back or else empty.
 
-Commas might be better as a way to append instead of separate apps. An append
-operator would also be good to enable treating apps of a single pattern as just
-a pattern, but this can easily be defined. Trailing commas are desirable for
-consistency but are problematic because the empty apps following one is added
+Commas might be better as a way to append instead of separate pattern. An append
+operator would also be good to enable treating pattern of a single trie as just
+a trie, but this can easily be defined. Trailing commas are desirable for
+consistency but are problematic because the empty pattern following one is added
 to a pattern. One possible solution is to change how newlines are parsed
 instead: a newline followed by a closing brace does not denote a trailing empty
-apps.
+pattern.
 ```
 
-# Make apps of length 1 map to a singleton 
+# Make pattern of length 1 map to a singleton 
 (x) -> x
 # This now evaluates into a basic trie without nesting.
 { 1 -> A, 2 -> B, 3 -> C }
@@ -805,28 +798,28 @@ apps.
 
 ### Arrow
 
-On deletion of an arrow, all following entries in the pattern must be replayed
+On deletion of an arrow, all following entries in the trie must be replayed
 to ensure they are still valid. This synchronizes perfectly with using
 references to save memory, as it ensures they are always valid, or else not
 re-added.
 
 ### Match
 
-A match is of the form `QueryApp : Expr`, where Expr is an Apps or Pattern.
+A match is of the form `QueryPattern : Expr`, where Expr is an Pattern or Pattern.
 
 #### Inserting a Match as a key in a Pattern
-1. Expr is evaluated in the current pattern context.
-2. The evaluated Expr is checked that it is a pattern (if not, the insert fails).
-3. The `query -> eval` arrow is inserted into a pattern.
+1. Expr is evaluated in the current trie context.
+2. The evaluated Expr is checked that it is a trie (if not, the insert fails).
+3. The `query -> eval` arrow is inserted into a trie.
 4. The `eval -> next` arrow is inserted. 
 
 #### Evaluating a Match as an expression
-1. `QueryApp` is matched against the pre-evaluated expression
+1. `QueryPattern` is matched against the pre-evaluated expression
 2. The number of results are multiplied with the parent match (list monad style). 
 
 ---
 
-Add rainbow colors to app and pattern pretty printer
+Add rainbow colors to pattern and trie pretty printer
 Parse commas the same as newlines for consistency
 
 ---
@@ -851,24 +844,24 @@ to begin with for some feature is a possible code smell of that feature.
   an implication in classical logic. The proof, and therefore program is valid.
 
 - Computation must be _bounded_ upwards for streaming execution, but should
-  _flow_ from the pattern's top to the current location
+  _flow_ from the trie's top to the current location
 - Patterns of differing length are fine: the lowest index, followed by longest
   match is chosen greedily
 - Nesting _does not_ reset the current index (otherwise infinite loops are
   possible) and _does not_ allow the current index to be matched unless it is
   with a simplified expression (patterns like `F -> (F)` shouldn't recurse on
-  `F`). An Ast is more reduced than another if it has a shorter height of apps/
+  `F`). An Ast is more reduced than another if it has a shorter height of patterns/
   ops.
   
 - Optional: an arbitrary match but finite limit argument that allows a certain
   number of what would be non-terminating evaluations
 
-- Subapps / subpatterns must be encoded as nested tries themselves to enable
-  matching using partial patterns. The current implementation isn't able to
-  preserve the ordering of keys between sub-apps (and may never be able to).
-  After a file is formatted, the pattern will be printed out such that all
-  sub-apps / sub-patterns are grouped together, not interspersed. As such, a
-  user won't be surprised by the order when, say, matching all apps as a list.
+- Subpattern / subtries must be encoded as nested tries themselves to enable
+  matching using partial tries. The current implementation isn't able to
+  preserve the ordering of keys between sub-pattern (and may never be able to).
+  After a file is formatted, the trie will be printed out such that all
+  sub-pattern / sub-tries are grouped together, not interspersed. As such, a
+  user won't be surprised by the order when, say, matching all pattern as a list.
 
 
 ---
@@ -930,7 +923,7 @@ Bar Foo # select Bar, try and fail to match its Foo, then fallback to 123 321
 Bar Bar # select Bar, try and fail to match its Bar, then fallback to Bar. select Bar for Bar Bar
 ```
 
-The scope should include the current pattern up to the top level, and any along
+The scope should include the current trie up to the top level, and any along
 the way.
 
 ---

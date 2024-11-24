@@ -8,7 +8,7 @@ MySet -> {
 	H,
 }
 
-MyLongFunctionApp -> MyFn  (
+MyLongFunctionPattern -> MyFn  (
 	Arg1
 	Arg2
 	Arg3 Arg4
@@ -17,13 +17,13 @@ MyLongFunctionApp -> MyFn  (
 @ x    --> x
 @ x, y --> x @ y
 
-MyLongFunctionApp2 -> MyFn @
+MyLongFunctionPattern2 -> MyFn @
 	Arg1,
 	Arg2,
 	Arg3,
 
 MyShortFunction -> MyFn
-Seperate App
+Seperate Pattern
 
 {
 	A -> 1

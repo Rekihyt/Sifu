@@ -3,7 +3,7 @@ Dup x -> x x
 
 UnDup x x -> x
 
-UnApp (..) -> ..
+UnPattern (..) -> ..
 
 Empty ->
 

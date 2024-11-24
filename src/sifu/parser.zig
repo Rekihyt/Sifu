@@ -12,8 +12,8 @@ const util = @import("../util.zig");
 const fsize = util.fsize();
 const Pat = @import("ast.zig").Pat;
 const Ast = Pat.Node;
-const Apps = Pat.Apps;
-const Pattern = @import("../pattern.zig").Pattern;
+const Pattern = Pat.Pattern;
+const Pattern = @import("../trie.zig").Pattern;
 const syntax = @import("syntax.zig");
 const Token = syntax.Token(usize);
 const Type = syntax.Type;
@@ -69,18 +69,18 @@ const Level = struct {
     /// their destination and a stack for their arguments.
     const Precedence = struct {
         tail: *Ast,
-        apps: ArrayListUnmanaged(Ast) = .{},
+        pattern: ArrayListUnmanaged(Ast) = .{},
 
         pub fn writeTail(
             self: *Precedence,
             allocator: Allocator,
             height: usize,
         ) !void {
-            if (self.apps.items.len == 0)
+            if (self.pattern.items.len == 0)
                 return;
-            var slice = try self.apps.toOwnedSlice(allocator);
+            var slice = try self.pattern.toOwnedSlice(allocator);
             self.tail.* = switch (self.tail.*) {
-                inline .apps,
+                inline .pattern,
                 .arrow,
                 .match,
                 .infix,
@@ -90,7 +90,7 @@ const Level = struct {
                 => |_, tag| @unionInit(
                     Ast,
                     @tagName(tag),
-                    Apps{ .root = slice, .height = height },
+                    Pattern{ .root = slice, .height = height },
                 ),
                 else => panic(
                     "Non-op tail {}\n",
@@ -101,7 +101,7 @@ const Level = struct {
         }
 
         pub fn append(self: *Precedence, allocator: Allocator, ast: Ast) !void {
-            return self.apps.append(allocator, ast);
+            return self.pattern.append(allocator, ast);
         }
 
         /// True if the given op has precedence over the current one. True if an op
@@ -123,18 +123,18 @@ const Level = struct {
     // the entire level of nesting is parsed (apart from another infix). Like
     // the parse stack, indices here correspond to a level of nesting, while
     // infixes mutate the element at their index as they are parsed.
-    // The current level of apps (containing the lowest level precedence)
+    // The current level of pattern (containing the lowest level precedence)
     // being parsed
     precedences: ArrayListUnmanaged(Precedence) =
         ArrayListUnmanaged(Precedence){},
     // Tracks the first link in the operator list, if any
-    root: Ast = Ast.ofApps(.{}), // root starts as an apps by default
+    root: Ast = Ast.ofPattern(.{}), // root starts as an pattern by default
 
     /// This function should be used on a new, stack allocated level
     pub fn init(self: *Level, allocator: Allocator) !void {
         assert(self.precedences.items.len == 0);
         // print("New tail {*}\n", .{self.tail});
-        // Add the initial level of apps
+        // Add the initial level of pattern
         const precedence = Precedence{ .tail = &self.root };
         try self.precedences.append(allocator, precedence);
     }
@@ -171,12 +171,12 @@ const Level = struct {
         }
         if (infix) |infix_lit|
             try precedence.append(allocator, infix_lit);
-        // Add an apps for the trailing args
+        // Add a pattern for the trailing args
         try precedence.append(allocator, op);
         switch (precedence.order(op)) {
             // Ascend one level of precedence
             .gt => {
-                const slice = precedence.apps.items;
+                const slice = precedence.pattern.items;
                 try self.precedences.append(
                     allocator,
                     Precedence{ .tail = &slice[slice.len - 1] },
@@ -194,49 +194,49 @@ const Level = struct {
         nodes: []const Ast,
     ) !Ast {
         return switch (kind) {
-            .apps => Ast.ofApps(nodes),
-            .pattern => blk: {
+            .pattern => Ast.ofPattern(nodes),
+            .trie => blk: {
                 print("pat\n", .{});
-                var pattern = Pat{};
+                var trie = Pat{};
                 // TODO: split nodes by commas/newlines and add individually
-                try pattern.put(allocator, nodes, null);
-                Ast.ofApps(nodes).deinit(allocator);
-                break :blk Ast.ofPattern(pattern);
+                try trie.put(allocator, nodes, null);
+                Ast.ofPattern(nodes).deinit(allocator);
+                break :blk Ast.ofPattern(trie);
             },
             else => unreachable,
         };
     }
 
-    /// Allocate the current apps to slices. There should be at least one apps
+    /// Allocate the current pattern to slices. There should be at least one pattern
     /// on the precedences.
     fn finalize(
         level: *Level,
         allocator: Allocator,
         height: usize,
-    ) !Apps {
+    ) !Pattern {
         while (level.precedences.popOrNull()) |*precedence|
             try @constCast(precedence).writeTail(allocator, height);
 
         // All arraylists have been written to slices, so don't need freeing
         level.precedences.deinit(allocator);
-        return level.root.apps;
+        return level.root.pattern;
     }
 };
 
 /// Read from a Lexer until its stream is empty, and convert tokens into Asts.
 /// Caller owns the returned Asts (including the underlying token), which should
 /// be freed with `deinit`. This frees the underlying tokens as needed based on
-/// the memory manager, as tokens are copied into the returned Ast. Apps are
-/// assumed at all levels, with ops as appended, single terms to apps (add a new
+/// the memory manager, as tokens are copied into the returned Ast. Pattern are
+/// assumed at all levels, with ops as appended, single terms to patterns (add a new
 /// branch for the current way of parsing)
 /// Returns null if the reader ended before an Ast could be parsed
 /// Returns an arena containing all string allocations (from lexing)
-// - TODO: [] should be a flat Apps instead of as an infix / nesting ops (the
+// - TODO: [] should be a flat Pattern instead of as an infix / nesting ops (the
 // behavior of commas and semis is no longer list-like, but array-like)
 pub fn parse(
     allocator: Allocator,
     reader: anytype,
-) !?struct { Apps, ArenaAllocator } {
+) !?struct { Pattern, ArenaAllocator } {
     var str_arena = ArenaAllocator.init(allocator);
     errdefer str_arena.deinit();
     // Read strings into an arena so that the caller can do what they want with
@@ -259,8 +259,8 @@ pub fn parse(
             "String Arena Allocated: {} bytes\n",
             .{str_arena.queryCapacity()},
         );
-        if (try parseLine(allocator, &levels, line.items)) |apps|
-            break .{ apps, str_arena };
+        if (try parseLine(allocator, &levels, line.items)) |pattern|
+            break .{ pattern, str_arena };
     } else null;
 }
 
@@ -271,7 +271,7 @@ pub fn parse(
 // The parsing algorithm pushes a list whenever an operator with lower precedence
 // is parsed. Operators with same or higher precedence than their previous
 // adjacent operator are simply added to the tail of the current list. To parse
-// nesting apps or patterns, a new level is pushed on or popped off the level
+// nesting pattern or tries, a new level is pushed on or popped off the level
 // stack.
 // All tokens in Sifu do not affect the semantics of previously parsed ones.
 // This makes the precedence of the links in an operators chain monotonically
@@ -280,12 +280,12 @@ pub fn parse(
 // If its the lowest precedence (or the end of line) is reached it is written
 // to the root. The tail is then set to the root's op slice, and future low
 // precedent ops will be linked there.
-// TODO: return null if unfinished apps/pattern left to parse
+// TODO: return null if unfinished pattern/trie left to parse
 pub fn parseLine(
     allocator: Allocator,
     levels: *ArrayList(Level),
     line: []const Token,
-) !?Apps {
+) !?Pattern {
     // These variables are relative to the current level of nesting being parsed
     var level = Level{};
     try level.init(allocator);
@@ -302,16 +302,16 @@ pub fn parseLine(
                 level = Level{};
                 try level.init(allocator);
                 if (tag == .LeftBrace)
-                    level.root = Ast.ofPattern(Pat{});
+                    level.root = Ast.ofPattern(Pattern{});
                 continue;
             },
             .RightParen, .RightBrace => blk: {
                 height += 1;
                 defer level = levels.pop();
-                break :blk Ast.ofApps(try level.finalize(allocator, height));
+                break :blk Ast.ofPattern(try level.finalize(allocator, height));
             },
             .Var => Ast.ofVar(token.lit),
-            .VarApps => Ast.ofVarApps(token.lit),
+            .VarPattern => Ast.ofVarPattern(token.lit),
             .Str, .I, .F, .U => Ast.ofKey(token.lit),
             .Comment, .NewLine => Ast.ofKey(token.lit),
             inline else => |tag| {
@@ -340,17 +340,17 @@ pub fn parseLine(
     return try level.finalize(allocator, height);
 }
 
-// Assumes apps are Infix encoded (they have at least one element).
+// Assumes pattern are Infix encoded (they have at least one element).
 fn getOpTailOrNull(ast: Ast) ?*Ast {
     return switch (ast) {
-        .apps,
+        .pattern,
         .arrow,
         .match,
         .list,
         .infix,
         .long_match,
         .long_arrow,
-        => |apps| @constCast(&apps[apps.len - 1]),
+        => |pattern| @constCast(&pattern[pattern.len - 1]),
         else => null,
     };
 }
@@ -359,15 +359,15 @@ fn getOpTailOrNull(ast: Ast) ?*Ast {
 // to parsing.
 // pub fn print(ast: anytype, writer: anytype) !void {
 //     switch (ast) {
-//         .apps => |asts| if (asts.len > 0 and asts[0] == .key and
+//         .pattern => |asts| if (asts.len > 0 and asts[0] == .key and
 //             asts[0].key.type == .Infix)
 //         {
 //             const key = asts[0].key;
-//             // An infix always forms an App with at least
-//             // nodes, the second of which must be an App (which
+//             // An infix always forms an Pattern with at least
+//             // nodes, the second of which must be an Pattern (which
 //             // may be empty)
 //             assert(asts.len >= 2);
-//             assert(asts[1] == .apps);
+//             assert(asts[1] == .pattern);
 //             try writer.writeAll("(");
 //             try print(asts[1], writer);
 //             try writer.writeByte(' ');
@@ -407,8 +407,8 @@ test "simple val" {
     var fbs = io.fixedBufferStream("Asdf");
     var lexer = TestLexer.init(arena.allocator(), fbs.reader());
     const ast = try parse(arena.allocator(), &lexer);
-    try testing.expect(ast == .apps and ast.apps.len == 1);
-    try testing.expectEqualStrings(ast.apps[0].key.lit, "Asdf");
+    try testing.expect(ast == .pattern and ast.pattern.len == 1);
+    try testing.expectEqualStrings(ast.pattern[0].key.lit, "Asdf");
 }
 
 fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
@@ -418,12 +418,12 @@ fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
     var fbs = io.fixedBufferStream(str);
     var lexer = TestLexer.init(allocator, fbs.reader());
     const actuals = try parse(allocator, &lexer);
-    for (expecteds, actuals.apps) |expected, actual| {
-        try expectEqualApps(expected, actual);
+    for (expecteds, actuals.pattern) |expected, actual| {
+        try expectEqualPattern(expected, actual);
     }
 }
 
-fn expectEqualApps(expected: Ast, actual: Ast) !void {
+fn expectEqualPattern(expected: Ast, actual: Ast) !void {
     try streams.err.writeByte('\n');
     try streams.err.writeAll("Expected: ");
     try expected.write(streams.err);
@@ -433,12 +433,12 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
     try actual.write(streams.err);
     try streams.err.writeByte('\n');
 
-    try testing.expect(.apps == expected);
-    try testing.expect(.apps == actual);
-    try testing.expectEqual(expected.apps.len, actual.apps.len);
+    try testing.expect(.pattern == expected);
+    try testing.expect(.pattern == actual);
+    try testing.expectEqual(expected.pattern.len, actual.pattern.len);
 
     // This is redundant, but it makes any failures easier to trace
-    for (expected.apps, actual.apps) |expected_elem, actual_elem| {
+    for (expected.pattern, actual.pattern) |expected_elem, actual_elem| {
         if (@intFromEnum(expected_elem) == @intFromEnum(actual_elem)) {
             switch (expected_elem) {
                 .key => |key| {
@@ -452,11 +452,11 @@ fn expectEqualApps(expected: Ast, actual: Ast) !void {
                     );
                 },
                 .variable => |v| try testing.expect(mem.eql(u8, v, actual_elem.variable)),
-                .apps => try expectEqualApps(expected_elem, actual_elem),
+                .pattern => try expectEqualPattern(expected_elem, actual_elem),
                 .match => |_| panic("unimplemented", .{}),
                 .arrow => |_| panic("unimplemented", .{}),
-                .pattern => |pattern| try testing.expect(
-                    pattern.eql(actual_elem.pattern.*),
+                .trie => |trie| try testing.expect(
+                    trie.eql(actual_elem.trie.*),
                 ),
             }
         } else {
@@ -493,7 +493,7 @@ test "All Asts" {
         \\()
     ;
     const expecteds = &[_]Ast{Ast{
-        .apps = &.{
+        .pattern = &.{
             .{ .key = .{
                 .type = .Name,
                 .lit = "Name1",
@@ -517,12 +517,12 @@ test "All Asts" {
         },
     }};
     try testStrParse(input[0..7], expecteds);
-    // try expectEqualApps(expected, expected); // test the test function
+    // try expectEqualPattern(expected, expected); // test the test function
 }
 
-test "App: simple vals" {
+test "Pattern: simple vals" {
     const expecteds = &[_]Ast{Ast{
-        .apps = &.{
+        .pattern = &.{
             Ast{ .key = .{
                 .type = .Name,
                 .lit = "Aa",
@@ -543,9 +543,9 @@ test "App: simple vals" {
     try testStrParse("Aa Bb Cc", expecteds);
 }
 
-test "App: simple op" {
+test "Pattern: simple op" {
     const expecteds = &[_]Ast{
-        Ast{ .apps = &.{
+        Ast{ .pattern = &.{
             Ast{
                 .key = .{
                     .type = .Infix,
@@ -554,7 +554,7 @@ test "App: simple op" {
                 },
             },
             Ast{
-                .apps = &.{Ast{
+                .pattern = &.{Ast{
                     .key = .{
                         .type = .I,
                         .lit = "1",
@@ -574,21 +574,21 @@ test "App: simple op" {
     try testStrParse("1 + 2", expecteds);
 }
 
-test "App: simple ops" {
+test "Pattern: simple ops" {
     const expecteds = &[_]Ast{Ast{
-        .apps = &.{
+        .pattern = &.{
             Ast{ .key = .{
                 .type = .Infix,
                 .lit = "+",
                 .context = 6,
             } },
-            Ast{ .apps = &.{
+            Ast{ .pattern = &.{
                 Ast{ .key = .{
                     .type = .Infix,
                     .lit = "+",
                     .context = 2,
                 } },
-                Ast{ .apps = &.{
+                Ast{ .pattern = &.{
                     Ast{ .key = .{
                         .type = .I,
                         .lit = "1",
@@ -611,9 +611,9 @@ test "App: simple ops" {
     try testStrParse("1 + 2 + 3", expecteds);
 }
 
-test "App: simple op, no first arg" {
+test "Pattern: simple op, no first arg" {
     const expecteds = &[_]Ast{Ast{
-        .apps = &.{
+        .pattern = &.{
             Ast{
                 .key = .{
                     .type = .Infix,
@@ -621,7 +621,7 @@ test "App: simple op, no first arg" {
                     .context = 2,
                 },
             },
-            Ast{ .apps = &.{} },
+            Ast{ .pattern = &.{} },
             Ast{
                 .key = .{
                     .type = .I,
@@ -634,9 +634,9 @@ test "App: simple op, no first arg" {
     try testStrParse("+ 2", expecteds);
 }
 
-test "App: simple op, no second arg" {
+test "Pattern: simple op, no second arg" {
     const expecteds = &[_]Ast{Ast{
-        .apps = &.{
+        .pattern = &.{
             Ast{
                 .key = .{
                     .type = .Infix,
@@ -644,7 +644,7 @@ test "App: simple op, no second arg" {
                     .context = 2,
                 },
             },
-            Ast{ .apps = &.{
+            Ast{ .pattern = &.{
                 Ast{ .key = .{
                     .type = .I,
                     .lit = "1",
@@ -656,50 +656,50 @@ test "App: simple op, no second arg" {
     try testStrParse("1 +", expecteds);
 }
 
-test "App: simple parens" {
-    const expected = Ast{ .apps = &.{
-        Ast{ .apps = &.{} },
-        Ast{ .apps = &.{} },
-        Ast{ .apps = &.{
-            Ast{ .apps = &.{} },
+test "Pattern: simple parens" {
+    const expected = Ast{ .pattern = &.{
+        Ast{ .pattern = &.{} },
+        Ast{ .pattern = &.{} },
+        Ast{ .pattern = &.{
+            Ast{ .pattern = &.{} },
         } },
     } };
     try testStrParse("()() (())", &.{expected});
 }
 
-test "App: empty" {
+test "Pattern: empty" {
     try testStrParse("   \n\n \n  \n\n\n", &.{});
 }
 
-test "App: nested parens 1" {
+test "Pattern: nested parens 1" {
     const expecteds = &[_]Ast{
-        Ast{ .apps = &.{
-            Ast{ .apps = &.{} },
+        Ast{ .pattern = &.{
+            Ast{ .pattern = &.{} },
         } },
-        Ast{ .apps = &.{
-            Ast{ .apps = &.{} },
-            Ast{ .apps = &.{} },
-            Ast{ .apps = &.{
-                Ast{ .apps = &.{} },
+        Ast{ .pattern = &.{
+            Ast{ .pattern = &.{} },
+            Ast{ .pattern = &.{} },
+            Ast{ .pattern = &.{
+                Ast{ .pattern = &.{} },
             } },
         } },
-        // Ast{.apps = &.{ )
-        //     Ast{ .apps = &.{ )
-        //         Ast{ .apps = &.{ )
-        //             Ast{ .apps = &.{} },
-        //             Ast{ .apps = &.{} },
+        // Ast{.pattern = &.{ )
+        //     Ast{ .pattern = &.{ )
+        //         Ast{ .pattern = &.{ )
+        //             Ast{ .pattern = &.{} },
+        //             Ast{ .pattern = &.{} },
         //         } },
-        //         Ast{ .apps = &.{} },
+        //         Ast{ .pattern = &.{} },
         //     } },
         // } },
-        // Ast{.apps = &.{ )
-        //     Ast{ .apps = &.{ )
-        //         Ast{ .apps = &.{} },
-        //         Ast{ .apps = &.{ )
-        //             Ast{ .apps = &.{} },
+        // Ast{.pattern = &.{ )
+        //     Ast{ .pattern = &.{ )
+        //         Ast{ .pattern = &.{} },
+        //         Ast{ .pattern = &.{ )
+        //             Ast{ .pattern = &.{} },
         //         } },
         //     } },
-        //     Ast{ .apps = &.{} },
+        //     Ast{ .pattern = &.{} },
         // } },
     };
     try testStrParse(
@@ -715,16 +715,16 @@ test "App: nested parens 1" {
     , expecteds);
 }
 
-test "App: simple newlines" {
+test "Pattern: simple newlines" {
     const expecteds = &[_]Ast{
-        Ast{ .apps = &.{
+        Ast{ .pattern = &.{
             Ast{ .key = .{
                 .type = .Name,
                 .lit = "Foo",
                 .context = 0,
             } },
         } },
-        Ast{ .apps = &.{
+        Ast{ .pattern = &.{
             Ast{ .key = .{
                 .type = .Name,
                 .lit = "Bar",
@@ -738,7 +738,7 @@ test "App: simple newlines" {
     , expecteds);
 }
 
-test "Apps: pattern eql hash" {
+test "Pattern: trie eql hash" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -752,7 +752,7 @@ test "Apps: pattern eql hash" {
     const ast1 = try parse(allocator, &lexer1);
     const ast2 = try parse(allocator, &lexer2);
     const ast3 = try parse(allocator, &lexer3);
-    // try testing.expectEqualStrings(ast.?.apps[0].pat, "Asdf");
+    // try testing.expectEqualStrings(ast.?.pattern[0].pat, "Asdf");
     try testing.expect(ast1.eql(ast2));
     try testing.expectEqual(ast1.hash(), ast2.hash());
     try testing.expect(!ast1.eql(ast3));

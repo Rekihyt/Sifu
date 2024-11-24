@@ -23,6 +23,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    // we depends on duckdb.zig artifact
+    // this is the name in build.zig.zon
+    _ = b.dependency("generic-trie", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    b.addModule("generic-trie", .{})
+        .addImport("GenericTrie", b.createModule(.{}));
 
     // This is commented out so as to not build the x86 default when targeting
     // wasm.
@@ -38,14 +46,14 @@ pub fn build(b: *std.Build) void {
 
     // By making the run step depend on the install step, it will be run from the
     // installation directory rather than directly from within the cache directory.
-    // This is not necessary, however, if the application depends on other installed
+    // This is not necessary, however, if the patternlication depends on other installed
     // files, this ensures they will be present and in the expected location.
     run_cmd.step.dependOn(b.getInstallStep());
 
     // This creates a build step. It will be visible in the `zig build --help` menu,
     // and can be selected like this: `zig build run`
     // This will evaluate the `run` step rather than the default, which is "install".
-    const run_step = b.step("run", "Run the app");
+    const run_step = b.step("run", "Run the pattern");
     run_step.dependOn(&run_cmd.step);
 
     const wasm_exe = b.addExecutable(.{

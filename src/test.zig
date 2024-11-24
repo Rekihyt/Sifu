@@ -62,9 +62,9 @@ test "Pattern: simple vals" {
 
     const ast = try parse(allocator, &lexer);
     const key = ast.arrow.from;
-    var val = try Ast.createApps(allocator, ast.arrow.into);
+    var val = try Ast.createPattern(allocator, ast.arrow.into);
     var actual = Pat{};
-    // TODO: match patterns instead
+    // TODO: match tries instead
     // const updated = try Ast.insert(key, allocator, &actual, val);
     var expected = Pat{};
     var expected_a = Pat{};
@@ -77,7 +77,7 @@ test "Pattern: simple vals" {
     const token_bb2 = Token{ .lit = "Bb2", .type = .Name, .context = 123 };
     const token_cc = Token{ .lit = "Cc", .type = .Name, .context = 6 };
 
-    // Reverse order because patterns are values, not references
+    // Reverse order because tries are values, not references
     try expected_b.map.put(
         allocator,
         token_cc,
@@ -101,14 +101,14 @@ test "Pattern: simple vals" {
     try testing.expect(!expected.eql(expected_a));
 
     try testing.expect(!expected.eql(actual));
-    _ = try actual.insertApps(allocator, key, val.*);
+    _ = try actual.insertPattern(allocator, key, val.*);
     try expected.write(err_stream);
     try err_stream.writeByte('\n');
     try actual.write(err_stream);
     try err_stream.writeByte('\n');
     try testing.expect(expected.eql(actual));
 
-    // TODO: match patterns instead
+    // TODO: match tries instead
     // try testing.expectEqual(
     //     @as(?*const Ast, val),
     //     try Ast.match(key, allocator, actual),
@@ -135,10 +135,10 @@ test "Pattern: simple vals" {
 
     try testing.expect(expected.eql(actual));
 
-    try testing.expect(val.eql(actual.matchUniqueApps(key).?.*));
+    try testing.expect(val.eql(actual.matchUniquePattern(key).?.*));
     try testing.expect(val2.eql(actual.matchUnique(key2).?.*.val.?.*));
-    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUniqueApps(key[0..1]));
-    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUniqueApps(key2.apps[0..1]));
+    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUniquePattern(key[0..1]));
+    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUniquePattern(key2.pattern[0..1]));
     try expected.write(err_stream);
     try actual.write(err_stream);
 }

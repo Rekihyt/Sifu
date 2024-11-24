@@ -1,4 +1,4 @@
-# An example of how `Case` might be defined as taking a list of patterns and
+# An example of how `Case` might be defined as taking a list of tries and
 # applying them to an argument until a match(es).
 
 Is Empty ()       -> True

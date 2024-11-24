@@ -6,7 +6,7 @@ See some examples here: [playground](https://sifu-lang.pages.dev/playground)
 
 ### About
 
-Sifu is a Turing-incomplete programming language based on concatenative pattern
+Sifu is a Turing-incomplete programming language based on concatenative trie
 matching. It aims to fill a niche for solving problems with finite time/
 memory requirements. Any program in Sifu will terminate, making it easier to
 reason about its effects. This also provides the possibility of proving
@@ -17,7 +17,7 @@ problem doesn't apply.
 
 ### Main Ideas
   
-  - Computation is an ordered pattern match. Ordering is important, because it
+  - Computation is an ordered trie match. Ordering is important, because it
   ensures there is always a clear path to completion.
 
   - No turing completeness, everything terminates by matching entries whose
@@ -25,10 +25,10 @@ problem doesn't apply.
     recursion) until a fixed point (any remaining indices contain no more
     matches).
 
-  - Everything is a pattern map (like tries, but lookups have to deal with sub-lookups)
+  - Everything is a trie map (like tries, but lookups have to deal with sub-lookups)
 
-  - Core language is pattern-matching rewriter
-    - pattern entries (`->`) and pattern matches (`:`)
+  - Core language is trie-matching rewriter
+    - trie entries (`->`) and pattern matches (`:`)
     - keywords are `->`, `:`, `,`, `()`, and `{}`
     - keywords have lower precedence versions:  `-->`, `::`, `;`,
     - match / set membership / typeof is the same thing (`:`)
@@ -43,7 +43,7 @@ data instead of evaluating it.
   - Stdlib functions
     - multi entries (`=>`) and multi triemap matches (`::`). These are
       implemented by continuously appending a single var match of the current
-      scope until the top of the scope is reached (each key in the pattern is
+      scope until the top of the scope is reached (each pattern in the trie is
       matched)
   - Values and Variables
     - variables are just entries `x -> 2` and match anything
@@ -54,8 +54,8 @@ data instead of evaluating it.
     - records are types of types
     - record fields are type level entries
     - hashmaps of types can be used to implement row types
-    - type checking is a pattern match
-    - dependent types are patterns of types with variables
+    - type checking is a trie match
+    - dependent types are tries of types with variables
 
   - Compiler builds on the core language, using it as a library
     - complilation is creating perfect hashmaps from dynamic ones
@@ -71,15 +71,15 @@ data instead of evaluating it.
     - [x] Lexer (Text → Token)
     - [ ] Parser (Tokens → AST)
       - [x] Non-recursive parsing
-      - [ ] Newline delimited apps for top level and operators' rhs
-      - [x] Nested apps for parentheses
+      - [ ] Newline delimited pattern for top level and operators' rhs
+      - [x] Nested pattern for parentheses
       - [ ] Patterns
       - [x] Infix
       - [x] Match
       - [x] Arrow
       - Syntax
-        - [x] Apps (parens)
-        - [x] Patterns (braces)
+        - [x] Nested patterns (parens)
+        - [x] Tries (braces)
 
   - [ ] Patterns
     - [x] Definition
@@ -87,7 +87,7 @@ data instead of evaluating it.
       - [ ] Error handling
     - [x] Matching
       - [x] Vals
-      - [x] Apps
+      - [x] Trees
       - [x] Vars
     - [ ] Evaluation
       - [ ] Index-based limiting
@@ -96,14 +96,14 @@ data instead of evaluating it.
 ### Sifu Interpreter
 
   - [ ] REPL
-    - [x] Add entries into a global pattern
+    - [x] Add entries into a global trie
     - [x] Update entries
     - [ ] Load files
     - [ ] REPL specific keywords (delete entry, etc.)
 
   - [ ] Effects / FFI
     - [ ] Driver API
-    - [ ] Builtin Patterns
+    - [ ] Builtin Tries
     - [ ] File I/O
 
   - [ ] Basic Stdlib using the Core Language
