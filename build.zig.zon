@@ -22,12 +22,7 @@
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
-    .dependencies = .{
-        .@"generic-trie" = .{
-            .url = "git+https://github.com/Rekihyt/generic-trie/?ref=v1.0.0#fa19300a25159834b204c064f89c748d76dcaa07",
-            .hash = "12204550e1ae8c3ce01de2c4e0215f3668da98c290681d9c664bc639d57d8ffb1648",
-        },
-    },
+    .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",
