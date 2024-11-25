@@ -1,6 +1,6 @@
 const std = @import("std");
 const sifu = @import("sifu.zig");
-const Pattern = @import("sifu/pattern.zig").Pattern;
+const Trie = @import("sifu/trie.zig").Trie;
 const syntax = @import("sifu/syntax.zig");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
@@ -52,7 +52,7 @@ fn repl(
 ) !void {
     var buff_writer_out = io.bufferedWriter(streams.out);
     const buff_out = buff_writer_out.writer();
-    var trie = Pat{}; // This will be cleaned up with the arena
+    var trie = Trie{}; // This will be cleaned up with the arena
 
     while (replStep(&trie, allocator, buff_out)) |_| {
         try buff_writer_out.flush();
@@ -68,7 +68,7 @@ fn repl(
 }
 
 fn replStep(
-    trie: *Pat,
+    trie: *Trie,
     allocator: Allocator,
     writer: anytype,
 ) !?void {
@@ -76,18 +76,16 @@ fn replStep(
 
     const pattern, var str_arena = try parse(allocator, streams.in) orelse
         return error.EndOfStream;
-    defer tree.deinit(allocator);
-
-    const pattern = tree.root;
-    const ast = Ast.ofPattern(tree);
+    defer pattern.deinit(allocator);
+    const root = pattern.root;
 
     print(
         "Parsed pattern {} high and {} wide: ",
-        .{ tree.height, pattern.len },
+        .{ pattern.height, pattern.root.len },
     );
     try pattern.write(streams.err);
     print("\nof types: ", .{});
-    for (pattern) |app| {
+    for (root) |app| {
         print("{s} ", .{@tagName(app)});
         app.writeSExp(streams.err, 0) catch unreachable;
         streams.err.writeByte(' ') catch unreachable;
@@ -100,14 +98,14 @@ fn replStep(
     // }
     // TODO: read a "file" from stdin first, until eof, then start eval/matching
     // until another eof.
-    if (pattern.len > 0 and pattern[pattern.len - 1] == .arrow) {
-        const key = pattern[0 .. pattern.len - 1];
-        const val = pattern[pattern.len - 1].arrow;
+    if (root.len > 0 and root[root.len - 1] == .arrow) {
+        const key = root[0 .. root.len - 1];
+        const val = root[root.len - 1].arrow;
         // TODO: calculate correct tree height
         _ = try trie.append(
             allocator,
-            .{ .root = key, .height = tree.height },
-            try Pat.Node.ofPattern(val).clone(allocator),
+            .{ .root = key, .height = pattern.height },
+            try val.copy(allocator),
         );
     } else {
         // Free the rest of the match's string allocations. Those used in
@@ -117,7 +115,7 @@ fn replStep(
         // TODO: put into a comptime for eval kind
         // print("Parsed ast hash: {}\n", .{ast.hash()});
         // TODO: change to get by index or something
-        if (trie.get(ast.pattern)) |got| {
+        if (trie.get(pattern)) |got| {
             print("Got: ", .{});
             try got.write(streams.err);
             print("\n", .{});

@@ -10,10 +10,9 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const util = @import("../util.zig");
 const fsize = util.fsize();
-const Pat = @import("ast.zig").Pat;
-const Ast = Pat.Node;
-const Pattern = Pat.Pattern;
-const Pattern = @import("../trie.zig").Pattern;
+const Pattern = @import("pattern.zig").Pattern;
+const Node = Pattern.Node;
+const Trie = @import("trie.zig").Trie;
 const syntax = @import("syntax.zig");
 const Token = syntax.Token(usize);
 const Type = syntax.Type;
@@ -68,8 +67,8 @@ const Level = struct {
     /// This tracks operators for a given level of precedence, with a tail for
     /// their destination and a stack for their arguments.
     const Precedence = struct {
-        tail: *Ast,
-        pattern: ArrayListUnmanaged(Ast) = .{},
+        tail: *Node,
+        pattern: ArrayListUnmanaged(Node) = .{},
 
         pub fn writeTail(
             self: *Precedence,
@@ -88,7 +87,7 @@ const Level = struct {
                 .long_arrow,
                 .long_match,
                 => |_, tag| @unionInit(
-                    Ast,
+                    Node,
                     @tagName(tag),
                     Pattern{ .root = slice, .height = height },
                 ),
@@ -100,14 +99,14 @@ const Level = struct {
             self.tail = &slice[slice.len - 1];
         }
 
-        pub fn append(self: *Precedence, allocator: Allocator, ast: Ast) !void {
+        pub fn append(self: *Precedence, allocator: Allocator, ast: Node) !void {
             return self.pattern.append(allocator, ast);
         }
 
         /// True if the given op has precedence over the current one. True if an op
         /// hasn't been parsed yet, or if the ops share precedence levels.
         // Precedence: semis, long arrow, long match < infix < commas, arrow, match
-        fn order(self: Precedence, op: Ast) Order {
+        fn order(self: Precedence, op: Node) Order {
             if (!self.tail.isOp())
                 return .gt;
             const op_precedence = precedenceLevel(op);
@@ -128,7 +127,7 @@ const Level = struct {
     precedences: ArrayListUnmanaged(Precedence) =
         ArrayListUnmanaged(Precedence){},
     // Tracks the first link in the operator list, if any
-    root: Ast = Ast.ofPattern(.{}), // root starts as an pattern by default
+    root: Node = Node.ofPattern(.{}), // root starts as an pattern by default
 
     /// This function should be used on a new, stack allocated level
     pub fn init(self: *Level, allocator: Allocator) !void {
@@ -146,7 +145,7 @@ const Level = struct {
         return &self.precedences.items[len - 1];
     }
 
-    inline fn precedenceLevel(op: Ast) usize {
+    inline fn precedenceLevel(op: Node) usize {
         return switch (op) {
             .arrow, .match, .list => 3,
             .infix => 2,
@@ -159,8 +158,8 @@ const Level = struct {
     fn appendOp(
         self: *Level,
         allocator: Allocator,
-        op: Ast,
-        infix: ?Ast,
+        op: Node,
+        infix: ?Node,
         height: usize,
     ) !void {
         var precedence = self.current();
@@ -190,18 +189,18 @@ const Level = struct {
     // Convert a list of nodes into a single node, depending on its type
     inline fn intoNode(
         allocator: Allocator,
-        kind: Ast,
-        nodes: []const Ast,
-    ) !Ast {
+        kind: Pattern,
+        nodes: []const Pattern,
+    ) !Pattern {
         return switch (kind) {
-            .pattern => Ast.ofPattern(nodes),
+            .pattern => Pattern.ofPattern(nodes),
             .trie => blk: {
                 print("pat\n", .{});
-                var trie = Pat{};
+                var trie = Trie{};
                 // TODO: split nodes by commas/newlines and add individually
                 try trie.put(allocator, nodes, null);
-                Ast.ofPattern(nodes).deinit(allocator);
-                break :blk Ast.ofPattern(trie);
+                Pattern.ofPattern(nodes).deinit(allocator);
+                break :blk Pattern.ofTrie(trie);
             },
             else => unreachable,
         };
@@ -223,13 +222,13 @@ const Level = struct {
     }
 };
 
-/// Read from a Lexer until its stream is empty, and convert tokens into Asts.
-/// Caller owns the returned Asts (including the underlying token), which should
+/// Read from a Lexer until its stream is empty, and convert tokens into Patterns.
+/// Caller owns the returned Patterns (including the underlying token), which should
 /// be freed with `deinit`. This frees the underlying tokens as needed based on
-/// the memory manager, as tokens are copied into the returned Ast. Pattern are
+/// the memory manager, as tokens are copied into the returned Pattern. Patterns are
 /// assumed at all levels, with ops as appended, single terms to patterns (add a new
 /// branch for the current way of parsing)
-/// Returns null if the reader ended before an Ast could be parsed
+/// Returns null if the reader ended before an Pattern could be parsed
 /// Returns an arena containing all string allocations (from lexing)
 // - TODO: [] should be a flat Pattern instead of as an infix / nesting ops (the
 // behavior of commas and semis is no longer list-like, but array-like)
@@ -265,9 +264,9 @@ pub fn parse(
 }
 
 /// Does not allocate on errors or empty parses. Parses the line of tokens,
-/// returning a partial Ast on trailing operators or unfinished nesting. In such
+/// returning a partial Pattern on trailing operators or unfinished nesting. In such
 /// a case, null is returned and the same parser_stack must be reused to finish
-/// parsing. Otherwise, an Ast is returned from an owned slice of parser_stack.
+/// parsing. Otherwise, an Pattern is returned from an owned slice of parser_stack.
 // The parsing algorithm pushes a list whenever an operator with lower precedence
 // is parsed. Operators with same or higher precedence than their previous
 // adjacent operator are simply added to the tail of the current list. To parse
@@ -292,7 +291,7 @@ pub fn parseLine(
     var height: usize = 0;
     for (line) |token| {
         const current_ast = switch (token.type) {
-            .Name => Ast.ofKey(token.lit),
+            .Name => Node.ofKey(token.lit),
             inline .LeftParen, .LeftBrace => |tag| {
                 if (height > 0)
                     height -= 1;
@@ -302,18 +301,18 @@ pub fn parseLine(
                 level = Level{};
                 try level.init(allocator);
                 if (tag == .LeftBrace)
-                    level.root = Ast.ofPattern(Pattern{});
+                    level.root = Node.ofPattern(Pattern{});
                 continue;
             },
             .RightParen, .RightBrace => blk: {
                 height += 1;
                 defer level = levels.pop();
-                break :blk Ast.ofPattern(try level.finalize(allocator, height));
+                break :blk Node.ofPattern(try level.finalize(allocator, height));
             },
-            .Var => Ast.ofVar(token.lit),
-            .VarPattern => Ast.ofVarPattern(token.lit),
-            .Str, .I, .F, .U => Ast.ofKey(token.lit),
-            .Comment, .NewLine => Ast.ofKey(token.lit),
+            .Var => Node.ofVar(token.lit),
+            .VarPattern => Node.ofVarPattern(token.lit),
+            .Str, .I, .F, .U => Node.ofKey(token.lit),
+            .Comment, .NewLine => Node.ofKey(token.lit),
             inline else => |tag| {
                 const op_tag = switch (tag) {
                     .Infix => .infix,
@@ -328,8 +327,8 @@ pub fn parseLine(
                 // Right hand args for previous op with higher precedence
                 try level.appendOp(
                     allocator,
-                    @unionInit(Ast, @tagName(op_tag), .{}),
-                    if (tag == .Infix) Ast.ofKey(token.lit) else null,
+                    @unionInit(Node, @tagName(op_tag), .{}),
+                    if (tag == .Infix) Node.ofKey(token.lit) else null,
                     height,
                 );
                 continue;
@@ -341,7 +340,7 @@ pub fn parseLine(
 }
 
 // Assumes pattern are Infix encoded (they have at least one element).
-fn getOpTailOrNull(ast: Ast) ?*Ast {
+fn getOpTailOrNull(ast: Node) ?*Node {
     return switch (ast) {
         .pattern,
         .arrow,
@@ -363,8 +362,8 @@ fn getOpTailOrNull(ast: Ast) ?*Ast {
 //             asts[0].key.type == .Infix)
 //         {
 //             const key = asts[0].key;
-//             // An infix always forms an Pattern with at least
-//             // nodes, the second of which must be an Pattern (which
+//             // An infix always forms a pattern with at least
+//             // nodes, the second of which must be a pattern (which
 //             // may be empty)
 //             assert(asts.len >= 2);
 //             assert(asts[1] == .pattern);
@@ -398,7 +397,7 @@ const expectEqualStrings = testing.expectEqualStrings;
 const io = std.io;
 const TestLexer = @import("Lexer.zig")
     .Lexer(io.FixedBufferStream([]const u8).Reader);
-const List = ArrayListUnmanaged(Ast);
+const List = ArrayListUnmanaged(Node);
 
 test "simple val" {
     var arena = ArenaAllocator.init(testing.allocator);
@@ -411,7 +410,7 @@ test "simple val" {
     try testing.expectEqualStrings(ast.pattern[0].key.lit, "Asdf");
 }
 
-fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
+fn testStrParse(str: []const u8, expecteds: []const Node) !void {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -423,7 +422,7 @@ fn testStrParse(str: []const u8, expecteds: []const Ast) !void {
     }
 }
 
-fn expectEqualPattern(expected: Ast, actual: Ast) !void {
+fn expectEqualPattern(expected: Pattern, actual: Pattern) !void {
     try streams.err.writeByte('\n');
     try streams.err.writeAll("Expected: ");
     try expected.write(streams.err);
@@ -460,7 +459,7 @@ fn expectEqualPattern(expected: Ast, actual: Ast) !void {
                 ),
             }
         } else {
-            try streams.err.writeAll("Asts of different types not equal");
+            try streams.err.writeAll("Patterns of different types not equal");
             try testing.expectEqual(expected_elem, actual_elem);
             // above line should always fail
             panic(
@@ -474,7 +473,7 @@ fn expectEqualPattern(expected: Ast, actual: Ast) !void {
     // try testing.expect(.eq == expected.order(actual));
 }
 
-test "All Asts" {
+test "All Patterns" {
     const input =
         \\Name1,5;
         \\var1.
@@ -492,7 +491,7 @@ test "All Asts" {
         \\||
         \\()
     ;
-    const expecteds = &[_]Ast{Ast{
+    const expecteds = &[_]Node{Node{
         .pattern = &.{
             .{ .key = .{
                 .type = .Name,
@@ -521,19 +520,19 @@ test "All Asts" {
 }
 
 test "Pattern: simple vals" {
-    const expecteds = &[_]Ast{Ast{
+    const expecteds = &[_]Node{Node{
         .pattern = &.{
-            Ast{ .key = .{
+            Node{ .key = .{
                 .type = .Name,
                 .lit = "Aa",
                 .context = 0,
             } },
-            Ast{ .key = .{
+            Node{ .key = .{
                 .type = .Name,
                 .lit = "Bb",
                 .context = 3,
             } },
-            Ast{ .key = .{
+            Node{ .key = .{
                 .type = .Name,
                 .lit = "Cc",
                 .context = 6,
@@ -543,18 +542,18 @@ test "Pattern: simple vals" {
     try testStrParse("Aa Bb Cc", expecteds);
 }
 
-test "Pattern: simple op" {
-    const expecteds = &[_]Ast{
-        Ast{ .pattern = &.{
-            Ast{
+test "Node: simple op" {
+    const expecteds = &[_]Node{
+        Node{ .pattern = &.{
+            Node{
                 .key = .{
                     .type = .Infix,
                     .lit = "+",
                     .context = 2,
                 },
             },
-            Ast{
-                .pattern = &.{Ast{
+            Node{
+                .pattern = &.{Node{
                     .key = .{
                         .type = .I,
                         .lit = "1",
@@ -562,7 +561,7 @@ test "Pattern: simple op" {
                     },
                 }},
             },
-            Ast{
+            Node{
                 .key = .{
                     .type = .I,
                     .lit = "2",
@@ -574,34 +573,34 @@ test "Pattern: simple op" {
     try testStrParse("1 + 2", expecteds);
 }
 
-test "Pattern: simple ops" {
-    const expecteds = &[_]Ast{Ast{
+test "Node: simple ops" {
+    const expecteds = &[_]Node{Node{
         .pattern = &.{
-            Ast{ .key = .{
+            Node{ .key = .{
                 .type = .Infix,
                 .lit = "+",
                 .context = 6,
             } },
-            Ast{ .pattern = &.{
-                Ast{ .key = .{
+            Node{ .pattern = &.{
+                Node{ .key = .{
                     .type = .Infix,
                     .lit = "+",
                     .context = 2,
                 } },
-                Ast{ .pattern = &.{
-                    Ast{ .key = .{
+                Node{ .pattern = &.{
+                    Node{ .key = .{
                         .type = .I,
                         .lit = "1",
                         .context = 0,
                     } },
                 } },
-                Ast{ .key = .{
+                Node{ .key = .{
                     .type = .I,
                     .lit = "2",
                     .context = 4,
                 } },
             } },
-            Ast{ .key = .{
+            Node{ .key = .{
                 .type = .I,
                 .lit = "3",
                 .context = 8,
@@ -611,18 +610,18 @@ test "Pattern: simple ops" {
     try testStrParse("1 + 2 + 3", expecteds);
 }
 
-test "Pattern: simple op, no first arg" {
-    const expecteds = &[_]Ast{Ast{
+test "Node: simple op, no first arg" {
+    const expecteds = &[_]Node{Node{
         .pattern = &.{
-            Ast{
+            Node{
                 .key = .{
                     .type = .Infix,
                     .lit = "+",
                     .context = 2,
                 },
             },
-            Ast{ .pattern = &.{} },
-            Ast{
+            Node{ .pattern = &.{} },
+            Node{
                 .key = .{
                     .type = .I,
                     .lit = "2",
@@ -634,18 +633,18 @@ test "Pattern: simple op, no first arg" {
     try testStrParse("+ 2", expecteds);
 }
 
-test "Pattern: simple op, no second arg" {
-    const expecteds = &[_]Ast{Ast{
+test "Node: simple op, no second arg" {
+    const expecteds = &[_]Node{Node{
         .pattern = &.{
-            Ast{
+            Node{
                 .key = .{
                     .type = .Infix,
                     .lit = "+",
                     .context = 2,
                 },
             },
-            Ast{ .pattern = &.{
-                Ast{ .key = .{
+            Node{ .pattern = &.{
+                Node{ .key = .{
                     .type = .I,
                     .lit = "1",
                     .context = 0,
@@ -656,50 +655,50 @@ test "Pattern: simple op, no second arg" {
     try testStrParse("1 +", expecteds);
 }
 
-test "Pattern: simple parens" {
-    const expected = Ast{ .pattern = &.{
-        Ast{ .pattern = &.{} },
-        Ast{ .pattern = &.{} },
-        Ast{ .pattern = &.{
-            Ast{ .pattern = &.{} },
+test "Node: simple parens" {
+    const expected = Node{ .pattern = &.{
+        Node{ .pattern = &.{} },
+        Node{ .pattern = &.{} },
+        Node{ .pattern = &.{
+            Node{ .pattern = &.{} },
         } },
     } };
     try testStrParse("()() (())", &.{expected});
 }
 
-test "Pattern: empty" {
+test "Node: empty" {
     try testStrParse("   \n\n \n  \n\n\n", &.{});
 }
 
-test "Pattern: nested parens 1" {
-    const expecteds = &[_]Ast{
-        Ast{ .pattern = &.{
-            Ast{ .pattern = &.{} },
+test "Node: nested parens 1" {
+    const expecteds = &[_]Node{
+        Node{ .pattern = &.{
+            Node{ .pattern = &.{} },
         } },
-        Ast{ .pattern = &.{
-            Ast{ .pattern = &.{} },
-            Ast{ .pattern = &.{} },
-            Ast{ .pattern = &.{
-                Ast{ .pattern = &.{} },
+        Node{ .pattern = &.{
+            Node{ .pattern = &.{} },
+            Node{ .pattern = &.{} },
+            Node{ .pattern = &.{
+                Node{ .pattern = &.{} },
             } },
         } },
-        // Ast{.pattern = &.{ )
-        //     Ast{ .pattern = &.{ )
-        //         Ast{ .pattern = &.{ )
-        //             Ast{ .pattern = &.{} },
-        //             Ast{ .pattern = &.{} },
+        // Node{.pattern = &.{ )
+        //     Node{ .pattern = &.{ )
+        //         Node{ .pattern = &.{ )
+        //             Node{ .pattern = &.{} },
+        //             Node{ .pattern = &.{} },
         //         } },
-        //         Ast{ .pattern = &.{} },
+        //         Node{ .pattern = &.{} },
         //     } },
         // } },
-        // Ast{.pattern = &.{ )
-        //     Ast{ .pattern = &.{ )
-        //         Ast{ .pattern = &.{} },
-        //         Ast{ .pattern = &.{ )
-        //             Ast{ .pattern = &.{} },
+        // Node{.pattern = &.{ )
+        //     Node{ .pattern = &.{ )
+        //         Node{ .pattern = &.{} },
+        //         Node{ .pattern = &.{ )
+        //             Node{ .pattern = &.{} },
         //         } },
         //     } },
-        //     Ast{ .pattern = &.{} },
+        //     Node{ .pattern = &.{} },
         // } },
     };
     try testStrParse(
@@ -715,17 +714,17 @@ test "Pattern: nested parens 1" {
     , expecteds);
 }
 
-test "Pattern: simple newlines" {
-    const expecteds = &[_]Ast{
-        Ast{ .pattern = &.{
-            Ast{ .key = .{
+test "Node: simple newlines" {
+    const expecteds = &[_]Node{
+        Node{ .pattern = &.{
+            Node{ .key = .{
                 .type = .Name,
                 .lit = "Foo",
                 .context = 0,
             } },
         } },
-        Ast{ .pattern = &.{
-            Ast{ .key = .{
+        Node{ .pattern = &.{
+            Node{ .key = .{
                 .type = .Name,
                 .lit = "Bar",
                 .context = 0,
@@ -738,7 +737,7 @@ test "Pattern: simple newlines" {
     , expecteds);
 }
 
-test "Pattern: trie eql hash" {
+test "Trie: trie eql hash" {
     var arena = ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();

@@ -21,10 +21,10 @@ const streams = util.streams;
 const verbose_errors = @import("build_options").verbose_errors;
 const debug_mode = @import("builtin").mode == .Debug;
 
-pub const Tree = @import("tree.zig").Tree;
-const Trie = @import("generic_trie").TokenTrie(IndexedValues);
+pub const Pattern = @import("pattern.zig").Pattern;
+pub const Node = Pattern.Node;
 
-pub const HashMap = Trie.HashMap;
+pub const HashMap = std.StringHashMapUnmanaged(Trie);
 pub const GetOrPutResult = HashMap.GetOrPutResult;
 
 /// A key node and its next term pointer for a trie, where only the
@@ -41,7 +41,7 @@ const IndexMap = std.AutoArrayHashMapUnmanaged(usize, Entry);
 
 /// ArrayMaps are used as both branches and values need to support
 /// efficient iteration, to support recursive matching variables.
-const ValueMap = std.AutoArrayHashMapUnmanaged(usize, Tree);
+const ValueMap = std.AutoArrayHashMapUnmanaged(usize, Pattern);
 
 /// Stores any and all values, vars and their indices at each branch in the
 /// trie.
@@ -62,6 +62,14 @@ pub const IndexedValues = struct {
     /// Similar to the index map, this stores the values of the trie for the
     /// node at a given index/path.
     values: ValueMap = .{},
+
+    pub fn deinit(values: *IndexedValues, allocator: Allocator) void {
+        defer values.indices.deinit(allocator);
+        defer values.vars.deinit(allocator);
+        defer values.values.deinit(allocator);
+        for (values.values.values()) |*value|
+            value.destroy(allocator);
+    }
 };
 
 /// Maps terms to the next trie, if there is one. These form the branches of the
@@ -72,15 +80,17 @@ pub const IndexedValues = struct {
 /// Keys must be efficiently iterable, but that is provided by the index map
 /// anyways so an array map isn't needed for the trie's hashmap.
 ///
-/// The tries that for types that are shared (variables and nested tree/tries)
+/// The tries that for types that are shared (variables and nested pattern/tries)
 /// are encoded by a layer of pointer indirection in their respective fields
 /// here.
-pub const SifuTrie = struct {
+pub const Trie = struct {
     pub const Self = @This();
-    pub const Node = Tree.Node;
+
+    keys: HashMap = .{},
+    value: IndexedValues = .{},
 
     /// The results of matching a trie exactly (vars are matched literally
-    /// instead of by building up a tree of their possible values)
+    /// instead of by building up a pattern of their possible values)
     pub const ExactPrefix = struct {
         len: usize,
         index: ?usize, // Null if no prefix
@@ -88,12 +98,12 @@ pub const SifuTrie = struct {
     };
 
     /// Asserts that the index exists.
-    pub fn getIndex(self: Self, index: usize) Tree {
+    pub fn getIndex(self: Self, index: usize) Pattern {
         return self.getIndexOrNull(index) orelse
             panic("Index {} doesn't exist\n", .{index});
     }
     /// Returns null if the index doesn't exist in the trie.
-    pub fn getIndexOrNull(self: Self, index: usize) ?Tree {
+    pub fn getIndexOrNull(self: Self, index: usize) ?Pattern {
         var current = self;
         while (current.indices.get(index)) |next| {
             current = next.*;
@@ -102,13 +112,13 @@ pub const SifuTrie = struct {
     }
 
     /// Rebuilds the key for a given index using an allocator for the
-    /// arrays necessary to support the tree structure, but pointers to the
+    /// arrays necessary to support the pattern structure, but pointers to the
     /// underlying keys.
     pub fn rebuildKey(
         self: Self,
         allocator: Allocator,
         index: usize,
-    ) !Tree {
+    ) !Pattern {
         _ = index; // autofix
         _ = allocator; // autofix
         _ = self; // autofix
@@ -121,8 +131,8 @@ pub const SifuTrie = struct {
     // use putAssumeCapacity
     pub fn copy(self: Self, allocator: Allocator) Allocator.Error!Self {
         var result = Self{};
-        var map_iter = self.keys.iterator();
-        while (map_iter.next()) |entry|
+        var keys_iter = self.keys.iterator();
+        while (keys_iter.next()) |entry|
             try result.keys.putNoClobber(
                 allocator,
                 entry.key_ptr.*,
@@ -130,12 +140,12 @@ pub const SifuTrie = struct {
             );
 
         // Deep copy the indices map
-        var index_iter = self.indices.iterator();
+        var index_iter = self.value.indices.iterator();
         while (index_iter.next()) |index_entry| {
             const index = index_entry.key_ptr.*;
             const entry = index_entry.value_ptr.*;
             // Insert a borrowed pointer to the new key copy.
-            try result.indices
+            try result.value.indices
                 .putNoClobber(allocator, index, entry);
         }
 
@@ -167,10 +177,7 @@ pub const SifuTrie = struct {
         while (iter.next()) |entry| {
             entry.value_ptr.*.deinit(allocator);
         }
-        defer self.indices.deinit(allocator);
-        defer self.values.deinit(allocator);
-        for (self.values.values()) |*value|
-            value.destroy(allocator);
+        self.value.deinit(allocator);
     }
 
     pub fn hash(self: Self) u32 {
@@ -180,12 +187,12 @@ pub const SifuTrie = struct {
     }
 
     pub fn hasherUpdate(self: Self, hasher: anytype) void {
-        var map_iter = self.keys.iterator();
-        while (map_iter.next()) |entry| {
+        var keys_iter = self.keys.iterator();
+        while (keys_iter.next()) |entry| {
             entry.key_ptr.*.hasherUpdate(hasher);
             entry.value_ptr.*.hasherUpdate(hasher);
         }
-        var index_iter = self.indices.iterator();
+        var index_iter = self.values.indices.iterator();
         // TODO: recurse
         while (index_iter.next()) |*entry| {
             hasher.update(mem.asBytes(entry));
@@ -202,20 +209,20 @@ pub const SifuTrie = struct {
     /// are assumed to be in debruijn form already.
     pub fn eql(self: Self, other: Self) bool {
         if (self.keys.count() != other.keys.count() or
-            self.indices.entries.len != other.indices.entries.len or
+            self.values.indices.entries.len != other.values.indices.entries.len or
             self.values.entries.len != other.values.entries.len)
             return false;
-        var map_iter = self.keys.iterator();
-        var other_map_iter = other.keys.iterator();
-        while (map_iter.next()) |entry| {
-            const other_entry = other_map_iter.next() orelse
+        var keys_iter = self.keys.iterator();
+        var other_keys_iter = other.keys.iterator();
+        while (keys_iter.next()) |entry| {
+            const other_entry = other_keys_iter.next() orelse
                 return false;
             if (!(entry.key_ptr.*.eql(other_entry.key_ptr.*)) or
                 entry.value_ptr != other_entry.value_ptr)
                 return false;
         }
-        var index_iter = self.indices.iterator();
-        var other_index_iter = other.indices.iterator();
+        var index_iter = self.values.indices.iterator();
+        var other_index_iter = other.values.indices.iterator();
         while (index_iter.next()) |entry| {
             const other_entry = other_index_iter.next() orelse
                 return false;
@@ -246,7 +253,7 @@ pub const SifuTrie = struct {
     /// only match variables and a subtrie will be returned. This pointer
     /// is valid unless reassigned in `pat`.
     /// If trie is empty the same `pat` pointer will be returned. If
-    /// the entire `tree` is a prefix, a pointer to the last pat will be
+    /// the entire `pattern` is a prefix, a pointer to the last pat will be
     /// returned instead of null.
     /// `trie` isn't modified.
     pub fn getTerm(
@@ -255,11 +262,11 @@ pub const SifuTrie = struct {
     ) ?Self {
         return switch (node) {
             .key => |key| trie.keys.get(key),
-            .variable => |variable| trie.vars.get(variable),
-            .tree => |sub_tree| blk: {
+            .variable => |variable| trie.value.vars.get(variable),
+            .pattern => |sub_pattern| blk: {
                 var current = trie.keys.get("(") orelse
                     break :blk null;
-                for (sub_tree.root) |sub_node|
+                for (sub_pattern.root) |sub_node|
                     current = current.getTerm(sub_node) orelse
                         break :blk null;
                 break :blk current.keys.get(")");
@@ -270,28 +277,28 @@ pub const SifuTrie = struct {
     }
 
     /// Return a pointer to the last trie in `pat` after the longest path
-    /// following `tree`
+    /// following `pattern`
     pub fn getPrefix(
         trie: Self,
-        tree: Tree,
+        pattern: Pattern,
     ) ExactPrefix {
         var current = trie;
         const index: usize = undefined; // TODO
         // Follow the longest branch that exists
-        const prefix_len = for (tree.root, 0..) |trie, i| {
-            current = current.getTerm(trie) orelse
+        const prefix_len = for (pattern.root, 0..) |node, i| {
+            current = current.getTerm(node) orelse
                 break i;
-        } else tree.root.len;
+        } else pattern.root.len;
 
         return .{ .len = prefix_len, .index = index, .leaf = current };
     }
 
     pub fn get(
         trie: Self,
-        tree: Tree,
+        pattern: Pattern,
     ) ?Self {
-        const prefix = trie.getPrefix(tree);
-        return if (prefix.len == tree.root.len)
+        const prefix = trie.getPrefix(pattern);
+        return if (prefix.len == pattern.root.len)
             prefix.leaf
         else
             null;
@@ -300,8 +307,8 @@ pub const SifuTrie = struct {
     pub fn append(
         trie: *Self,
         allocator: Allocator,
-        key: Tree,
-        optional_value: ?Tree,
+        key: Pattern,
+        optional_value: ?Pattern,
     ) Allocator.Error!*Self {
         // The length of values will be the next entry index after insertion
         const len = trie.count();
@@ -310,29 +317,29 @@ pub const SifuTrie = struct {
         // If there isn't a value, use the key as the value instead
         const value = optional_value orelse
             try key.copy(allocator);
-        try branch.values.putNoClobber(allocator, len, value);
+        try branch.value.values.putNoClobber(allocator, len, value);
         return branch;
     }
 
     /// Creates the necessary branches and key entries in the trie for
-    /// tree, and returns a pointer to the branch at the end of the path.
+    /// pattern, and returns a pointer to the branch at the end of the path.
     /// While similar to a hashmap's getOrPut function, ensurePath always
     /// adds a new index, asserting that it did not already exist. There is
     /// no getOrPut equivalent for tries because they are append-only.
     ///
     /// The index must not already be in the trie.
-    /// Tree are copied.
-    /// Returns a pointer to the updated trie node. If the given tree is
+    /// Pattern are copied.
+    /// Returns a pointer to the updated trie node. If the given pattern is
     /// empty (0 len), the returned key and index are undefined.
     fn ensurePath(
         trie: *Self,
         allocator: Allocator,
         index: usize,
-        tree: Tree,
+        pattern: Pattern,
     ) !*Self {
         var current = trie;
-        for (tree.root) |trie| {
-            const entry = try current.ensurePathTerm(allocator, index, trie);
+        for (pattern.root) |node| {
+            const entry = try current.ensurePathTerm(allocator, index, node);
             current = entry.value_ptr;
         }
         return current;
@@ -346,7 +353,7 @@ pub const SifuTrie = struct {
     ) !Entry {
         const entry = try trie.keys
             .getOrPutValue(allocator, key, Self{});
-        try trie.indices.putNoClobber(allocator, index, entry);
+        try trie.value.indices.putNoClobber(allocator, index, entry);
         return entry;
     }
 
@@ -356,9 +363,9 @@ pub const SifuTrie = struct {
         index: usize,
         variable: []const u8,
     ) !Entry {
-        const entry = try trie.vars
+        const entry = try trie.value.vars
             .getOrPutValue(allocator, variable, Self{});
-        try trie.indices.putNoClobber(allocator, index, entry);
+        try trie.value.indices.putNoClobber(allocator, index, entry);
         return entry;
     }
 
@@ -373,7 +380,7 @@ pub const SifuTrie = struct {
         return switch (term) {
             .key => |key| try trie.getOrPutKey(allocator, index, key),
             .variable,
-            .var_tree,
+            .var_pattern,
             => |variable| try trie.getOrPutVar(allocator, index, variable),
             .trie => |sub_pat| {
                 const entry = try trie.getOrPutKey(allocator, index, "{");
@@ -382,53 +389,53 @@ pub const SifuTrie = struct {
                 @panic("unimplemented\n");
             },
             // Pattern trie's values will always be tries too, which will
-            // map nested tree to the next trie on the current level.
+            // map nested pattern to the next trie on the current level.
             // The resulting encoding is counter-intuitive when printed
             // because each level of nesting must be a branch to enable
             // trie matching.
-            inline else => |tree| blk: {
+            inline else => |pattern| blk: {
                 var entry = try trie.getOrPutKey(allocator, index, "(");
                 // All op types are encoded the same way after their top
                 // level hash. These don't need special treatment because
                 // their structure is simple, and their operator unique.
                 const next = try entry.value_ptr
-                    .ensurePath(allocator, index, tree);
+                    .ensurePath(allocator, index, pattern);
                 entry = try next.getOrPutKey(allocator, index, ")");
                 break :blk entry;
             },
         };
     }
 
-    /// Add a node to the trie by following `keys`, wrpatterning them into an
+    /// Add a node to the trie by following `keys`, wrapping them into an
     /// Pattern of Nodes.
     /// Allocations:
-    /// - The path followed by tree is allocated and copied recursively
+    /// - The path followed by pattern is allocated and copied recursively
     /// - The node, if given, is allocated and copied recursively
     /// Freeing should be done with `destroy` or `deinit`, depending on
     /// how `self` was allocated
     pub fn putKeys(
         self: *Self,
         allocator: Allocator,
-        keys: []const []const u8,
-        optional_value: ?Tree,
+        key: []const []const u8,
+        optional_value: ?Pattern,
     ) Allocator.Error!*Self {
-        var tree = allocator.alloc([]const u8, keys.len);
-        defer tree.free(allocator);
-        for (tree, keys) |*trie, key|
-            trie.* = Node.ofKey(key);
+        var pattern = allocator.alloc([]const u8, key.len);
+        defer pattern.free(allocator);
+        for (pattern, key) |*trie, token|
+            trie.* = Node.ofKey(token);
 
         return self.put(
             allocator,
-            Node.ofTree(tree),
+            Node.ofPattern(pattern),
             try optional_value.clone(allocator),
         );
     }
 
-    /// A partial or complete match of a given tree against a trie.
+    /// A partial or complete match of a given pattern against a trie.
     const Match = struct {
-        /// Keeps track of which vars and var_tree are bound to what part of an
+        /// Keeps track of which vars and var_pattern are bound to what part of an
         /// expression given during matching.
-        pub const VarBindings = std.StringHashMapUnmanaged(Tree);
+        pub const VarBindings = std.StringHashMapUnmanaged(Pattern);
 
         len: usize = 0, // Checks if complete or partial match
         index: usize = 0, // The bounds subsequent matches should be within
@@ -446,10 +453,10 @@ pub const SifuTrie = struct {
         pub fn rewrite(
             match_state: Match,
             allocator: Allocator,
-            tree: Tree,
-        ) Allocator.Error!Tree {
+            pattern: Pattern,
+        ) Allocator.Error!Pattern {
             var result = ArrayListUnmanaged(Node){};
-            for (tree.root) |node| switch (node) {
+            for (pattern.root) |node| switch (node) {
                 .key => |key| try result.append(allocator, Node.ofKey(key)),
                 .variable => |variable| {
                     print("Var get: ", .{});
@@ -464,22 +471,22 @@ pub const SifuTrie = struct {
                             node).copy(allocator),
                     );
                 },
-                .var_tree => |var_tree| {
-                    print("Var tree get: ", .{});
-                    if (match_state.bindings.get(var_tree)) |var_node|
+                .var_pattern => |var_pattern| {
+                    print("Var pattern get: ", .{});
+                    if (match_state.bindings.get(var_pattern)) |var_node|
                         var_node.write(streams.err) catch unreachable
                     else
                         print("null", .{});
                     print("\n", .{});
-                    if (match_state.bindings.get(var_tree)) |tree_node| {
-                        for (tree_node.tree.root) |trie|
+                    if (match_state.bindings.get(var_pattern)) |pattern_node| {
+                        for (pattern_node.pattern.root) |trie|
                             try result.append(
                                 allocator,
                                 try trie.copy(allocator),
                             );
                     } else try result.append(allocator, node);
                 },
-                inline .tree, .arrow, .match, .list, .infix => |nested, tag| {
+                inline .pattern, .arrow, .match, .list, .infix => |nested, tag| {
                     try result.append(allocator, @unionInit(
                         Node,
                         @tagName(tag),
@@ -491,9 +498,9 @@ pub const SifuTrie = struct {
                 // },
                 else => panic("unimplemented", .{}),
             };
-            return Tree{
+            return Pattern{
                 .root = try result.toOwnedSlice(allocator),
-                .height = tree.height,
+                .height = pattern.height,
             };
         }
 
@@ -517,7 +524,7 @@ pub const SifuTrie = struct {
     /// The first half of evaluation. The variables in the node match
     /// anything in the trie, and vars in the trie match anything in
     /// the expression. Includes partial prefixes (ones that don't match all
-    /// tree). This function returns any trie branches, even if their
+    /// pattern). This function returns any trie branches, even if their
     /// value is null, unlike `match`. The position defines the index where
     /// allowable matches begin. As a trie is matched, a hashmap for vars
     /// is populated with each var's bound variable. These can the be used
@@ -564,17 +571,17 @@ pub const SifuTrie = struct {
                 // previously matched indices
                 // TODO: Check vars if this fails, and prioritize index
                 // ordering over exact literal matches
-                if (current.indices.get(index)) |branch| {
+                if (current.value.indices.get(index)) |branch| {
                     _ = Branch{
                         .trie = branch.next.*,
                         .index = index,
                     };
-                } else if (current.values.contains(index)) {
+                } else if (current.value.values.contains(index)) {
                     _ = Branch{
                         .trie = current,
                         .index = index,
                     };
-                } else for (current.indices.keys()) |next_index| {
+                } else for (current.value.indices.keys()) |next_index| {
                     if (index > index) {
                         index = next_index;
                         break;
@@ -590,21 +597,21 @@ pub const SifuTrie = struct {
                 }
                 print(" at index: {}\n", .{index});
             },
-            .variable, .var_tree => @panic("unimplemented"),
+            .variable, .var_pattern => @panic("unimplemented"),
             .trie => @panic("unimplemented"), // |trie| {},
-            inline else => |sub_tree, tag| {
+            inline else => |sub_pattern, tag| {
                 _ = tag; // autofix
-                _ = sub_tree; // autofix
+                _ = sub_pattern; // autofix
                 // Check Var as Alternative here, but this probably can't be
                 // a recursive call without a stack overflow
-                print("Branching subtree\n", .{});
+                print("Branching subpattern\n", .{});
                 // var next = self.keys.get(
                 //     @unionInit(DetachedNode, @tagName(tag), {}),
                 // ) orelse {
                 //     _ = null;
                 // };
                 // var matches =
-                //     try next.matchAll(allocator, match_state, sub_tree) orelse
+                //     try next.matchAll(allocator, match_state, sub_pattern) orelse
                 //     {
                 //     _ = null;
                 // };
@@ -656,20 +663,20 @@ pub const SifuTrie = struct {
     }
 
     /// Same as match, but with matchTerm's signature. Returns a complete
-    /// match of all tree or else null. For partial matches, no new vars
+    /// match of all pattern or else null. For partial matches, no new vars
     /// are put into the bindings, and null is returned.
     /// Caller owns.
     pub fn matchAll(
         self: Self,
         allocator: Allocator,
         match_state: *Match,
-        tree: Tree,
+        pattern: Pattern,
     ) Allocator.Error!?Match {
         // TODO: restart if match fails partway
         const prev_len = match_state.bindings.size;
         _ = prev_len; // autofix
         var current = self;
-        for (tree.root) |trie| {
+        for (pattern.root) |trie| {
             if (try current
                 .branchTerm(allocator, match_state, trie)) |next_state|
             {
@@ -680,16 +687,16 @@ pub const SifuTrie = struct {
             }
         }
         print("Match All\n", .{});
-        // print("Result and Query len equal: {}\n", .{result.len == tree.len});
+        // print("Result and Query len equal: {}\n", .{result.len == pattern.len});
         // print("Result value null: {}\n", .{result.value == null});
-        return if (match_state.len == tree.root.len)
+        return if (match_state.len == pattern.root.len)
             match_state // TODO: maybe return values here?
         else
             null;
     }
 
-    /// Follow `tree` in `self` until no matches. Then returns the furthest
-    /// trie node and its corresponding number of matched tree that
+    /// Follow `pattern` in `self` until no matches. Then returns the furthest
+    /// trie node and its corresponding number of matched pattern that
     /// was in the trie. Starts matching at [index, ..), in the
     /// longest path otherwise any index for a shorter path.
     /// Caller owns and should free the result's value and bindings with
@@ -698,10 +705,10 @@ pub const SifuTrie = struct {
     pub fn match(
         self: Self,
         allocator: Allocator,
-        tree: Tree,
+        pattern: Pattern,
     ) Allocator.Error!Match {
         var match_state = Match{};
-        _ = try self.matchAll(allocator, &match_state, tree);
+        _ = try self.matchAll(allocator, &match_state, pattern);
 
         return match_state;
     }
@@ -714,21 +721,21 @@ pub const SifuTrie = struct {
         self: Self,
         allocator: Allocator,
         index: usize,
-        tree: Tree,
-    ) Allocator.Error!Tree {
+        pattern: Pattern,
+    ) Allocator.Error!Pattern {
         _ = index;
-        const next_match = try self.match(allocator, tree);
+        const next_match = try self.match(allocator, pattern);
         defer next_match.deinit();
-        while (next_match.values.next()) |entry| {
+        while (next_match.value.values.next()) |entry| {
             const next_index, const value =
                 .{ entry.key_ptr.*, entry.value_ptr.* };
             print(
-                "Matched {} of {} tree at index {}: ",
-                .{ next_match.len, tree.root.len, next_index },
+                "Matched {} of {} pattern at index {}: ",
+                .{ next_match.len, pattern.root.len, next_index },
             );
             value.write(streams.err) catch unreachable;
             print("\n", .{});
-            return self.rewrite(allocator, next_match.bindings, value.tree);
+            return self.rewrite(allocator, next_match.bindings, value.pattern);
         } else {
             print(
                 "No match, after {} nodes followed\n",
@@ -750,29 +757,29 @@ pub const SifuTrie = struct {
     pub fn evaluate(
         self: *Self,
         allocator: Allocator,
-        tree: Tree,
-    ) Allocator.Error!Tree {
+        pattern: Pattern,
+    ) Allocator.Error!Pattern {
         var index: usize = 0;
         var result = ArrayListUnmanaged(Node){};
-        while (index < tree.len) {
+        while (index < pattern.len) {
             print("Matching from index: {}\n", .{index});
-            const query = tree[index..];
+            const query = pattern[index..];
             const matched = try self.match(allocator, query);
             if (matched.len == 0) {
                 print("No match, skipping index {}.\n", .{index});
                 try result.append(
                     allocator,
-                    // Evaluate nested tree that failed to match
+                    // Evaluate nested pattern that failed to match
                     // TODO: replace recursion with a continue
-                    switch (tree[index]) {
-                        inline .tree, .match, .arrow, .list => |slice, tag|
+                    switch (pattern[index]) {
+                        inline .pattern, .match, .arrow, .list => |slice, tag|
                         // Recursively eval but preserve node type
                         @unionInit(
                             Node,
                             @tagName(tag),
                             try self.evaluate(allocator, slice),
                         ),
-                        else => try tree[index].copy(allocator),
+                        else => try pattern[index].copy(allocator),
                     },
                 );
                 index += 1;
@@ -783,8 +790,8 @@ pub const SifuTrie = struct {
                 // Prevent infinite recursion at this index. Recursion
                 // through other indices will be terminated by match index
                 // shrinking.
-                if (query.len == next.tree.len)
-                    for (query, next.tree) |trie, next_trie| {
+                if (query.len == next.pattern.len)
+                    for (query, next.pattern) |trie, next_trie| {
                         // check if the same trie's shape could be matched
                         // TODO: use a trie match function here instead of eql
                         if (!trie.asEmpty().eql(next_trie))
@@ -794,8 +801,8 @@ pub const SifuTrie = struct {
                 next.write(streams.err) catch unreachable;
                 streams.err.writeByte('\n') catch unreachable;
                 const rewritten =
-                    try self.rewrite(allocator, matched.bindings, next.tree);
-                defer Node.ofTree(rewritten).deinit(allocator);
+                    try self.rewrite(allocator, matched.bindings, next.pattern);
+                defer Node.ofPattern(rewritten).deinit(allocator);
                 const sub_eval = try self.evaluate(allocator, rewritten);
                 defer allocator.free(sub_eval);
                 try result.appendSlice(allocator, sub_eval);
@@ -808,7 +815,7 @@ pub const SifuTrie = struct {
         print("Eval: ", .{});
         for (result.items) |trie| {
             print("{s} ", .{@tagName(trie)});
-            trieiteSExp(streams.err, 0) catch unreachable;
+            trie.writeSExp(streams.err, 0) catch unreachable;
             streams.err.writeByte(' ') catch unreachable;
         }
         streams.err.writeByte('\n') catch unreachable;
@@ -816,7 +823,7 @@ pub const SifuTrie = struct {
     }
 
     pub fn count(self: Self) usize {
-        return self.indices.count() + self.values.count();
+        return self.value.indices.count() + self.value.values.count();
     }
 
     /// Pretty print a trie on multiple lines
@@ -835,13 +842,13 @@ pub const SifuTrie = struct {
         var current = self;
         if (comptime debug_mode)
             try writer.print("{} | ", .{index});
-        while (current.indices.get(index)) |branch| {
+        while (current.value.indices.get(index)) |branch| {
             try writer.writeAll(branch.key_ptr.*);
             try writer.writeByte(' ');
             current = branch.value_ptr.*;
         }
 
-        if (current.values.get(index)) |value| {
+        if (current.value.values.get(index)) |value| {
             try writer.writeAll("-> ");
             try value.writeIndent(writer, null);
         }
@@ -862,7 +869,7 @@ pub const SifuTrie = struct {
         optional_indent: ?usize,
     ) @TypeOf(writer).Error!void {
         try writer.writeAll("❬");
-        for (self.values.entries.items(.value)) |value| {
+        for (self.value.values.entries.items(.value)) |value| {
             try value.writeIndent(writer, null);
             try writer.writeAll(", ");
         }
@@ -916,7 +923,7 @@ test "Trie: eql" {
     try p1.map.put(allocator, "Aa", p2);
 
     var p_put = Trie{};
-    _ = try p_put.putTree(allocator, &.{
+    _ = try p_put.putPattern(allocator, &.{
         Trie.Node{ .key = "Aa" },
         Trie.Node{ .key = "Bb" },
     }, value2);
@@ -934,7 +941,7 @@ test "put multiple lits" {
     var trie = Trie{};
     defer trie.deinit(testing.allocator);
 
-    _ = try trie.putTree(
+    _ = try trie.putPattern(
         testing.allocator,
         &.{ Trie.Node{ .key = 1 }, Trie.Node{ .key = 2 }, Trie.Node{ .key = 3 } },
         null,
@@ -997,15 +1004,15 @@ test "Memory: nested trie" {
 test "Behavior: var hashing" {
     var pat = Trie{};
     defer pat.deinit(testing.allocator);
-    try pat.vars.put(
+    try pat.value.vars.put(
         testing.allocator,
         "x",
-        Trie.Tree{ .root = .{ .lit = "1" } },
+        Trie.Pattern{ .root = .{ .lit = "1" } },
     );
-    try pat.vars.put(
+    try pat.value.vars.put(
         testing.allocator,
         "y",
-        Trie.Tree{ .root = .{ .lit = "2" } },
+        Trie.Pattern{ .root = .{ .lit = "2" } },
     );
     try pat.pretty(streams.err);
     if (pat.get("")) |got| {

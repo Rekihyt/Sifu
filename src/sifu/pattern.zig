@@ -19,7 +19,7 @@ const panic = util.panic;
 const verbose_errors = @import("build_options").verbose_errors;
 const debug_mode = @import("builtin").mode == .Debug;
 const testing = @import("testing");
-const Pattern = @import("pattern.zig").Pattern;
+const Trie = @import("trie.zig").Trie;
 
 /// Describes the height and width of an Pattern (the level of nesting and
 /// length of the root array respectively)
@@ -88,7 +88,7 @@ pub const Pattern = struct {
         /// patterns.
         list: Pattern,
         /// An expression in braces.
-        pattern: Pattern,
+        trie: Trie,
 
         /// Performs a deep copy, resulting in a Node the same size as the
         /// original. Does not deep copy keys or vars.
@@ -123,7 +123,7 @@ pub const Pattern = struct {
         pub fn deinit(self: Node, allocator: Allocator) void {
             switch (self) {
                 .key, .variable, .var_pattern => {},
-                .pattern => |*p| @constCast(p).deinit(allocator),
+                .trie => |*trie| @constCast(trie).deinit(allocator),
                 inline else => |pattern| pattern.deinit(allocator),
             }
         }
@@ -162,7 +162,7 @@ pub const Pattern = struct {
                 // .variable => |v| Ctx.eql(undefined, v, other.variable, undefined),
                 .variable => other == .variable,
                 .var_pattern => other == .var_pattern,
-                .pattern => |p| p.eql(other.pattern),
+                .trie => |trie| trie.eql(other.trie),
                 inline else => |pattern| pattern.eql(other.pattern),
             };
         }
@@ -199,24 +199,9 @@ pub const Pattern = struct {
             return node;
         }
 
-        pub fn createPattern(
-            allocator: Allocator,
-            pattern: Pattern,
-        ) Allocator.Error!*Node {
-            const node = try allocator.create(Node);
-            node.* = Node{ .pattern = pattern };
-            return node;
-        }
-
-        pub fn ofPattern(
-            pattern: Pattern,
-        ) Node {
-            return Node{ .pattern = pattern };
-        }
-
         pub fn isOp(self: Node) bool {
             return switch (self) {
-                .key, .variable, .pattern, .var_pattern, .pattern => false,
+                .key, .variable, .pattern, .var_pattern, .trie => false,
                 else => true,
             };
         }
@@ -251,7 +236,7 @@ pub const Pattern = struct {
                 .variable, .var_pattern => |variable| {
                     _ = try util.genericWrite(variable, writer);
                 },
-                .pattern => |pattern| try pattern.writeIndent(
+                .trie => |trie| try trie.writeIndent(
                     writer,
                     optional_indent,
                 ),
@@ -309,8 +294,8 @@ pub const Pattern = struct {
 
     pub fn copy(self: Pattern, allocator: Allocator) !Pattern {
         const pattern_copy = try allocator.alloc(Node, self.root.len);
-        for (self.root, pattern_copy) |pattern, *pattern_copy|
-            pattern_copy.* = try pattern.copy(allocator);
+        for (self.root, pattern_copy) |pattern, *node_copy|
+            node_copy.* = try pattern.copy(allocator);
 
         return Pattern{
             .root = pattern_copy,
@@ -326,8 +311,8 @@ pub const Pattern = struct {
 
     // Clears all memory and resets this Pattern's root to an empty pattern.
     pub fn deinit(pattern: Pattern, allocator: Allocator) void {
-        for (pattern.root) |*pattern| {
-            @constCast(pattern).deinit(allocator);
+        for (pattern.root) |*node| {
+            @constCast(node).deinit(allocator);
         }
         allocator.free(pattern.root);
     }
