@@ -105,10 +105,10 @@ pub const Trie = struct {
     /// Returns null if the index doesn't exist in the trie.
     pub fn getIndexOrNull(self: Self, index: usize) ?Pattern {
         var current = self;
-        while (current.indices.get(index)) |next| {
-            current = next.*;
+        while (current.value.indices.get(index)) |next| {
+            current = next.value_ptr.*;
         }
-        return current.values.get(index);
+        return current.value.values.get(index);
     }
 
     /// Rebuilds the key for a given index using an allocator for the
@@ -192,10 +192,15 @@ pub const Trie = struct {
             entry.key_ptr.*.hasherUpdate(hasher);
             entry.value_ptr.*.hasherUpdate(hasher);
         }
-        var index_iter = self.values.indices.iterator();
+        // No need to hash indices, only vars and values
+        var vars_iter = self.values.vars.iterator();
+        while (vars_iter.next()) |*entry| {
+            hasher.update(entry.value_ptr.*);
+        }
+        var values_iter = self.values.values.iterator();
         // TODO: recurse
-        while (index_iter.next()) |*entry| {
-            hasher.update(mem.asBytes(entry));
+        while (values_iter.next()) |*entry| {
+            entry.value_ptr.hasherUpdate(hasher);
         }
     }
 
@@ -209,27 +214,28 @@ pub const Trie = struct {
     /// are assumed to be in debruijn form already.
     pub fn eql(self: Self, other: Self) bool {
         if (self.keys.count() != other.keys.count() or
-            self.values.indices.entries.len != other.values.indices.entries.len or
-            self.values.entries.len != other.values.entries.len)
+            self.value.indices.entries.len !=
+            other.value.indices.entries.len or
+            self.value.values.entries.len != other.value.values.entries.len)
             return false;
         var keys_iter = self.keys.iterator();
         var other_keys_iter = other.keys.iterator();
         while (keys_iter.next()) |entry| {
             const other_entry = other_keys_iter.next() orelse
                 return false;
-            if (!(entry.key_ptr.*.eql(other_entry.key_ptr.*)) or
+            if (!(mem.eql(u8, entry.key_ptr.*, other_entry.key_ptr.*)) or
                 entry.value_ptr != other_entry.value_ptr)
                 return false;
         }
-        var index_iter = self.values.indices.iterator();
-        var other_index_iter = other.values.indices.iterator();
-        while (index_iter.next()) |entry| {
-            const other_entry = other_index_iter.next() orelse
+        var value_iter = self.value.values.iterator();
+        var other_value_iter = other.value.values.iterator();
+        while (value_iter.next()) |entry| {
+            const other_entry = other_value_iter.next() orelse
                 return false;
-            const val = entry.value_ptr.*;
-            const other_index = other_entry.value_ptr.*;
+            const value = entry.value_ptr.*;
+            const other_value = other_entry.value_ptr.*;
             if (entry.key_ptr.* != other_entry.key_ptr.* or
-                !val.term.eql(other_index.term.*))
+                !value.eql(other_value))
                 return false;
         }
         return true;
@@ -407,28 +413,22 @@ pub const Trie = struct {
     }
 
     /// Add a node to the trie by following `keys`, wrapping them into an
-    /// Pattern of Nodes.
+    /// Pattern of Nodes. Assumes
     /// Allocations:
-    /// - The path followed by pattern is allocated and copied recursively
-    /// - The node, if given, is allocated and copied recursively
+    /// - The value, if given, is allocated and copied recursively
     /// Freeing should be done with `destroy` or `deinit`, depending on
     /// how `self` was allocated
-    pub fn putKeys(
+    pub fn appendKey(
         self: *Self,
         allocator: Allocator,
         key: []const []const u8,
-        optional_value: ?Pattern,
+        value: Pattern,
     ) Allocator.Error!*Self {
-        var pattern = allocator.alloc([]const u8, key.len);
-        defer pattern.free(allocator);
-        for (pattern, key) |*trie, token|
-            trie.* = Node.ofKey(token);
+        const root = try allocator.alloc(Node, key.len);
+        for (root, key) |*node, token|
+            node.* = Node.ofKey(token);
 
-        return self.put(
-            allocator,
-            Node.ofPattern(pattern),
-            try optional_value.clone(allocator),
-        );
+        return self.append(allocator, Pattern{ .root = root }, value);
     }
 
     /// A partial or complete match of a given pattern against a trie.
@@ -913,121 +913,104 @@ test "Trie: eql" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var p1 = Trie{};
-    var p2 = Trie{};
+    var trie1 = Trie{};
+    var trie2 = Trie{};
 
-    var value = Trie.Node{ .key = "123" };
-    const value2 = Trie.Node{ .key = "123" };
-    // Reverse order because tries are values, not references
-    try p2.map.put(allocator, "Bb", Trie{ .value = &value });
-    try p1.map.put(allocator, "Aa", p2);
+    const key = Pattern{ .root = &.{
+        .{ .key = "Aa" },
+        .{ .key = "Bb" },
+    } };
+    const ptr1 = try trie1.append(allocator, key, Pattern{
+        .root = &.{.{ .key = "Value" }},
+    });
+    const ptr2 = try trie2.append(allocator, key, Pattern{
+        .root = &.{.{ .key = "Value" }},
+    });
 
-    var p_put = Trie{};
-    _ = try p_put.putPattern(allocator, &.{
-        Trie.Node{ .key = "Aa" },
-        Trie.Node{ .key = "Bb" },
-    }, value2);
-    try p1.write(streams.err);
-    try streams.err.writeByte('\n');
-    try p_put.write(streams.err);
-    try streams.err.writeByte('\n');
-    try testing.expect(p1.eql(p_put));
+    try testing.expect(trie1.getIndexOrNull(0) != null);
+    try testing.expect(trie2.getIndexOrNull(0) != null);
+
+    // Compare leaves that share the same value
+    try testing.expect(ptr1.eql(ptr2.*));
+
+    // Compare tries that have the same key and value
+    try testing.expect(trie1.eql(trie2));
+    try testing.expect(trie2.eql(trie1));
 }
 
-test "put single lit" {}
+test "Structure: put single lit" {}
 
-test "put multiple lits" {
+test "Structure: put multiple lits" {
     // Multiple keys
     var trie = Trie{};
     defer trie.deinit(testing.allocator);
 
-    _ = try trie.putPattern(
+    const val = Pattern{ .root = &.{.{ .key = "Val" }} };
+    _ = try trie.append(
         testing.allocator,
-        &.{ Trie.Node{ .key = 1 }, Trie.Node{ .key = 2 }, Trie.Node{ .key = 3 } },
-        null,
+        Pattern{ .root = &.{
+            Node{ .key = "1" },
+            Node{ .key = "2" },
+            Node{ .key = "3" },
+        } },
+        val,
     );
-    try testing.expect(trie.keys.contains(1));
-}
-
-test "Compile: nested" {
-    var arena = ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const al = arena.allocator();
-    var trie = try Trie.ofValue(al, 123);
-    const prefix = trie.getPrefix(&.{});
-    _ = prefix;
-    // Test nested
-    // const Pat2 = Pat{};
-    // Pat2.pat_map.put( &pat, 456 };
-    // _ = Pat2;
+    try testing.expect(trie.keys.contains("1"));
+    try testing.expect(trie.keys.get("1").?.keys.contains("2"));
+    try testing.expectEqualDeep(trie.getIndex(0), val);
 }
 
 test "Memory: simple" {
-    var trie = try Trie.ofValue(testing.allocator, 123);
-    defer trie.deinit(testing.allocator);
-}
-
-test "Memory: nesting" {
-    var nested_trie = try Trie.create(testing.allocator);
-    defer nested_trie.destroy(testing.allocator);
-    nested_trie.getOrPut(testing.allocator, Trie{}, "subpat's value");
-
-    _ = try nested_trie.putKeys(
-        testing.allocator,
-        &.{ "cherry", "blossom", "tree" },
-        Trie.Node.ofKey("beautiful"),
-    );
-}
-
-test "Memory: idempotency" {
     var trie = Trie{};
     defer trie.deinit(testing.allocator);
+
+    const ptr1 = try trie.append(
+        testing.allocator,
+        Pattern{ .root = &.{} },
+        Pattern{ .root = &.{.{ .key = "123" }} },
+    );
+    const ptr2 = try trie.append(
+        testing.allocator,
+        Pattern{ .root = &.{ .{ .key = "01" }, .{ .key = "12" } } },
+        Pattern{ .root = &.{.{ .key = "123" }} },
+    );
+    const ptr3 = try trie.append(
+        testing.allocator,
+        Pattern{ .root = &.{ .{ .key = "01" }, .{ .key = "12" } } },
+        Pattern{ .root = &.{.{ .key = "234" }} },
+    );
+
+    try testing.expect(ptr1 != ptr2);
+    try testing.expectEqual(ptr2, ptr3);
 }
 
-test "Memory: nested trie" {
-    var trie = try Trie.create(testing.allocator);
-    defer trie.destroy(testing.allocator);
-    var value_trie = try Trie.ofValue(testing.allocator, "Value");
+test "Behavior: vars" {
+    var nested_trie = try Trie.create(testing.allocator);
+    defer nested_trie.destroy(testing.allocator);
 
-    // No need to free this, because key pointers are destroyed
-    var nested_trie = try Trie.ofValue(testing.allocator, "Asdf");
-
-    try trie.keys.put(testing.allocator, Trie.Node{ .trie = &nested_trie }, value_trie);
-
-    _ = try value_trie.putKeys(
+    _ = try nested_trie.appendKey(
         testing.allocator,
-        &.{ "cherry", "blossom", "tree" },
-        null,
+        &.{
+            "cherry",
+            "blossom",
+            "tree",
+        },
+        Pattern{ .root = &.{.{ .key = "Beautiful" }} },
     );
 }
 
-test "Behavior: var hashing" {
-    var pat = Trie{};
-    defer pat.deinit(testing.allocator);
-    try pat.value.vars.put(
-        testing.allocator,
-        "x",
-        Trie.Pattern{ .root = .{ .lit = "1" } },
-    );
-    try pat.value.vars.put(
-        testing.allocator,
-        "y",
-        Trie.Pattern{ .root = .{ .lit = "2" } },
-    );
-    try pat.pretty(streams.err);
-    if (pat.get("")) |got| {
-        print("Got: ", .{});
-        try got.write(streams.err);
-        print("\n", .{});
-    } else print("Got null\n", .{});
-    if (pat.get("x")) |got| {
-        print("Got: ", .{});
-        try got.write(streams.err);
-        print("\n", .{});
-    } else print("Got null\n", .{});
+test "Behavior: nesting" {
+    @panic("unimplemented");
 }
 
-// TODO: test for multiple tries with different variables, and with multiple
-// equal variables
-// TODO: test for tries with equal keys but different structure, like A (B)
-// and (A B)
+test "Behavior: equal variables" {
+    @panic("unimplemented");
+}
+
+test "Behavior: equal keys, different indices" {
+    @panic("unimplemented");
+}
+
+test "Behavior: equal keys, different structure" {
+    @panic("unimplemented");
+}

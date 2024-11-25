@@ -634,8 +634,8 @@ test "Node: simple op, no first arg" {
 }
 
 test "Node: simple op, no second arg" {
-    const expecteds = &[_]Node{Node{
-        .pattern = &.{
+    const expecteds = &[_]Node{Node{ .pattern = Pattern{
+        .root = &.{
             Node{
                 .key = .{
                     .type = .Infix,
@@ -651,18 +651,18 @@ test "Node: simple op, no second arg" {
                 } },
             } },
         },
-    }};
+    } }};
     try testStrParse("1 +", expecteds);
 }
 
 test "Node: simple parens" {
-    const expected = Node{ .pattern = &.{
+    const expected = Node{ .pattern = Pattern{ .root = &.{
         Node{ .pattern = &.{} },
         Node{ .pattern = &.{} },
         Node{ .pattern = &.{
             Node{ .pattern = &.{} },
         } },
-    } };
+    } } };
     try testStrParse("()() (())", &.{expected});
 }
 
@@ -670,36 +670,12 @@ test "Node: empty" {
     try testStrParse("   \n\n \n  \n\n\n", &.{});
 }
 
-test "Node: nested parens 1" {
+test "Pattern: nested parens 1" {
     const expecteds = &[_]Node{
-        Node{ .pattern = &.{
-            Node{ .pattern = &.{} },
-        } },
-        Node{ .pattern = &.{
-            Node{ .pattern = &.{} },
-            Node{ .pattern = &.{} },
-            Node{ .pattern = &.{
-                Node{ .pattern = &.{} },
-            } },
-        } },
-        // Node{.pattern = &.{ )
-        //     Node{ .pattern = &.{ )
-        //         Node{ .pattern = &.{ )
-        //             Node{ .pattern = &.{} },
-        //             Node{ .pattern = &.{} },
-        //         } },
-        //         Node{ .pattern = &.{} },
-        //     } },
-        // } },
-        // Node{.pattern = &.{ )
-        //     Node{ .pattern = &.{ )
-        //         Node{ .pattern = &.{} },
-        //         Node{ .pattern = &.{ )
-        //             Node{ .pattern = &.{} },
-        //         } },
-        //     } },
-        //     Node{ .pattern = &.{} },
-        // } },
+        Node{ .pattern = Pattern{ .root = &.{} }, .height = 1 },
+        Node{ .pattern = Pattern{ .root = &.{
+            Node{ .pattern = Pattern{ .root = &.{} } },
+        } }, .height = 2 },
     };
     try testStrParse(
         \\ ()
@@ -716,20 +692,20 @@ test "Node: nested parens 1" {
 
 test "Node: simple newlines" {
     const expecteds = &[_]Node{
-        Node{ .pattern = &.{
-            Node{ .key = .{
+        Node{ .pattern = Pattern{ .root = &.{
+            .root = &.{Node{ .key = .{
                 .type = .Name,
                 .lit = "Foo",
                 .context = 0,
-            } },
-        } },
-        Node{ .pattern = &.{
+            } }},
+        } } },
+        Node{ .pattern = .{ .root = &.{
             Node{ .key = .{
                 .type = .Name,
                 .lit = "Bar",
                 .context = 0,
             } },
-        } },
+        } } },
     };
     try testStrParse(
         \\ Foo

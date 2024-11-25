@@ -1,11 +1,12 @@
 const std = @import("std");
 const testing = std.testing;
-const Pat = @import("sifu/ast.zig").Pat;
-const Ast = Pat.Node;
 const syntax = @import("sifu/syntax.zig");
 const Token = syntax.Token(usize);
 const Term = syntax.Term;
 const Type = syntax.Type;
+const Trie = @import("sifu/trie.zig").Trie;
+const Node = Trie.Node;
+const Pattern = Trie.Pattern;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Lexer = @import("sifu/Lexer.zig")
     .Lexer(io.FixedBufferStream([]const u8).Reader);
@@ -62,14 +63,14 @@ test "Pattern: simple vals" {
 
     const ast = try parse(allocator, &lexer);
     const key = ast.arrow.from;
-    var val = try Ast.createPattern(allocator, ast.arrow.into);
-    var actual = Pat{};
+    var val = try Node.createPattern(allocator, ast.arrow.into);
+    var actual = Trie{};
     // TODO: match tries instead
-    // const updated = try Ast.insert(key, allocator, &actual, val);
-    var expected = Pat{};
-    var expected_a = Pat{};
-    var expected_b = Pat{};
-    const expected_c = Pat{
+    // const updated = try Node.insert(key, allocator, &actual, val);
+    var expected = Trie{};
+    var expected_a = Trie{};
+    var expected_b = Trie{};
+    const expected_c = Trie{
         .val = val,
     };
     const token_aa = Token{ .lit = "Aa", .type = .Name, .context = 0 };
@@ -110,12 +111,12 @@ test "Pattern: simple vals" {
 
     // TODO: match tries instead
     // try testing.expectEqual(
-    //     @as(?*const Ast, val),
-    //     try Ast.match(key, allocator, actual),
+    //     @as(?*const Node, val),
+    //     try Node.match(key, allocator, actual),
     // );
     // try testing.expectEqual(
-    //     @as(?*const Ast, null),
-    //     try Ast.match(key, allocator, expected_c),
+    //     @as(?*const Node, null),
+    //     try Node.match(key, allocator, expected_c),
     // );
 
     // Test branching
@@ -127,7 +128,7 @@ test "Pattern: simple vals" {
         .map.put(
         allocator,
         token_bb2,
-        Pat{ .val = &val2 },
+        Trie{ .val = &val2 },
     );
 
     try testing.expect(!expected.eql(actual));
@@ -137,8 +138,8 @@ test "Pattern: simple vals" {
 
     try testing.expect(val.eql(actual.matchUniquePattern(key).?.*));
     try testing.expect(val2.eql(actual.matchUnique(key2).?.*.val.?.*));
-    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUniquePattern(key[0..1]));
-    try testing.expectEqual(@as(?*Pat.Node, null), actual.matchUniquePattern(key2.pattern[0..1]));
+    try testing.expectEqual(@as(?*Trie.Node, null), actual.matchUniquePattern(key[0..1]));
+    try testing.expectEqual(@as(?*Trie.Node, null), actual.matchUniquePattern(key2.pattern[0..1]));
     try expected.write(err_stream);
     try actual.write(err_stream);
 }
