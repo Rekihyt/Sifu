@@ -23,14 +23,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    // we depends on duckdb.zig artifact
+    // we depend on generic-trie.zig artifact
     // this is the name in build.zig.zon
-    _ = b.dependency("generic-trie", .{
+    const generic_trie_module = b.dependency("generic-trie", .{
         .target = target,
         .optimize = optimize,
-    });
-    b.addModule("generic-trie", .{})
-        .addImport("GenericTrie", b.createModule(.{}));
+    }).module("generic-trie");
+    exe.root_module
+        .addImport("generic-trie", generic_trie_module);
 
     // This is commented out so as to not build the x86 default when targeting
     // wasm.
