@@ -115,16 +115,21 @@ fn replStep(
         // TODO: put into a comptime for eval kind
         // print("Parsed ast hash: {}\n", .{ast.hash()});
         // TODO: change to get by index or something
-        if (trie.get(pattern)) |got| {
-            print("Got: ", .{});
-            try got.write(streams.err);
-            print("\n", .{});
-        } else print("Got null\n", .{});
+        // if (trie.get(pattern)) |got| {
+        //     print("Got: ", .{});
+        //     try got.write(streams.err);
+        //     print("\n", .{});
+        // } else print("Got null\n", .{});
 
-        // const step = try trie.evaluateStep(allocator, 0, tree);
-        // defer Ast.ofPattern(step).deinit(allocator);
+        const match = try trie.match(allocator, pattern);
+        print("Matched: ", .{});
+        try match.writeIndent(writer, 0);
+        try writer.writeByte('\n');
+
+        // const step = try trie.evaluateStep(allocator, 0, pattern);
+        // defer step.deinit(allocator);
         // print("Match Rewrite: ", .{});
-        // try Ast.ofPattern(step).write(writer);
+        // try step.write(writer);
         // try writer.writeByte('\n');
 
         // const eval = try trie.evaluate(allocator, pattern);
