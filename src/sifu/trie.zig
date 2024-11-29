@@ -27,49 +27,31 @@ pub const Node = Pattern.Node;
 pub const HashMap = std.StringHashMapUnmanaged(Trie);
 pub const GetOrPutResult = HashMap.GetOrPutResult;
 
+/// This maps to branches, but the type is Branch instead of just *Self to
+/// retrieve keys if necessary. The Self pointer references another field in
+/// this trie, such as `keys`. Stores any and all values, vars and their indices
+/// at each branch in the trie. Tracks the order of entries in the trie and
+/// references to next pointers. An index for an entry is saved at every branch
+/// in the trie for a given key. Branches may or may not contain values in their
+/// ValueMap, for example in `Foo Bar -> 123`, the branch at `Foo` would have an
+/// index to the key `Bar` and a leaf trie containing the value `123`.
+const IndexMap = std.AutoArrayHashMapUnmanaged(usize, Index);
+
 /// A key node and its next term pointer for a trie, where only the
 /// length of slice types are stored for keys (instead of pointers).
 /// The term/next is a reference to a key/value in the HashMaps,
-/// which owns both. This type is isomorphic to a key-value entry in
-/// HashMap to form a bijection.
-pub const Entry = HashMap.Entry;
-
-/// This maps to branches, but the type is Branch instead of just *Self
-/// to retrieve keys if necessary. The Self pointer references another
-/// field in this trie, such as `keys`.
-const IndexMap = std.AutoArrayHashMapUnmanaged(usize, Entry);
-
-/// ArrayMaps are used as both branches and values need to support
-/// efficient iteration, to support recursive matching variables.
-const ValueMap = std.AutoArrayHashMapUnmanaged(usize, Pattern);
-
-/// Stores any and all values, vars and their indices at each branch in the
-/// trie.
-pub const IndexedValues = struct {
-    /// Tracks the order of entries in the trie and references to next
-    /// pointers. An index for an entry is saved at every branch in the trie
-    /// for a given key. Branches may or may not contain values in their
-    /// ValueMap, for example in `Foo Bar -> 123`, the branch at `Foo` would
-    /// have an index to the key `Bar` and a leaf trie containing the
-    /// value `123`.
-    indices: IndexMap = .{},
-
-    /// Caches a mtrieing of vars to their indices (rules with the same
-    /// vars can be repeated arbitrarily) so that they can be efficiently
-    /// iterated over.
-    vars: HashMap = .{},
-
-    /// Similar to the index map, this stores the values of the trie for the
-    /// node at a given index/path.
-    values: ValueMap = .{},
-
-    pub fn deinit(values: *IndexedValues, allocator: Allocator) void {
-        defer values.indices.deinit(allocator);
-        defer values.vars.deinit(allocator);
-        defer values.values.deinit(allocator);
-        for (values.values.values()) |*value|
-            value.destroy(allocator);
-    }
+/// which owns both.
+const Entry = struct {
+    name: []const u8,
+    next: *Trie,
+};
+/// A single index and its next pointer in the trie. The union disambiguates
+/// between values and the next variables/key. Keys are borrowed from the trie's
+/// hashmap, but variables are owned (as they aren't stored as keys in the trie)
+const Index = union(enum) {
+    key: Entry,
+    variable: Entry,
+    value: Pattern,
 };
 
 /// Maps terms to the next trie, if there is one. These form the branches of the
@@ -86,8 +68,8 @@ pub const IndexedValues = struct {
 pub const Trie = struct {
     pub const Self = @This();
 
-    keys: HashMap = .{},
-    value: IndexedValues = .{},
+    map: HashMap = .{},
+    value: IndexMap = .{},
 
     /// The results of matching a trie exactly (vars are matched literally
     /// instead of by building up a pattern of their possible values)
@@ -105,10 +87,10 @@ pub const Trie = struct {
     /// Returns null if the index doesn't exist in the trie.
     pub fn getIndexOrNull(self: Self, index: usize) ?Pattern {
         var current = self;
-        while (current.value.indices.get(index)) |next| {
+        while (current.value.get(index)) |next| {
             current = next.value_ptr.*;
         }
-        return current.value.values.get(index);
+        return current.value.get(index);
     }
 
     /// Rebuilds the key for a given index using an allocator for the
@@ -131,21 +113,21 @@ pub const Trie = struct {
     // use putAssumeCapacity
     pub fn copy(self: Self, allocator: Allocator) Allocator.Error!Self {
         var result = Self{};
-        var keys_iter = self.keys.iterator();
+        var keys_iter = self.map.iterator();
         while (keys_iter.next()) |entry|
-            try result.keys.putNoClobber(
+            try result.map.putNoClobber(
                 allocator,
                 entry.key_ptr.*,
                 try entry.value_ptr.*.copy(allocator),
             );
 
         // Deep copy the indices map
-        var index_iter = self.value.indices.iterator();
+        var index_iter = self.value.iterator();
         while (index_iter.next()) |index_entry| {
             const index = index_entry.key_ptr.*;
             const entry = index_entry.value_ptr.*;
             // Insert a borrowed pointer to the new key copy.
-            try result.value.indices
+            try result.value
                 .putNoClobber(allocator, index, entry);
         }
 
@@ -172,12 +154,21 @@ pub const Trie = struct {
     /// The opposite of `copy`.
     /// TODO: check frees properly for owned and borrowed managers
     pub fn deinit(self: *Self, allocator: Allocator) void {
-        defer self.keys.deinit(allocator);
-        var iter = self.keys.iterator();
+        defer self.map.deinit(allocator);
+        var iter = self.map.iterator();
         while (iter.next()) |entry| {
             entry.value_ptr.*.deinit(allocator);
         }
-        self.value.deinit(allocator);
+        defer self.value.deinit(allocator);
+        for (self.value.values()) |*index|
+            switch (index.*) {
+                .key => |entry| entry.next.deinit(allocator),
+                .variable => |entry| {
+                    allocator.free(entry.name);
+                    entry.next.destroy(allocator);
+                },
+                .value => |*value| value.destroy(allocator),
+            };
     }
 
     pub fn hash(self: Self) u32 {
@@ -187,8 +178,8 @@ pub const Trie = struct {
     }
 
     pub fn hasherUpdate(self: Self, hasher: anytype) void {
-        var keys_iter = self.keys.iterator();
-        while (keys_iter.next()) |entry| {
+        var map_iter = self.map.iterator();
+        while (map_iter.next()) |entry| {
             entry.key_ptr.*.hasherUpdate(hasher);
             entry.value_ptr.*.hasherUpdate(hasher);
         }
@@ -213,22 +204,22 @@ pub const Trie = struct {
     /// sub-tries and if their debruijn variables are equal. The tries
     /// are assumed to be in debruijn form already.
     pub fn eql(self: Self, other: Self) bool {
-        if (self.keys.count() != other.keys.count() or
-            self.value.indices.entries.len !=
-            other.value.indices.entries.len or
-            self.value.values.entries.len != other.value.values.entries.len)
+        if (self.map.count() != other.map.count() or
+            self.value.entries.len !=
+            other.value.entries.len or
+            self.value.entries.len != other.value.entries.len)
             return false;
-        var keys_iter = self.keys.iterator();
-        var other_keys_iter = other.keys.iterator();
-        while (keys_iter.next()) |entry| {
-            const other_entry = other_keys_iter.next() orelse
+        var map_iter = self.map.iterator();
+        var other_map_iter = other.map.iterator();
+        while (map_iter.next()) |entry| {
+            const other_entry = other_map_iter.next() orelse
                 return false;
             if (!(mem.eql(u8, entry.key_ptr.*, other_entry.key_ptr.*)) or
                 entry.value_ptr != other_entry.value_ptr)
                 return false;
         }
-        var value_iter = self.value.values.iterator();
-        var other_value_iter = other.value.values.iterator();
+        var value_iter = self.value.iterator();
+        var other_value_iter = other.value.iterator();
         while (value_iter.next()) |entry| {
             const other_entry = other_value_iter.next() orelse
                 return false;
@@ -267,15 +258,15 @@ pub const Trie = struct {
         node: Node,
     ) ?Self {
         return switch (node) {
-            .key => |key| trie.keys.get(key),
+            .key => |key| trie.map.get(key),
             .variable => |variable| trie.value.vars.get(variable),
             .pattern => |sub_pattern| blk: {
-                var current = trie.keys.get("(") orelse
+                var current = trie.map.get("(") orelse
                     break :blk null;
                 for (sub_pattern.root) |sub_node|
                     current = current.getTerm(sub_node) orelse
                         break :blk null;
-                break :blk current.keys.get(")");
+                break :blk current.map.get(")");
             },
             .arrow, .match, .list => panic("unimplemented", .{}),
             else => panic("unimplemented", .{}),
@@ -323,7 +314,7 @@ pub const Trie = struct {
         // If there isn't a value, use the key as the value instead
         const value = optional_value orelse
             try key.copy(allocator);
-        try branch.value.values.putNoClobber(allocator, len, value);
+        try branch.value.putNoClobber(allocator, len, Index{ .value = value });
         return branch;
     }
 
@@ -345,8 +336,7 @@ pub const Trie = struct {
     ) !*Self {
         var current = trie;
         for (pattern.root) |node| {
-            const entry = try current.ensurePathTerm(allocator, index, node);
-            current = entry.value_ptr;
+            current = try current.ensurePathTerm(allocator, index, node);
         }
         return current;
     }
@@ -356,11 +346,16 @@ pub const Trie = struct {
         allocator: Allocator,
         index: usize,
         key: []const u8,
-    ) !Entry {
-        const entry = try trie.keys
+    ) !*Self {
+        const entry = try trie.map
             .getOrPutValue(allocator, key, Self{});
-        try trie.value.indices.putNoClobber(allocator, index, entry);
-        return entry;
+        try trie.value.putNoClobber(allocator, index, Index{
+            .key = .{
+                .name = entry.key_ptr.*,
+                .next = entry.value_ptr,
+            },
+        });
+        return entry.value_ptr;
     }
 
     fn getOrPutVar(
@@ -368,11 +363,16 @@ pub const Trie = struct {
         allocator: Allocator,
         index: usize,
         variable: []const u8,
-    ) !Entry {
-        const entry = try trie.value.vars
+    ) !*Self {
+        const entry = try trie.map
             .getOrPutValue(allocator, variable, Self{});
-        try trie.value.indices.putNoClobber(allocator, index, entry);
-        return entry;
+        try trie.value.putNoClobber(allocator, index, Index{
+            .variable = .{
+                .name = entry.key_ptr.*,
+                .next = entry.value_ptr,
+            },
+        });
+        return entry.value_ptr;
     }
 
     /// Follows or creates a path as necessary in the trie and
@@ -382,7 +382,7 @@ pub const Trie = struct {
         allocator: Allocator,
         index: usize,
         term: Node,
-    ) Allocator.Error!Entry {
+    ) Allocator.Error!*Self {
         return switch (term) {
             .key => |key| try trie.getOrPutKey(allocator, index, key),
             .variable,
@@ -400,14 +400,13 @@ pub const Trie = struct {
             // because each level of nesting must be a branch to enable
             // trie matching.
             inline else => |pattern| blk: {
-                var entry = try trie.getOrPutKey(allocator, index, "(");
+                var next = try trie.getOrPutKey(allocator, index, "(");
                 // All op types are encoded the same way after their top
                 // level hash. These don't need special treatment because
                 // their structure is simple, and their operator unique.
-                const next = try entry.value_ptr
-                    .ensurePath(allocator, index, pattern);
-                entry = try next.getOrPutKey(allocator, index, ")");
-                break :blk entry;
+                next = try next.ensurePath(allocator, index, pattern);
+                next = try next.getOrPutKey(allocator, index, ")");
+                break :blk next;
             },
         };
     }
@@ -578,10 +577,10 @@ pub const Trie = struct {
         node.writeSExp(streams.err, null) catch unreachable;
         print("`, ", .{});
         switch (node) {
-            .key => |key| if (self.keys.get(key)) |_| {
+            .key => |key| if (self.map.get(key)) |_| {
                 print("exactly: {s}\n", .{node.key});
                 const get_or_put =
-                    try result.keys.getOrPutValue(allocator, key, Self{});
+                    try result.map.getOrPutValue(allocator, key, Self{});
                 return get_or_put.value_ptr;
             },
             .variable, .var_pattern => @panic("unimplemented"),
@@ -594,6 +593,7 @@ pub const Trie = struct {
     /// Builds a subtrie of all branches that match pattern. Returns this
     /// subtrie as well as the length of the prefix of pattern matched (which is
     /// equal to the pattern's length if all nodes matched at least once).
+    /// Returns the given trie if pattern is empty (base case) or no matches.
     pub fn match(
         self: Self,
         allocator: Allocator,
@@ -604,18 +604,21 @@ pub const Trie = struct {
         result.value = self.value;
         var current = self;
         var result_ptr = &result;
-        for (pattern.root, 0..) |node, i| {
-            result_ptr = try current.matchTerm(allocator, result_ptr, node) orelse
-                break;
-            // Recurse over all matching children
-            var next_iter = result.keys.iterator();
-            while (next_iter.next()) |entry| {
-                const new = current.keys.get(entry.key_ptr.*).?;
-                entry.value_ptr.* = try new.match(allocator, Pattern{
-                    .root = pattern.root[i + 1 ..],
-                    .height = pattern.height,
-                });
-            }
+        const node = if (pattern.root.len > 0)
+            pattern.root[0]
+        else
+            return result;
+        result_ptr = try current.matchTerm(allocator, result_ptr, node) orelse
+            return result;
+        // Recurse over all matching children
+        var next_iter = result.map.iterator();
+        while (next_iter.next()) |entry| {
+            // Recurse over all branches
+            const branch = current.map.get(entry.key_ptr.*).?;
+            entry.value_ptr.* = try branch.match(allocator, Pattern{
+                .root = pattern.root[1..],
+                .height = pattern.height,
+            });
         }
         return result;
     }
@@ -643,7 +646,7 @@ pub const Trie = struct {
         _ = index;
         const next_match = try self.match(allocator, pattern);
         defer next_match.deinit();
-        while (next_match.value.values.next()) |entry| {
+        while (next_match.value.next()) |entry| {
             const next_index, const value =
                 .{ entry.key_ptr.*, entry.value_ptr.* };
             print(
@@ -667,7 +670,6 @@ pub const Trie = struct {
     /// Match result cases:
     /// - a trie of lower ordinal: continue
     /// - the same trie: continue unless tries are equivalent
-    ///   expressions (fixed point)
     /// - a trie of higher ordinal: break
     // TODO: fix ops as keys not being matched
     // TODO: refactor with evaluateStep
@@ -740,7 +742,7 @@ pub const Trie = struct {
     }
 
     pub fn count(self: Self) usize {
-        return self.value.indices.count() + self.value.values.count();
+        return self.value.count() + self.value.count();
     }
 
     /// Pretty print a trie on multiple lines
@@ -759,15 +761,19 @@ pub const Trie = struct {
         var current = self;
         if (comptime debug_mode)
             try writer.print("{} | ", .{index});
-        while (current.value.indices.get(index)) |branch| {
-            try writer.writeAll(branch.key_ptr.*);
-            try writer.writeByte(' ');
-            current = branch.value_ptr.*;
-        }
-
-        if (current.value.values.get(index)) |value| {
-            try writer.writeAll("-> ");
-            try value.writeIndent(writer, null);
+        while (current.value.get(index)) |index_node| {
+            switch (index_node) {
+                .key, .variable => |entry| {
+                    try writer.writeAll(entry.name);
+                    try writer.writeByte(' ');
+                    current = entry.next.*;
+                },
+                .value => |value| {
+                    try writer.writeAll("-> ");
+                    try value.writeIndent(writer, null);
+                    break;
+                },
+            }
         }
     }
 
@@ -786,9 +792,14 @@ pub const Trie = struct {
         optional_indent: ?usize,
     ) @TypeOf(writer).Error!void {
         try writer.writeAll("❬");
-        for (self.value.values.entries.items(.value)) |value| {
-            try value.writeIndent(writer, null);
-            try writer.writeAll(", ");
+        for (self.value.entries.items(.value)) |index| {
+            switch (index) {
+                .value => |value| {
+                    try value.writeIndent(writer, null);
+                    try writer.writeAll(", ");
+                },
+                else => {},
+            }
         }
         try writer.writeAll("❭ ");
         const optional_indent_inc = if (optional_indent) |indent|
@@ -797,7 +808,7 @@ pub const Trie = struct {
             null;
         try writer.writeByte('{');
         try writer.writeAll(if (optional_indent) |_| "\n" else "");
-        try writeEntries(self.keys, writer, optional_indent_inc);
+        try writeEntries(self.map, writer, optional_indent_inc);
         for (0..optional_indent orelse 0) |_|
             try writer.writeByte(' ');
         try writer.writeByte('}');
@@ -872,8 +883,8 @@ test "Structure: put multiple lits" {
         } },
         val,
     );
-    try testing.expect(trie.keys.contains("1"));
-    try testing.expect(trie.keys.get("1").?.keys.contains("2"));
+    try testing.expect(trie.map.contains("1"));
+    try testing.expect(trie.map.get("1").?.map.contains("2"));
     try testing.expectEqualDeep(trie.getIndex(0), val);
 }
 
