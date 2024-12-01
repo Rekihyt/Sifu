@@ -121,16 +121,19 @@ fn replStep(
         //     print("\n", .{});
         // } else print("Got null\n", .{});
 
-        const match = try trie.match(allocator, pattern);
+        const match = try trie.match(allocator, 0, pattern);
         print("Matched: ", .{});
-        try match.writeIndent(writer, 0);
-        try writer.writeByte('\n');
+        if (match.value) |value| {
+            try writer.print("Matched at {}: ", .{value.index});
+            try value.pattern.writeIndent(writer, 0);
+            try writer.writeByte('\n');
+        }
 
-        // const step = try trie.evaluateStep(allocator, 0, pattern);
-        // defer step.deinit(allocator);
-        // print("Match Rewrite: ", .{});
-        // try step.write(writer);
-        // try writer.writeByte('\n');
+        const step = try trie.evaluateStep(allocator, 0, pattern);
+        defer step.deinit(allocator);
+        print("Match Rewrite: ", .{});
+        try step.write(writer);
+        try writer.writeByte('\n');
 
         // const eval = try trie.evaluate(allocator, pattern);
         // defer if (comptime detect_leaks)
