@@ -603,7 +603,7 @@ pub const Trie = struct {
                 print("exactly: {s} ", .{node.key});
                 const branch = next.findNextBranch(bound) orelse
                     return null;
-                print("with next index at {}\n", .{branch});
+                print("with next index at {}\n", .{branch.index});
                 return branch;
             },
             .variable, .var_pattern => {
@@ -693,7 +693,7 @@ pub const Trie = struct {
             print("\n", .{});
             return next.rewrite(allocator, value.pattern);
         }
-        return pattern;
+        return pattern.copy(allocator);
     }
 
     /// Given a trie and a query to match against it, this function

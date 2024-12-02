@@ -72,11 +72,18 @@ fn replStep(
     allocator: Allocator,
     writer: anytype,
 ) !?void {
-    // An arena for match lifetimes: parsed strings and pattern/sub tries
-
-    const pattern, var str_arena = try parse(allocator, streams.in) orelse
+    // An arena for temporary match expressions' strings
+    // TODO: free this when a match isn't inserted, maybe using a
+    // StringHashMap for each Trie or Pattern?
+    var str_arena = ArenaAllocator.init(allocator);
+    const str_allocator = str_arena.allocator();
+    const pattern = try parse(allocator, str_allocator, streams.in) orelse
         return error.EndOfStream;
     defer pattern.deinit(allocator);
+    if (comptime detect_leaks) try streams.err.print(
+        "String Arena Allocated: {} bytes\n",
+        .{str_arena.queryCapacity()},
+    );
     const root = pattern.root;
 
     print(
@@ -111,6 +118,7 @@ fn replStep(
         // Free the rest of the match's string allocations. Those used in
         // rewriting must be completely copied.
         defer str_arena.deinit();
+
         // If not inserting, then try to match the expression
         // TODO: put into a comptime for eval kind
         // print("Parsed ast hash: {}\n", .{ast.hash()});
@@ -129,11 +137,11 @@ fn replStep(
             try writer.writeByte('\n');
         }
 
-        const step = try trie.evaluateStep(allocator, 0, pattern);
-        defer step.deinit(allocator);
-        print("Match Rewrite: ", .{});
-        try step.write(writer);
-        try writer.writeByte('\n');
+        // const step = try trie.evaluateStep(allocator, 0, pattern);
+        // defer step.deinit(allocator);
+        // print("Match Rewrite: ", .{});
+        // try step.write(writer);
+        // try writer.writeByte('\n');
 
         // const eval = try trie.evaluate(allocator, pattern);
         // defer if (comptime detect_leaks)

@@ -222,25 +222,24 @@ const Level = struct {
     }
 };
 
-/// Read from a Lexer until its stream is empty, and convert tokens into Patterns.
-/// Caller owns the returned Patterns (including the underlying token), which should
-/// be freed with `deinit`. This frees the underlying tokens as needed based on
-/// the memory manager, as tokens are copied into the returned Pattern. Patterns are
-/// assumed at all levels, with ops as appended, single terms to patterns (add a new
-/// branch for the current way of parsing)
+/// Read from a Lexer until its stream is empty, and convert tokens into
+/// Patterns. Caller owns the returned Pattern, stored in allocator and the
+/// strings lexed stored in str_allocator. which should be freed with `deinit`.
+/// Patterns are assumed at all levels, with ops as appended, single terms to
+/// patterns (add a new branch for the current way of parsing)
+///
 /// Returns null if the reader ended before an Pattern could be parsed
 /// Returns an arena containing all string allocations (from lexing)
 // - TODO: [] should be a flat Pattern instead of as an infix / nesting ops (the
 // behavior of commas and semis is no longer list-like, but array-like)
 pub fn parse(
     allocator: Allocator,
+    str_allocator: Allocator,
     reader: anytype,
-) !?struct { Pattern, ArenaAllocator } {
-    var str_arena = ArenaAllocator.init(allocator);
-    errdefer str_arena.deinit();
+) !?Pattern {
     // Read strings into an arena so that the caller can do what they want with
     // them
-    var lexer = Lexer(@TypeOf(reader)).init(str_arena.allocator(), reader);
+    var lexer = Lexer(@TypeOf(reader)).init(str_allocator, reader);
     defer lexer.deinit();
     var line = try ArrayList(Token).initCapacity(allocator, 16);
     defer line.deinit();
@@ -254,12 +253,8 @@ pub fn parse(
     }
     return while (try lexer.nextLine(&line)) |_| {
         defer line.clearRetainingCapacity();
-        if (comptime detect_leaks) try streams.err.print(
-            "String Arena Allocated: {} bytes\n",
-            .{str_arena.queryCapacity()},
-        );
         if (try parseLine(allocator, &levels, line.items)) |pattern|
-            break .{ pattern, str_arena };
+            break pattern;
     } else null;
 }
 
