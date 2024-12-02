@@ -556,14 +556,31 @@ pub const Trie = struct {
             list.items[index];
     }
 
+    fn findNextKey(self: Self, bound: usize) ?Branch {
+        return findNextByIndex(Branch, bound, self.value.keys);
+    }
+
     fn findNextValue(self: Self, bound: usize) ?Value {
         return findNextByIndex(Value, bound, self.value.values);
     }
 
+    fn findNextVar(self: Self, bound: usize) ?Branch {
+        return findNextByIndex(Branch, bound, self.value.vars);
+    }
+
     fn findNextBranch(self: Self, bound: usize) ?Branch {
-        // TODO: prioritize order
-        return findNextByIndex(Branch, bound, self.value.keys) orelse
-            findNextByIndex(Branch, bound, self.value.vars);
+        const key_branch = self.findNextKey(bound) orelse
+            return self.findNextVar(bound);
+        // Check if there is a need to search for a var before doing so
+        if (key_branch.index == bound)
+            return key_branch;
+        const var_branch = self.findNextVar(bound) orelse
+            return key_branch;
+        assert(key_branch.index != var_branch.index);
+        return if (key_branch.index < var_branch.index)
+            key_branch
+        else
+            var_branch;
     }
 
     /// The first half of evaluation. The variables in the node match
@@ -599,12 +616,19 @@ pub const Trie = struct {
         node.writeSExp(streams.err, null) catch unreachable;
         print("`, ", .{});
         switch (node) {
-            .key => |key| if (self.map.get(key)) |next| {
+            .key => |key| if (self.map.get(key)) |_| {
                 print("exactly: {s} ", .{node.key});
-                const branch = next.findNextBranch(bound) orelse
+                const branch = self.findNextKey(bound) orelse
                     return null;
                 print("with next index at {}\n", .{branch.index});
                 return branch;
+            } else {
+                print("but key '{s}' not found in map: {s}\n", .{ key, "{" });
+                if (debug_mode) {
+                    writeEntries(self.map, streams.err, 0) catch
+                        unreachable;
+                    streams.err.writeAll("}\n") catch unreachable;
+                }
             },
             .variable, .var_pattern => {
                 // // If a previous var was bound, check that the
@@ -631,6 +655,9 @@ pub const Trie = struct {
     /// is equal to the pattern's length if all nodes matched at least once).
     /// Returns the value of `self` if given trie if pattern is empty (base
     /// case).
+    /// Does not backtrack keys to find a lower index. For example, if 'A' and
+    /// 'A B' are in the trie at indices 0 and 1 respectively, matching 'A B'
+    /// with bound 0 will match 1, not 0 partially.
     pub fn match(
         self: Self,
         allocator: Allocator,
@@ -645,16 +672,20 @@ pub const Trie = struct {
         _ = allocator;
         var len: usize = 0;
         var index = bound;
+        var branch: Branch = undefined;
         branches = branches; // TODO: backtracking
-        if (current.findNextValue(bound)) |value|
-            return Match{ .index = value.index, .value = value, .len = len };
         for (pattern.root) |node| {
-            const branch = try current.matchTerm(bound, node) orelse
-                break;
+            branch = try current.matchTerm(bound, node) orelse
+                break; // TODO: fix invalid matches, possibly by returning here
             len += 1;
             index = branch.index;
             current = branch.entry.next.*;
         }
+        if (current.findNextValue(bound)) |value| {
+            print("Value found at index: {}\n", .{value.index});
+            return Match{ .index = value.index, .value = value, .len = len };
+        }
+
         print(
             "No match in range [{}, {}], after {} nodes followed\n",
             .{ bound, index, len },
@@ -846,8 +877,10 @@ pub const Trie = struct {
             current = branch.entry.next.*;
         }
         try writer.writeAll("-> ");
-        try current.findNextValue(index).?.pattern
-            .writeIndent(writer, null);
+        const value = current.findNextValue(index) orelse
+            panic("No value found for index {}\n", .{index});
+        assert(value.index == index);
+        try value.pattern.writeIndent(writer, null);
     }
 
     /// Print a trie in order based on indices.

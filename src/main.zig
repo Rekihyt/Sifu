@@ -130,12 +130,12 @@ fn replStep(
         // } else print("Got null\n", .{});
 
         const match = try trie.match(allocator, 0, pattern);
-        print("Matched: ", .{});
+        print("Matched ", .{});
         if (match.value) |value| {
-            try writer.print("Matched at {}: ", .{value.index});
+            try writer.print("at {}: ", .{value.index});
             try value.pattern.writeIndent(writer, 0);
-            try writer.writeByte('\n');
-        }
+        } else print("null", .{});
+        try writer.writeByte('\n');
 
         // const step = try trie.evaluateStep(allocator, 0, pattern);
         // defer step.deinit(allocator);
