@@ -583,6 +583,19 @@ pub const Trie = struct {
             var_branch;
     }
 
+    const BranchOrValue = union(enum) { branch: Branch, value: Value };
+    fn findNext(
+        self: Self,
+        bound: usize,
+    ) ?BranchOrValue {
+        return if (self.findNextBranch(bound)) |branch|
+            .{ .branch = branch }
+        else if (self.findNextValue(bound)) |value|
+            .{ .value = value }
+        else
+            null;
+    }
+
     /// The first half of evaluation. The variables in the node match
     /// anything in the trie, and vars in the trie match anything in
     /// the expression. Includes partial prefixes (ones that don't match all
@@ -611,17 +624,15 @@ pub const Trie = struct {
         self: Self,
         bound: usize,
         node: Node,
-    ) Allocator.Error!?Branch {
+    ) Allocator.Error!?BranchOrValue {
         print("Branching `", .{});
         node.writeSExp(streams.err, null) catch unreachable;
         print("`, ", .{});
         switch (node) {
-            .key => |key| if (self.map.get(key)) |_| {
+            .key => |key| if (self.map.get(key)) |next| {
                 print("exactly: {s} ", .{node.key});
-                const branch = self.findNextKey(bound) orelse
-                    return null;
-                print("with next index at {}\n", .{branch.index});
-                return branch;
+                // First try any available branches, then try values.
+                return next.findNext(bound);
             } else {
                 print("but key '{s}' not found in map: {s}\n", .{ key, "{" });
                 if (debug_mode) {
@@ -672,20 +683,25 @@ pub const Trie = struct {
         _ = allocator;
         var len: usize = 0;
         var index = bound;
-        var branch: Branch = undefined;
         branches = branches; // TODO: backtracking
         for (pattern.root) |node| {
-            branch = try current.matchTerm(bound, node) orelse
-                break; // TODO: fix invalid matches, possibly by returning here
-            len += 1;
-            index = branch.index;
-            current = branch.entry.next.*;
+            switch (try current.matchTerm(bound, node) orelse break) {
+                .branch => |branch| {
+                    print("with next index at {}\n", .{branch.index});
+                    len += 1;
+                    index = branch.index;
+                    current = branch.entry.next.*;
+                },
+                .value => |value| {
+                    print("with next value at {}\n", .{value.index});
+                    return Match{
+                        .index = value.index,
+                        .value = value,
+                        .len = len,
+                    };
+                },
+            }
         }
-        if (current.findNextValue(bound)) |value| {
-            print("Value found at index: {}\n", .{value.index});
-            return Match{ .index = value.index, .value = value, .len = len };
-        }
-
         print(
             "No match in range [{}, {}], after {} nodes followed\n",
             .{ bound, index, len },
