@@ -132,8 +132,8 @@ fn replStep(
         const match = try trie.match(allocator, 0, pattern);
         print("Matched ", .{});
         if (match.value) |value| {
-            try writer.print("at {}: ", .{value.index});
-            try value.pattern.writeIndent(writer, 0);
+            try writer.print("at {}: ", .{match.index});
+            try value.writeIndent(writer, 0);
         } else print("null", .{});
         try writer.writeByte('\n');
 
