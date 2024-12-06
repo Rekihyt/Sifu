@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const mem = std.mem;
 const math = std.math;
+const compare = math.compare;
 const util = @import("../util.zig");
 const assert = std.debug.assert;
 const panic = util.panic;
@@ -563,20 +564,25 @@ pub const Trie = struct {
             list.items[index];
     }
 
-    fn findNextByCache(self: Self, bound: usize, cache: []const usize) ?Branch {
+    fn findNextByCache(
+        self: Self,
+        bound: usize,
+        cache: []const usize,
+    ) ?IndexBranch {
         const branch_index = sort.lowerBound(
-            IndexBranch,
+            usize,
             bound,
             cache,
             self.value.branches,
             struct {
                 fn lessThan(
-                    branches: ArrayListUnmanaged(usize),
-                    lhs: IndexBranch,
-                    rhs: IndexBranch,
+                    branches: ArrayListUnmanaged(IndexBranch),
+                    lhs: usize,
+                    rhs: usize,
                 ) bool {
-                    return branches.items[lhs].index <
-                        branches.items[rhs].index;
+                    const rhs_index, _ = branches.items[rhs];
+                    const lhs_index, _ = branches.items[lhs];
+                    return rhs_index < lhs_index;
                 }
             }.lessThan,
         );
@@ -588,28 +594,36 @@ pub const Trie = struct {
             branches[branch_index];
     }
     fn findNextValue(self: Self, bound: usize) ?IndexBranch {
-        return self.findNextByCache(bound, self.value.val_cache.items);
+        return self.findNextByCache(bound, self.value.value_cache.items);
     }
 
     fn findNextVar(self: Self, bound: usize) ?IndexBranch {
-        return self.findNextByCache(bound, self.value.val_cache.items);
+        return self.findNextByCache(bound, self.value.var_cache.items);
     }
 
     fn findNextBranch(self: Self, bound: usize) ?IndexBranch {
         return findNextByIndex(bound, self.value.branches);
     }
 
-    // fn findNext(
-    //     self: Self,
-    //     bound: usize,
-    // ) ?Branch {
-    //     return if (self.findNextBranch(bound)) |branch|
-    //         .{ .branch = branch }
-    //     else if (self.findNextValue(bound)) |value|
-    //         .{ .value = value }
-    //     else
-    //         null;
-    // }
+    // Finds the next minimum variable or value.
+    fn findNext(self: Self, bound: usize) ?IndexBranch {
+        // Find the next var and value efficiently using their caches
+        const value_branch = self.findNextValue(bound) orelse
+            return self.findNextVar(bound);
+        // Check if there is a need to search for a var before doing so
+        if (value_branch[0] == bound)
+            return value_branch;
+        const var_branch = self.findNextVar(bound) orelse
+            return value_branch;
+        // Check if there is a need to search for a var before doing so
+        return switch (math.order(value_branch[0], var_branch[0])) {
+            .lt => value_branch,
+            .eq => panic("Duplicate indices found", .{}),
+            .gt => var_branch,
+        };
+    }
+    // // If the index is unchanged, its trivially the minimum match. If the
+    // // next index is a variable or value its always the next branch.
 
     /// The first half of evaluation. The variables in the node match
     /// anything in the trie, and vars in the trie match anything in
@@ -643,19 +657,45 @@ pub const Trie = struct {
         print("Branching `", .{});
         node.writeSExp(streams.err, null) catch unreachable;
         print("`, ", .{});
+        const maybe_index_branch = self.findNext(bound);
+        //  orelse {
+        //     // Instead of backtracking, simply restart the match
+        //     // from the beginning but with an incremented index.
+        //     return null;
+        // };
         switch (node) {
-            .key => |key| if (self.map.get(key)) |next| {
+            // The branch a key points to must be within bound
+            .key => |_| if (self.map.get(node.key)) |key_next| {
                 print("exactly: {s} ", .{node.key});
-                // First try any available branches, then let `match` try
-                // values.
-                return next.findNextBranch(bound);
+                // TODO merge with backtracking code as this lookahead will
+                // be redundant
+                const maybe_key_branch = key_next.findNextBranch(bound);
+                const index, const index_branch = maybe_index_branch orelse
+                    return maybe_key_branch;
+                const key_index, _ = maybe_key_branch orelse
+                    return maybe_index_branch;
+                print(
+                    "Is index candidate not a key? {}\n",
+                    .{index_branch != .key},
+                );
+                print(
+                    "Is it less than matched key's index? {}\n",
+                    .{index < key_index},
+                );
+                return if (index_branch != .key and index < key_index)
+                    maybe_index_branch
+                else
+                    maybe_key_branch;
             } else {
-                print("but key '{s}' not found in map: {s}\n", .{ key, "{" });
+                print("but key '{s}' not found in map: {s}\n", .{ node.key, "{" });
                 if (debug_mode) {
                     writeEntries(self.map, streams.err, 0) catch
                         unreachable;
                     streams.err.writeAll("}\n") catch unreachable;
                 }
+                // First try any available branches, then let `match` try
+                // values.
+                return maybe_index_branch;
             },
             .variable, .var_pattern => {
                 // // If a previous var was bound, check that the
@@ -682,9 +722,10 @@ pub const Trie = struct {
     /// is equal to the pattern's length if all nodes matched at least once).
     /// Returns the value of `self` if given trie if pattern is empty (base
     /// case).
-    /// Does not backtrack keys to find a lower index. For example, if 'A' and
+    /// All possible valid indices for a key will be tried, up until bound.
+    /// Minimum indices are always prioritized. For example, if 'A' and
     /// 'A B' are in the trie at indices 0 and 1 respectively, matching 'A B'
-    /// with bound 0 will match 1, not 0 partially.
+    /// with bound 0 will match at 0 partially instead of 'A B' at 1 fully.
     pub fn match(
         self: Self,
         allocator: Allocator,
@@ -692,22 +733,18 @@ pub const Trie = struct {
         pattern: Pattern,
     ) Allocator.Error!Match {
         var current = self;
-        // Matching branches that can be backtracked to. Indices are tracked
-        // because they are always matched in ascending order, but not
-        // necessarily sequentially.
-        var branches: BranchList = .{};
         _ = allocator;
         var len: usize = 0;
-        var index = bound;
-        branches = branches; // TODO: backtracking
-        for (pattern.root) |node| {
-            index, const branch =
-                try current.matchTerm(bound, node) orelse
+        var index: usize = 0;
+        var pattern_index: usize = 0;
+        while (pattern_index < pattern.root.len) : (pattern_index += 1) {
+            const node = pattern.root[pattern_index];
+            index, const branch = try current.matchTerm(bound, node) orelse
                 break;
+            len += 1;
             print("at index {}, ", .{index});
             switch (branch) {
                 .key => |entry| {
-                    len += 1;
                     current = entry.next.*;
                 },
                 .variable => |entry| {
@@ -715,9 +752,6 @@ pub const Trie = struct {
                     @panic("unimplemented");
                 },
                 .value => |value| {
-                    print("with value\n", .{});
-                    if (comptime debug_mode)
-                        value.writeIndent(streams.err, 0) catch unreachable;
                     return Match{
                         .index = index,
                         .value = value,
@@ -726,7 +760,11 @@ pub const Trie = struct {
                 },
             }
         }
-        print(
+        if (current.findNextValue(bound)) |value| {
+            index, const branch = value;
+            print("Matches exhausted, but value found.\n", .{});
+            return Match{ .index = index, .value = branch.value, .len = len };
+        } else print(
             "No match in range [{}, {}], after {} nodes followed\n",
             .{ bound, index, len },
         );
