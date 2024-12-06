@@ -43,10 +43,11 @@ pub const GetOrPutResult = HashMap.GetOrPutResult;
 /// length of slice types are stored for keys (instead of pointers).
 /// The term/next is a reference to a key/value in the HashMaps,
 /// which owns both.
-const Entry = struct {
-    name: []const u8,
-    next: *Trie,
-};
+const Entry = HashMap.Entry;
+// struct {
+//     name: []const u8,
+//     next: *Trie,
+// };
 
 /// A single index and its next pointer in the trie. The union disambiguates
 /// between values and the next variables/key. Keys are borrowed from the trie's
@@ -374,12 +375,10 @@ pub const Trie = struct {
     ) !*Self {
         const entry = try trie.map
             .getOrPutValue(allocator, key, Self{});
-        try trie.value.branches.append(allocator, IndexBranch{ index, .{
-            .key = .{
-                .name = entry.key_ptr.*,
-                .next = entry.value_ptr,
-            },
-        } });
+        try trie.value.branches.append(
+            allocator,
+            IndexBranch{ index, .{ .key = entry } },
+        );
         return entry.value_ptr;
     }
 
@@ -389,21 +388,20 @@ pub const Trie = struct {
         index: usize,
         variable: []const u8,
     ) !*Self {
-        const entry = try trie.map
-            .getOrPut(allocator, variable);
-        if (entry.found_existing) {} else {
+        const maybe_entry = trie.map.getEntry(variable);
+        const entry = maybe_entry orelse
+            @panic("unimplemented");
+        if (maybe_entry) |_| {} else {
             entry.value_ptr.* = Self{};
             try trie.value.var_cache.append(
                 allocator,
                 trie.value.branches.items.len,
             );
         }
-        try trie.value.branches.append(allocator, IndexBranch{ index, .{
-            .variable = .{
-                .name = entry.key_ptr.*,
-                .next = entry.value_ptr,
-            },
-        } });
+        try trie.value.branches.append(
+            allocator,
+            IndexBranch{ index, .{ .variable = entry } },
+        );
         return entry.value_ptr;
     }
 
@@ -662,15 +660,15 @@ pub const Trie = struct {
         // };
         switch (node) {
             // The branch a key points to must be within bound
-            .key => |_| if (self.map.get(node.key)) |key_next| {
+            .key => |_| if (self.map.getEntry(node.key)) |key_entry| {
                 print("exactly: {s} ", .{node.key});
                 // TODO merge with backtracking code as this lookahead will
                 // be redundant
-                const key_index, const key_branch = key_next
-                    .nextBranch(bound) orelse
+                const key_index, _ = key_entry.value_ptr.nextBranch(bound) orelse
                     return self.findCandidate(bound);
+                const key_branch = .{ key_index, .{ .key = key_entry } };
                 const index, const index_branch = self.findCandidate(bound) orelse
-                    return .{ key_index, key_branch };
+                    return key_branch;
                 print(
                     "Is the candidate less than matched key's index? {}\n",
                     .{index < key_index},
@@ -678,7 +676,7 @@ pub const Trie = struct {
                 return if (index < key_index)
                     .{ index, index_branch }
                 else
-                    .{ key_index, key_branch };
+                    key_branch;
             } else {
                 print("but key '{s}' not found in map: {s}\n", .{ node.key, "{" });
                 if (debug_mode) {
@@ -734,11 +732,11 @@ pub const Trie = struct {
             const node = pattern.root[pattern_index];
             index, const branch = try current.matchTerm(bound, node) orelse
                 break;
-            len += 1;
             print("at index {}, ", .{index});
             switch (branch) {
                 .key => |entry| {
-                    current = entry.next.*;
+                    len += 1;
+                    current = entry.value_ptr.*;
                 },
                 .variable => |entry| {
                     _ = entry;
@@ -942,9 +940,9 @@ pub const Trie = struct {
             const next_index, const branch = index_branch;
             switch (branch) {
                 .key, .variable => |entry| {
-                    try writer.writeAll(entry.name);
+                    try writer.writeAll(entry.key_ptr.*);
                     try writer.writeByte(' ');
-                    current = entry.next.*;
+                    current = entry.value_ptr.*;
                 },
                 .value => |value| {
                     try writer.writeAll("-> ");
