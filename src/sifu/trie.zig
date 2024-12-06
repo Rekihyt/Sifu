@@ -558,10 +558,10 @@ pub const Trie = struct {
             }.lessThan,
         );
         // No index found if lowerBound returned the length of branches
-        return if (index == list.items.len)
-            null
+        return if (index < list.items.len)
+            list.items[index]
         else
-            list.items[index];
+            null;
     }
 
     fn findNextByCache(
@@ -586,12 +586,11 @@ pub const Trie = struct {
                 }
             }.lessThan,
         );
-        const branches = self.value.branches.items;
         // No index found if lowerBound returned the length of branches
-        return if (branch_index == branches.len)
-            null
+        return if (branch_index < cache.len)
+            self.value.branches.items[branch_index]
         else
-            branches[branch_index];
+            null;
     }
     fn findNextValue(self: Self, bound: usize) ?IndexBranch {
         return self.findNextByCache(bound, self.value.value_cache.items);
@@ -601,12 +600,12 @@ pub const Trie = struct {
         return self.findNextByCache(bound, self.value.var_cache.items);
     }
 
-    fn findNextBranch(self: Self, bound: usize) ?IndexBranch {
+    fn nextBranch(self: Self, bound: usize) ?IndexBranch {
         return findNextByIndex(bound, self.value.branches);
     }
 
     // Finds the next minimum variable or value.
-    fn findNext(self: Self, bound: usize) ?IndexBranch {
+    fn findCandidate(self: Self, bound: usize) ?IndexBranch {
         // Find the next var and value efficiently using their caches
         const value_branch = self.findNextValue(bound) orelse
             return self.findNextVar(bound);
@@ -615,7 +614,6 @@ pub const Trie = struct {
             return value_branch;
         const var_branch = self.findNextVar(bound) orelse
             return value_branch;
-        // Check if there is a need to search for a var before doing so
         return switch (math.order(value_branch[0], var_branch[0])) {
             .lt => value_branch,
             .eq => panic("Duplicate indices found", .{}),
@@ -657,7 +655,6 @@ pub const Trie = struct {
         print("Branching `", .{});
         node.writeSExp(streams.err, null) catch unreachable;
         print("`, ", .{});
-        const maybe_index_branch = self.findNext(bound);
         //  orelse {
         //     // Instead of backtracking, simply restart the match
         //     // from the beginning but with an incremented index.
@@ -669,23 +666,19 @@ pub const Trie = struct {
                 print("exactly: {s} ", .{node.key});
                 // TODO merge with backtracking code as this lookahead will
                 // be redundant
-                const maybe_key_branch = key_next.findNextBranch(bound);
-                const index, const index_branch = maybe_index_branch orelse
-                    return maybe_key_branch;
-                const key_index, _ = maybe_key_branch orelse
-                    return maybe_index_branch;
+                const key_index, const key_branch = key_next
+                    .nextBranch(bound) orelse
+                    return self.findCandidate(bound);
+                const index, const index_branch = self.findCandidate(bound) orelse
+                    return .{ key_index, key_branch };
                 print(
-                    "Is index candidate not a key? {}\n",
-                    .{index_branch != .key},
-                );
-                print(
-                    "Is it less than matched key's index? {}\n",
+                    "Is the candidate less than matched key's index? {}\n",
                     .{index < key_index},
                 );
-                return if (index_branch != .key and index < key_index)
-                    maybe_index_branch
+                return if (index < key_index)
+                    .{ index, index_branch }
                 else
-                    maybe_key_branch;
+                    .{ key_index, key_branch };
             } else {
                 print("but key '{s}' not found in map: {s}\n", .{ node.key, "{" });
                 if (debug_mode) {
@@ -695,7 +688,7 @@ pub const Trie = struct {
                 }
                 // First try any available branches, then let `match` try
                 // values.
-                return maybe_index_branch;
+                return self.findCandidate(bound);
             },
             .variable, .var_pattern => {
                 // // If a previous var was bound, check that the
@@ -945,7 +938,7 @@ pub const Trie = struct {
         if (comptime debug_mode)
             try writer.print("{} | ", .{index});
 
-        while (current.findNextBranch(index)) |index_branch| {
+        while (current.nextBranch(index)) |index_branch| {
             const next_index, const branch = index_branch;
             switch (branch) {
                 .key, .variable => |entry| {
