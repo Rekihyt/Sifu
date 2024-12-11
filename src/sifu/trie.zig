@@ -327,9 +327,9 @@ pub const Trie = struct {
         optional_value: ?Pattern,
     ) Allocator.Error!*Self {
         // The length of values will be the next entry index after insertion
-        const len = trie.count();
+        const index = trie.count();
         var current = trie;
-        current = try current.ensurePath(allocator, len, key);
+        current = try current.ensurePath(allocator, index, key);
         // If there isn't a value, use the key as the value instead
         const value = optional_value orelse
             try key.copy(allocator);
@@ -339,8 +339,9 @@ pub const Trie = struct {
         );
         try current.value.branches.append(
             allocator,
-            IndexBranch{ len, .{ .value = value } },
+            IndexBranch{ index, .{ .value = value } },
         );
+        print("Value cache: {any}\n", .{current.value.value_cache.items});
         return current;
     }
 
@@ -442,7 +443,7 @@ pub const Trie = struct {
     }
 
     /// Add a node to the trie by following `keys`, wrapping them into an
-    /// Pattern of Nodes. Assumes
+    /// Pattern of Nodes.
     /// Allocations:
     /// - The value, if given, is allocated and copied recursively
     /// Freeing should be done with `destroy` or `deinit`, depending on
@@ -537,69 +538,72 @@ pub const Trie = struct {
         }
     };
 
-    // Find the next branch starting from bound.
-    fn findNextByIndex(bound: usize, list: BranchList) ?IndexBranch {
+    // Find the index of the next branch starting from bound.
+    fn findNextByIndex(self: Self, bound: usize) ?usize {
+        const branches = self.value.branches;
+
         // To compare by bound with other branches, it must be put into a Branch
         // first. Its kind can be undefined since it will never be returned.
         const elem = IndexBranch{ bound, undefined };
         const index = sort.lowerBound(
             IndexBranch,
             elem,
-            list.items,
+            branches.items,
             {},
             struct {
                 fn lessThan(_: void, lhs: IndexBranch, rhs: IndexBranch) bool {
                     const lhs_index, _ = lhs;
                     const rhs_index, _ = rhs;
+                    // print("Compare branches: {} < {}\n", .{ lhs_index, rhs_index });
                     return lhs_index < rhs_index;
                 }
             }.lessThan,
         );
         // No index found if lowerBound returned the length of branches
-        return if (index < list.items.len)
-            list.items[index]
+        return if (index < branches.items.len)
+            index
         else
             null;
     }
 
     fn findNextByCache(
         self: Self,
-        bound: usize,
+        branches_bound: usize,
         cache: []const usize,
     ) ?IndexBranch {
-        const branch_index = sort.lowerBound(
+        print("Cache: {any}\n", .{cache});
+        const cache_index = sort.lowerBound(
             usize,
-            bound,
+            branches_bound,
             cache,
-            self.value.branches,
+            self.value.branches.items,
             struct {
                 fn lessThan(
-                    branches: ArrayListUnmanaged(IndexBranch),
-                    lhs: usize,
-                    rhs: usize,
+                    branches: []const IndexBranch,
+                    lhs_index: usize,
+                    rhs_index: usize,
                 ) bool {
-                    const rhs_index, _ = branches.items[rhs];
-                    const lhs_index, _ = branches.items[lhs];
-                    return rhs_index < lhs_index;
+                    const lhs, _ = branches[lhs_index];
+                    const rhs, _ = branches[rhs_index];
+                    print("Compare cached: {} < {}\n", .{ lhs, rhs });
+                    return lhs < rhs;
                 }
             }.lessThan,
         );
         // No index found if lowerBound returned the length of branches
-        return if (branch_index < cache.len)
-            self.value.branches.items[branch_index]
+        return if (cache_index < cache.len)
+            self.value.branches.items[cache[cache_index]]
         else
             null;
     }
     fn findNextValue(self: Self, bound: usize) ?IndexBranch {
-        return self.findNextByCache(bound, self.value.value_cache.items);
+        const branches_bound = self.findNextByIndex(bound) orelse
+            return null;
+        return self.findNextByCache(branches_bound, self.value.value_cache.items);
     }
 
     fn findNextVar(self: Self, bound: usize) ?IndexBranch {
         return self.findNextByCache(bound, self.value.var_cache.items);
-    }
-
-    fn nextBranch(self: Self, bound: usize) ?IndexBranch {
-        return findNextByIndex(bound, self.value.branches);
     }
 
     // Finds the next minimum variable or value.
@@ -664,8 +668,11 @@ pub const Trie = struct {
                 print("exactly: {s} ", .{node.key});
                 // TODO merge with backtracking code as this lookahead will
                 // be redundant
-                const key_index, _ = key_entry.value_ptr.nextBranch(bound) orelse
+                print("Finding next by index orelse candidate\n", .{});
+                const key_branch_index = key_entry.value_ptr.findNextByIndex(bound) orelse
                     return self.findCandidate(bound);
+                const key_index, _ = self.value.branches.items[key_branch_index];
+                print("Finding candidate orelse next index\n", .{});
                 const key_branch = .{ key_index, .{ .key = key_entry } };
                 const index, const index_branch = self.findCandidate(bound) orelse
                     return key_branch;
@@ -726,11 +733,17 @@ pub const Trie = struct {
         var current = self;
         _ = allocator;
         var len: usize = 0;
-        var index: usize = 0;
+        var index: usize = bound;
         var pattern_index: usize = 0;
         while (pattern_index < pattern.root.len) : (pattern_index += 1) {
             const node = pattern.root[pattern_index];
-            index, const branch = try current.matchTerm(bound, node) orelse
+            print("Find next by index from bound: {}\n", .{index});
+            print("Branch list: [ ", .{});
+            for (current.value.branches.items) |index_branch| {
+                print("{} ", .{index_branch[0]});
+            }
+            print("]\n", .{});
+            index, const branch = try current.matchTerm(index, node) orelse
                 break;
             print("at index {}, ", .{index});
             switch (branch) {
@@ -931,33 +944,40 @@ pub const Trie = struct {
 
     /// Writes a single entry in the trie canonically. Index must be
     /// valid.
-    pub fn writeIndex(self: Self, writer: anytype, index: usize) !void {
-        var current = self;
+    pub fn writeIndex(
+        writer: anytype,
+        index_branch: IndexBranch,
+    ) !void {
+        var current = index_branch;
         if (comptime debug_mode)
-            try writer.print("{} | ", .{index});
+            try writer.print("{} | ", .{current[0]});
 
-        while (current.nextBranch(index)) |index_branch| {
-            const next_index, const branch = index_branch;
+        while (true) {
+            const index, const branch = current;
+
             switch (branch) {
                 .key, .variable => |entry| {
                     try writer.writeAll(entry.key_ptr.*);
                     try writer.writeByte(' ');
-                    current = entry.value_ptr.*;
+                    const branch_index = entry.value_ptr.findNextByIndex(index) orelse
+                        break;
+                    current = entry.value_ptr.value.branches.items[branch_index];
                 },
                 .value => |value| {
                     try writer.writeAll("-> ");
-                    assert(next_index == index);
                     try value.writeIndent(writer, null);
                     break;
                 },
             }
-        } else panic("no value for index found in pattern\n", .{});
+            // if (comptime debug_mode)
+            //     try writer.print("[{}] ", .{index});
+        }
     }
 
     /// Print a trie in order based on indices.
     pub fn writeCanonical(self: Self, writer: anytype) !void {
-        for (0..self.count()) |index| {
-            try self.writeIndex(writer, index);
+        for (self.value.branches.items) |index_branch| {
+            try writeIndex(writer, index_branch);
             try writer.writeByte('\n');
         }
     }

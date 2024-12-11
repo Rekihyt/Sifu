@@ -129,7 +129,7 @@ fn replStep(
         //     print("\n", .{});
         // } else print("Got null\n", .{});
 
-        const match = try trie.match(allocator, 0, pattern);
+        const match = try trie.match(allocator, 1, pattern);
         print("Matched {} nodes ", .{match.len});
         if (match.value) |value| {
             try writer.print("at {}: ", .{match.index});
