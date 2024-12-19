@@ -44,21 +44,30 @@ pub const GetOrPutResult = HashMap.GetOrPutResult;
 /// The term/next is a reference to a key/value in the HashMaps,
 /// which owns both.
 const Entry = HashMap.Entry;
-// struct {
-//     name: []const u8,
-//     next: *Trie,
-// };
+
+const BranchNode = struct {
+    // The string key and child trie entry from the current map.
+    entry: Entry,
+    // This points to the next branch in the entry's branch list. Necessary
+    // for efficiently finding the next branch by index. There is always a next
+    // branch for keys/vars and never for values.
+    next: *IndexBranch,
+};
 
 /// A single index and its next pointer in the trie. The union disambiguates
 /// between values and the next variables/key. Keys are borrowed from the trie's
 /// hashmap, but variables are owned (as they aren't stored as keys in the trie)
 const Branch = union(enum) {
-    key: Entry,
-    variable: Entry,
+    key: BranchNode,
+    variable: BranchNode,
     value: Pattern,
 };
 
-const IndexBranch = struct { usize, Branch };
+const IndexBranch = struct {
+    usize, // Canonical trie index
+    Branch,
+};
+
 const BranchList = ArrayListUnmanaged(IndexBranch);
 const IndexList = ArrayListUnmanaged(usize);
 
@@ -378,7 +387,12 @@ pub const Trie = struct {
             .getOrPutValue(allocator, key, Self{});
         try trie.value.branches.append(
             allocator,
-            IndexBranch{ index, .{ .key = entry } },
+            IndexBranch{ index, .{
+                .key = .{
+                    .entry = entry,
+                    .next = undefined,
+                },
+            } },
         );
         return entry.value_ptr;
     }
@@ -401,7 +415,12 @@ pub const Trie = struct {
         }
         try trie.value.branches.append(
             allocator,
-            IndexBranch{ index, .{ .variable = entry } },
+            IndexBranch{
+                index, .{ .variable = .{
+                    .entry = entry,
+                    .next = @panic("unimplemented"),
+                } },
+            },
         );
         return entry.value_ptr;
     }
@@ -566,6 +585,13 @@ pub const Trie = struct {
             null;
     }
 
+    fn findNextBranch(self: Self, bound: usize) ?IndexBranch {
+        return if (self.findNextByIndex(bound)) |index|
+            self.value.branches.items[index]
+        else
+            null;
+    }
+
     fn findNextByCache(
         self: Self,
         branches_bound: usize,
@@ -669,19 +695,30 @@ pub const Trie = struct {
                 // TODO merge with backtracking code as this lookahead will
                 // be redundant
                 print("Finding next by index orelse candidate\n", .{});
-                const key_branch_index = key_entry.value_ptr.findNextByIndex(bound) orelse
+                // TODO: use next index saved in match trie instead of searching
+                // TODO: check if this pointer is really memory safe
+                var key_candidate = key_entry.value_ptr
+                    .findNextBranch(bound) orelse
                     return self.findCandidate(bound);
-                const key_index, _ = self.value.branches.items[key_branch_index];
+                const key_index, _ = key_candidate;
                 print("Finding candidate orelse next index\n", .{});
-                const key_branch = .{ key_index, .{ .key = key_entry } };
-                const index, const index_branch = self.findCandidate(bound) orelse
+                const key_branch = IndexBranch{
+                    key_index, .{
+                        .key = .{
+                            .entry = key_entry,
+                            .next = &key_candidate,
+                        },
+                    },
+                };
+                const candidate = self.findCandidate(bound) orelse
                     return key_branch;
+                const candidate_index, _ = candidate;
                 print(
                     "Is the candidate less than matched key's index? {}\n",
-                    .{index < key_index},
+                    .{candidate_index < key_index},
                 );
-                return if (index < key_index)
-                    .{ index, index_branch }
+                return if (candidate_index < key_index)
+                    candidate
                 else
                     key_branch;
             } else {
@@ -747,12 +784,12 @@ pub const Trie = struct {
                 break;
             print("at index {}, ", .{index});
             switch (branch) {
-                .key => |entry| {
+                .key => |branch_node| {
                     len += 1;
-                    current = entry.value_ptr.*;
+                    current = branch_node.entry.value_ptr.*;
                 },
-                .variable => |entry| {
-                    _ = entry;
+                .variable => |branch_node| {
+                    _ = branch_node.entry;
                     @panic("unimplemented");
                 },
                 .value => |value| {
@@ -956,7 +993,8 @@ pub const Trie = struct {
             const index, const branch = current;
 
             switch (branch) {
-                .key, .variable => |entry| {
+                .key, .variable => |branch_node| {
+                    const entry = branch_node.entry;
                     try writer.writeAll(entry.key_ptr.*);
                     try writer.writeByte(' ');
                     const branch_index = entry.value_ptr.findNextByIndex(index) orelse
