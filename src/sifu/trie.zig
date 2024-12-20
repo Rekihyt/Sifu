@@ -48,10 +48,15 @@ const Entry = HashMap.Entry;
 const BranchNode = struct {
     // The string key and child trie entry from the current map.
     entry: Entry,
-    // This points to the next branch in the entry's branch list. Necessary
-    // for efficiently finding the next branch by index. There is always a next
-    // branch for keys/vars and never for values.
-    next: *IndexBranch,
+    // This points to the next branch in the entry's branch list. Necessary for
+    // efficient lookups by index. There is always a next branch for keys/vars
+    // and never for values.
+    next_index: usize,
+
+    pub fn next(branch_node: BranchNode) IndexBranch {
+        return branch_node.entry.value_ptr.*
+            .value.branches.items[branch_node.next_index];
+    }
 };
 
 /// A single index and its next pointer in the trie. The union disambiguates
@@ -61,6 +66,13 @@ const Branch = union(enum) {
     key: BranchNode,
     variable: BranchNode,
     value: Pattern,
+
+    pub fn node(branch: Branch) ?BranchNode {
+        return switch (branch) {
+            .key, .variable => |branch_node| branch_node,
+            .value => null,
+        };
+    }
 };
 
 const IndexBranch = struct {
@@ -329,54 +341,6 @@ pub const Trie = struct {
             null;
     }
 
-    pub fn append(
-        trie: *Self,
-        allocator: Allocator,
-        key: Pattern,
-        optional_value: ?Pattern,
-    ) Allocator.Error!*Self {
-        // The length of values will be the next entry index after insertion
-        const index = trie.count();
-        var current = trie;
-        current = try current.ensurePath(allocator, index, key);
-        // If there isn't a value, use the key as the value instead
-        const value = optional_value orelse
-            try key.copy(allocator);
-        try current.value.value_cache.append(
-            allocator,
-            current.value.branches.items.len,
-        );
-        try current.value.branches.append(
-            allocator,
-            IndexBranch{ index, .{ .value = value } },
-        );
-        print("Value cache: {any}\n", .{current.value.value_cache.items});
-        return current;
-    }
-
-    /// Creates the necessary branches and key entries in the trie for
-    /// pattern, and returns a pointer to the branch at the end of the path.
-    /// While similar to a hashmap's getOrPut function, ensurePath always
-    /// adds a new index, asserting that it did not already exist. There is
-    /// no getOrPut equivalent for tries because they are append-only.
-    ///
-    /// The index must not already be in the trie.
-    /// Pattern are copied.
-    /// Returns a pointer to the updated trie node. If the given pattern is
-    /// empty (0 len), the returned key and index are undefined.
-    fn ensurePath(
-        trie: *Self,
-        allocator: Allocator,
-        index: usize,
-        pattern: Pattern,
-    ) !*Self {
-        var current = trie;
-        for (pattern.root) |node| {
-            current = try current.ensurePathTerm(allocator, index, node);
-        }
-        return current;
-    }
-
     fn getOrPutKey(
         trie: *Self,
         allocator: Allocator,
@@ -390,7 +354,7 @@ pub const Trie = struct {
             IndexBranch{ index, .{
                 .key = .{
                     .entry = entry,
-                    .next = undefined,
+                    .next_index = entry.value_ptr.value.branches.items.len,
                 },
             } },
         );
@@ -418,7 +382,7 @@ pub const Trie = struct {
             IndexBranch{
                 index, .{ .variable = .{
                     .entry = entry,
-                    .next = @panic("unimplemented"),
+                    .next_index = @panic("unimplemented"),
                 } },
             },
         );
@@ -434,7 +398,10 @@ pub const Trie = struct {
         term: Node,
     ) Allocator.Error!*Self {
         return switch (term) {
-            .key => |key| try trie.getOrPutKey(allocator, index, key),
+            .key => |key| blk: {
+                const next = try trie.getOrPutKey(allocator, index, key);
+                break :blk next;
+            },
             .variable,
             .var_pattern,
             => |variable| try trie.getOrPutVar(allocator, index, variable),
@@ -449,16 +416,40 @@ pub const Trie = struct {
             // The resulting encoding is counter-intuitive when printed
             // because each level of nesting must be a branch to enable
             // trie matching.
-            inline else => |pattern| blk: {
-                var next = try trie.getOrPutKey(allocator, index, "(");
-                // All op types are encoded the same way after their top
-                // level hash. These don't need special treatment because
-                // their structure is simple, and their operator unique.
-                next = try next.ensurePath(allocator, index, pattern);
-                next = try next.getOrPutKey(allocator, index, ")");
-                break :blk next;
+            inline else => |pattern| {
+                _ = pattern;
+                @panic("unimplemented");
+                // var next = try trie.getOrPutKey(allocator, index, "(");
+                // // All op types are encoded the same way after their top
+                // // level hash. These don't need special treatment because
+                // // their structure is simple, and their operator unique.
+                // next = try next.ensurePath(allocator, index, pattern);
+                // next = try next.getOrPutKey(allocator, index, ")");
+                // break :blk next;
             },
         };
+    }
+
+    /// Creates the necessary branches and key entries in the trie for
+    /// pattern, and returns a pointer to the branch at the end of the path.
+    /// While similar to a hashmap's getOrPut function, ensurePath always
+    /// adds a new index, asserting that it did not already exist. There is
+    /// no getOrPut equivalent for tries because they are append-only.
+    ///
+    /// The index must not already be in the trie.
+    /// Pattern are copied.
+    /// Returns a pointer to the updated trie node. If the given pattern is
+    /// empty (0 len), the returned key and index are undefined.
+    fn ensurePath(
+        trie: *Self,
+        allocator: Allocator,
+        index: usize,
+        pattern: Pattern,
+    ) !*Self {
+        var current = trie;
+        for (pattern.root) |node|
+            current = try current.ensurePathTerm(allocator, index, node);
+        return current;
     }
 
     /// Add a node to the trie by following `keys`, wrapping them into an
@@ -478,6 +469,31 @@ pub const Trie = struct {
             node.* = Node.ofKey(token);
 
         return self.append(allocator, Pattern{ .root = root }, value);
+    }
+
+    pub fn append(
+        trie: *Self,
+        allocator: Allocator,
+        key: Pattern,
+        optional_value: ?Pattern,
+    ) Allocator.Error!*Self {
+        // The length of values will be the next entry index after insertion
+        const index = trie.count();
+        var current = trie;
+        current = try current.ensurePath(allocator, index, key);
+        // If there isn't a value, use the key as the value instead
+        const value = optional_value orelse
+            try key.copy(allocator);
+        try current.value.value_cache.append(
+            allocator,
+            current.value.branches.items.len,
+        );
+        try current.value.branches.append(
+            allocator,
+            IndexBranch{ index, .{ .value = value } },
+        );
+        print("Value cache: {any}\n", .{current.value.value_cache.items});
+        return current;
     }
 
     /// A partial or complete match of a given pattern against a trie.
@@ -697,16 +713,17 @@ pub const Trie = struct {
                 print("Finding next by index orelse candidate\n", .{});
                 // TODO: use next index saved in match trie instead of searching
                 // TODO: check if this pointer is really memory safe
-                var key_candidate = key_entry.value_ptr
-                    .findNextBranch(bound) orelse
+                const key_candidate_index = key_entry.value_ptr
+                    .findNextByIndex(bound) orelse
                     return self.findCandidate(bound);
-                const key_index, _ = key_candidate;
+                const key_index, _ =
+                    self.value.branches.items[key_candidate_index];
                 print("Finding candidate orelse next index\n", .{});
                 const key_branch = IndexBranch{
                     key_index, .{
                         .key = .{
                             .entry = key_entry,
-                            .next = &key_candidate,
+                            .next_index = key_candidate_index,
                         },
                     },
                 };
@@ -985,31 +1002,19 @@ pub const Trie = struct {
         writer: anytype,
         index_branch: IndexBranch,
     ) !void {
-        var current = index_branch;
+        const index, var current = index_branch;
         if (comptime debug_mode)
-            try writer.print("{} | ", .{current[0]});
+            try writer.print("{} | ", .{index});
 
-        while (true) {
-            const index, const branch = current;
+        while (current.node()) |branch_node| : (_, current = branch_node.next()) {
+            try writer.writeAll(branch_node.entry.key_ptr.*);
+            try writer.writeByte(' ');
 
-            switch (branch) {
-                .key, .variable => |branch_node| {
-                    const entry = branch_node.entry;
-                    try writer.writeAll(entry.key_ptr.*);
-                    try writer.writeByte(' ');
-                    const branch_index = entry.value_ptr.findNextByIndex(index) orelse
-                        break;
-                    current = entry.value_ptr.value.branches.items[branch_index];
-                },
-                .value => |value| {
-                    try writer.writeAll("-> ");
-                    try value.writeIndent(writer, null);
-                    break;
-                },
-            }
             // if (comptime debug_mode)
             //     try writer.print("[{}] ", .{index});
         }
+        try writer.writeAll("-> ");
+        try current.value.writeIndent(writer, null);
     }
 
     /// Print a trie in order based on indices.
