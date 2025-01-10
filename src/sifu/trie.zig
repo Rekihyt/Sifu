@@ -12,6 +12,7 @@ const array_hash_map = std.array_hash_map;
 const AutoContext = std.array_hash_map.AutoContext;
 const StringContext = std.array_hash_map.StringContext;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const DoublyLinkedList = std.DoublyLinkedList;
 const sort = std.sort;
 const meta = std.meta;
@@ -111,6 +112,15 @@ const IndexedValues = struct {
         return result;
     }
 };
+
+/// For directing evaluations to completion. Initially, lower bound begins
+/// at 0, for the upper bound, the length of the pattern (inclusive/exclusive
+/// respectively)
+const Bound = struct { lower: usize = 0, upper: usize };
+
+/// Keeps track of which vars and var_pattern are bound to what part of an
+/// expression given during matching.
+pub const VarBindings = std.StringHashMapUnmanaged(Node);
 
 /// Maps terms to the next trie, if there is one. These form the branches of the
 /// trie for a specific level of nesting. Each Key is in the map is unique, but
@@ -478,7 +488,7 @@ pub const Trie = struct {
         optional_value: ?Pattern,
     ) Allocator.Error!*Self {
         // The length of values will be the next entry index after insertion
-        const index = trie.count();
+        const index = trie.len();
         var current = trie;
         current = try current.ensurePath(allocator, index, key);
         // If there isn't a value, use the key as the value instead
@@ -498,73 +508,11 @@ pub const Trie = struct {
 
     /// A partial or complete match of a given pattern against a trie.
     const Match = struct {
-        /// Keeps track of which vars and var_pattern are bound to what part of an
-        /// expression given during matching.
-        pub const VarBindings = std.StringHashMapUnmanaged(Node);
-
+        key: Pattern = .{}, // The pattern that was attempted to match
         value: ?Pattern = null,
-        index: usize,
-        len: usize, // Checks if complete or partial match
+        index: usize = 0,
+        len: usize = 0, // For complete or partial matches
         bindings: VarBindings = .{}, // Bound variables
-
-        /// The second half of an evaluation step. Rewrites all variable
-        /// captures into the matched expression. Copies any variables in node
-        /// if they are keys in bindings with their values. If there are no
-        /// matches in bindings, this functions is equivalent to copy. Result
-        /// should be freed with deinit.
-        pub fn rewrite(
-            match_state: Match,
-            allocator: Allocator,
-            pattern: Pattern,
-        ) Allocator.Error!Pattern {
-            var result = ArrayListUnmanaged(Node){};
-            for (pattern.root) |node| switch (node) {
-                .key => |key| try result.append(allocator, Node.ofKey(key)),
-                .variable => |variable| {
-                    print("Var get: ", .{});
-                    if (match_state.bindings.get(variable)) |var_node|
-                        var_node.writeSExp(streams.err, null) catch unreachable
-                    else
-                        print("null", .{});
-                    print("\n", .{});
-                    try result.append(
-                        allocator,
-                        try (match_state.bindings.get(variable) orelse
-                            node).copy(allocator),
-                    );
-                },
-                .var_pattern => |var_pattern| {
-                    print("Var pattern get: ", .{});
-                    if (match_state.bindings.get(var_pattern)) |var_node|
-                        var_node.writeSExp(streams.err, null) catch unreachable
-                    else
-                        print("null", .{});
-                    print("\n", .{});
-                    if (match_state.bindings.get(var_pattern)) |pattern_node| {
-                        for (pattern_node.pattern.root) |trie|
-                            try result.append(
-                                allocator,
-                                try trie.copy(allocator),
-                            );
-                    } else try result.append(allocator, node);
-                },
-                inline .pattern, .arrow, .match, .list, .infix => |nested, tag| {
-                    try result.append(allocator, @unionInit(
-                        Node,
-                        @tagName(tag),
-                        try match_state.rewrite(allocator, nested),
-                    ));
-                },
-                // .trie => |sub_pat| {
-                //     _ = sub_pat;
-                // },
-                else => panic("unimplemented", .{}),
-            };
-            return Pattern{
-                .root = try result.toOwnedSlice(allocator),
-                .height = pattern.height,
-            };
-        }
 
         /// Node entries are just references, so they aren't freed by this
         /// function.
@@ -707,10 +655,10 @@ pub const Trie = struct {
         switch (node) {
             // The branch a key points to must be within bound
             .key => |_| if (self.map.getEntry(node.key)) |key_entry| {
-                print("exactly: {s} ", .{node.key});
+                print("exactly: {s}\n", .{node.key});
                 // TODO merge with backtracking code as this lookahead will
                 // be redundant
-                print("Finding next by index orelse candidate\n", .{});
+                // print("Finding next by index orelse candidate\n", .{});
                 // TODO: use next index saved in match trie instead of searching
                 // TODO: check if this pointer is really memory safe
                 const key_candidate_index = key_entry.value_ptr
@@ -718,7 +666,7 @@ pub const Trie = struct {
                     return self.findCandidate(bound);
                 const key_index, _ =
                     self.value.branches.items[key_candidate_index];
-                print("Finding candidate orelse next index\n", .{});
+                // print("Finding candidate orelse next index\n", .{});
                 const key_branch = IndexBranch{
                     key_index, .{
                         .key = .{
@@ -747,6 +695,7 @@ pub const Trie = struct {
                 }
                 // First try any available branches, then let `match` try
                 // values.
+                print("returning find candidate\n", .{});
                 return self.findCandidate(bound);
             },
             .variable, .var_pattern => {
@@ -785,12 +734,11 @@ pub const Trie = struct {
         pattern: Pattern,
     ) Allocator.Error!Match {
         var current = self;
-        _ = allocator;
-        var len: usize = 0;
         var index: usize = bound;
-        var pattern_index: usize = 0;
-        while (pattern_index < pattern.root.len) : (pattern_index += 1) {
-            const node = pattern.root[pattern_index];
+        var result = Match{};
+        _ = allocator;
+        while (result.len < pattern.root.len) : (result.len += 1) {
+            const node = pattern.root[result.len];
             print("Find next by index from bound: {}\n", .{index});
             print("Branch list: [ ", .{});
             for (current.value.branches.items) |index_branch| {
@@ -802,65 +750,120 @@ pub const Trie = struct {
             print("at index {}, ", .{index});
             switch (branch) {
                 .key => |branch_node| {
-                    len += 1;
                     current = branch_node.entry.value_ptr.*;
                 },
                 .variable => |branch_node| {
-                    _ = branch_node.entry;
-                    @panic("unimplemented");
+                    current = branch_node.entry.value_ptr.*;
+                    @panic("unimplemented"); // bind var
                 },
                 .value => |value| {
-                    return Match{
-                        .index = index,
-                        .value = value,
-                        .len = len,
-                    };
+                    print("Value reached, breaking\n", .{});
+                    result.value = value;
+                    break;
                 },
             }
         }
         if (current.findNextValue(bound)) |value| {
             index, const branch = value;
             print("Matches exhausted, but value found.\n", .{});
-            return Match{ .index = index, .value = branch.value, .len = len };
+            result.value = branch.value;
+            result.index = index;
         } else print(
             "No match in range [{}, {}], after {} nodes followed\n",
-            .{ bound, index, len },
+            .{ bound, index, result.len },
         );
-        return Match{ .index = index, .value = null, .len = len };
+        return result;
     }
 
-    /// Follow `pattern` in `self` until no matches. Then returns the furthest
-    /// trie node and its corresponding number of matched pattern that
-    /// was in the trie. Starts matching at [index, ..), in the
-    /// longest path otherwise any index for a shorter path.
+    /// The second half of an evaluation step. Rewrites all variable
+    /// captures into the matched expression. Copies any variables in node
+    /// if they are keys in bindings with their values. If there are no
+    /// matches in bindings, this functions is equivalent to copy. The
+    /// result should be freed shallowly with ArrayList.deinit.
+    pub fn rewrite(
+        pattern: Pattern,
+        bindings: VarBindings,
+        result: *ArrayList(Node),
+    ) Allocator.Error!Pattern {
+        for (pattern.root) |node| switch (node) {
+            .key => |key| try result.append(Node.ofKey(key)),
+            .variable => |variable| {
+                print("Var get: ", .{});
+                if (bindings.get(variable)) |var_node|
+                    var_node.writeSExp(streams.err, null) catch unreachable
+                else
+                    print("null", .{});
+                print("\n", .{});
+                try result.append(
+                    bindings.get(variable) orelse
+                        node,
+                );
+            },
+            .var_pattern => |var_pattern| {
+                print("Var pattern get: ", .{});
+                if (bindings.get(var_pattern)) |var_node|
+                    var_node.writeSExp(streams.err, null) catch unreachable
+                else
+                    print("null", .{});
+                print("\n", .{});
+                if (bindings.get(var_pattern)) |sub_pattern| {
+                    // TODO: calculate correct height with sub_pattern's
+                    // height
+                    for (sub_pattern.pattern.root) |sub_node|
+                        try result.append(sub_node);
+                } else try result.append(node);
+            },
+            inline .pattern, .arrow, .match, .list, .infix => |nested, tag| {
+                try result.append(@unionInit(
+                    Node,
+                    @tagName(tag),
+                    try rewrite(nested, bindings, result),
+                ));
+            },
+            else => panic("unimplemented", .{}),
+        };
+        return Pattern{ .root = try result.toOwnedSlice() };
+    }
+
+    /// Follow `pattern` in `self` until no matches. Performs a partial,
+    /// but exhaustive match (keeps evaluating any results of the query) and
+    /// if possible a rewrite.
+    /// Starts matching between [lower, upper) bounds, shrinking the upper bound
+    /// to each matched value's index. If nothing matches, then a single node
+    /// trie with the same value as self is returned.
     /// Caller owns and should free the result's value and bindings with
     /// Match.deinit.
-    /// If nothing matches, then a single node trie with the same value as self
-    /// is returned.
-    pub fn matchIter() void {}
-
-    /// Performs a single full match and if possible a rewrite.
-    /// Caller owns and should free with deinit.
-    pub fn evaluateStep(
+    pub fn evaluateSlice(
         self: Self,
         allocator: Allocator,
-        bound: usize,
         pattern: Pattern,
+        result: *ArrayList(Node),
     ) Allocator.Error!Pattern {
-        while (bound < self.count()) {
-            var next = try self.match(allocator, bound, pattern);
-            defer next.deinit(allocator);
-            print(
-                "Matched {} of {} pattern at index {}: ",
-                .{ next.len, pattern.root.len, next.index },
-            );
-            const value = next.value orelse
+        var bound: Bound = .{ .upper = self.len() };
+        var matched_len: usize = 0;
+        var matched: Match = .{ .index = 0 };
+        while (matched.index < bound.upper) : (bound.upper = matched.index) {
+            print("Matching from bounds [{},{})\n", .{ bound.lower, bound.upper });
+            matched = try self.match(allocator, bound.lower, pattern);
+            defer matched.deinit(allocator);
+            matched_len += matched.len;
+            if (matched_len < pattern.root.len)
                 break;
-            value.pattern.write(streams.err) catch unreachable;
+
+            print(
+                "Match result: {} of {} pattern nodes at index {}, ",
+                .{ matched_len, pattern.root.len, matched.index },
+            );
+            if (matched.value) |value| {
+                print("matched value: ", .{});
+                value.write(streams.err) catch unreachable;
+                print("\n", .{});
+                return try rewrite(value, matched.bindings, result);
+            } else print("but no match", .{});
             print("\n", .{});
-            return next.rewrite(allocator, value.pattern);
+            // const slice = pattern.root[matched.len - 1 ..];
         }
-        return pattern.copy(allocator);
+        return try pattern.copy(allocator);
     }
 
     /// Given a trie and a query to match against it, this function
@@ -878,11 +881,9 @@ pub const Trie = struct {
     ) Allocator.Error!Pattern {
         var index: usize = 0;
         var result = ArrayListUnmanaged(Node){};
-        while (index < pattern.len) {
-            print("Matching from index: {}\n", .{index});
-            const query = pattern[index..];
-            const matched = try self.match(allocator, query);
-            if (matched.len == 0) {
+        while (index < pattern.root.len) {
+            const eval = try self.evaluateSlice(allocator, pattern);
+            if (eval.len == 0) {
                 print("No match, skipping index {}.\n", .{index});
                 try result.append(
                     allocator,
@@ -890,7 +891,7 @@ pub const Trie = struct {
                     // TODO: replace recursion with a continue
                     switch (pattern[index]) {
                         inline .pattern, .match, .arrow, .list => |slice, tag|
-                        // Recursively eval but preserve node type
+                        // Recursively eval nested list but preserve node type
                         @unionInit(
                             Node,
                             @tagName(tag),
@@ -902,13 +903,14 @@ pub const Trie = struct {
                 index += 1;
                 continue;
             }
-            print("vars in map: {}\n", .{matched.bindings.entries.len});
-            if (matched.value) |next| {
+            print("vars in map: {}\n", .{eval.bindings.entries.len});
+            const slice = .{};
+            if (eval.value) |next| {
                 // Prevent infinite recursion at this index. Recursion
                 // through other indices will be terminated by match index
                 // shrinking.
-                if (query.len == next.pattern.len)
-                    for (query, next.pattern) |trie, next_trie| {
+                if (slice.len == next.pattern.len)
+                    for (slice, next.pattern) |trie, next_trie| {
                         // check if the same trie's shape could be matched
                         // TODO: use a trie match function here instead of eql
                         if (!trie.asEmpty().eql(next_trie))
@@ -918,16 +920,16 @@ pub const Trie = struct {
                 next.write(streams.err) catch unreachable;
                 streams.err.writeByte('\n') catch unreachable;
                 const rewritten =
-                    try self.rewrite(allocator, matched.bindings, next.pattern);
+                    try self.rewrite(allocator, eval.bindings, next.pattern);
                 defer Node.ofPattern(rewritten).deinit(allocator);
                 const sub_eval = try self.evaluate(allocator, rewritten);
                 defer allocator.free(sub_eval);
                 try result.appendSlice(allocator, sub_eval);
             } else {
-                try result.appendSlice(allocator, query);
+                try result.appendSlice(allocator, slice);
                 print("Match, but no value\n", .{});
             }
-            index += matched.len;
+            index += eval.len;
         }
         print("Eval: ", .{});
         for (result.items) |trie| {
@@ -939,7 +941,7 @@ pub const Trie = struct {
         return result.toOwnedSlice(allocator);
     }
 
-    pub fn count(self: Self) usize {
+    pub fn len(self: Self) usize {
         return self.value.branches.items.len;
     }
 

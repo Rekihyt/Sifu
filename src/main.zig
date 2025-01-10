@@ -1,6 +1,8 @@
 const std = @import("std");
 const sifu = @import("sifu.zig");
 const Trie = @import("sifu/trie.zig").Trie;
+const Pattern = @import("sifu/pattern.zig").Pattern;
+const Node = Pattern.Node;
 const syntax = @import("sifu/syntax.zig");
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
@@ -56,10 +58,10 @@ fn repl(
 
     while (replStep(&trie, allocator, buff_out)) |_| {
         try buff_writer_out.flush();
-        if (comptime !no_os and detect_leaks) try streams.err.print(
-            "GPA Allocated: {} bytes\n",
-            .{gpa.total_requested_bytes},
-        );
+        // if (comptime !no_os and detect_leaks) try streams.err.print(
+        //     "GPA Allocated: {} bytes\n",
+        //     .{gpa.total_requested_bytes},
+        // );
     } else |err| switch (err) {
         error.EndOfStream => return {},
         // error.StreamTooLong => return e, // TODO: handle somehow
@@ -80,10 +82,10 @@ fn replStep(
     const pattern = try parse(allocator, str_allocator, streams.in) orelse
         return error.EndOfStream;
     defer pattern.deinit(allocator);
-    if (comptime detect_leaks) try streams.err.print(
-        "String Arena Allocated: {} bytes\n",
-        .{str_arena.queryCapacity()},
-    );
+    // if (comptime detect_leaks) try streams.err.print(
+    //     "String Arena Allocated: {} bytes\n",
+    //     .{str_arena.queryCapacity()},
+    // );
     const root = pattern.root;
 
     print(
@@ -91,12 +93,12 @@ fn replStep(
         .{ pattern.height, pattern.root.len },
     );
     try pattern.write(streams.err);
-    print("\nof types: ", .{});
-    for (root) |app| {
-        print("{s} ", .{@tagName(app)});
-        app.writeSExp(streams.err, 0) catch unreachable;
-        streams.err.writeByte(' ') catch unreachable;
-    }
+    // print("\nof types: ", .{});
+    // for (root) |app| {
+    //     print("{s} ", .{@tagName(app)});
+    //     app.writeSExp(streams.err, 0) catch unreachable;
+    //     streams.err.writeByte(' ') catch unreachable;
+    // }
     print("\n", .{});
 
     // for (fbs.getWritten()) |char| {
@@ -129,25 +131,27 @@ fn replStep(
         //     print("\n", .{});
         // } else print("Got null\n", .{});
 
-        const match = try trie.match(allocator, 1, pattern);
-        print("Matched {} nodes ", .{match.len});
-        if (match.value) |value| {
-            try writer.print("at {}: ", .{match.index});
-            try value.writeIndent(writer, 0);
-        } else print("null", .{});
-        try writer.writeByte('\n');
+        // const match = try trie.match(allocator, 0, pattern);
+        // print("Matched {} nodes ", .{match.len});
+        // if (match.value) |value| {
+        //     try writer.print("at {}: ", .{match.index});
+        //     try value.writeIndent(writer, 0);
+        // } else print("null", .{});
+        // try writer.writeByte('\n');
 
-        // const step = try trie.evaluateStep(allocator, 0, pattern);
+        // const index, const step = try trie.evaluateStep(allocator, 0, pattern);
         // defer step.deinit(allocator);
-        // print("Match Rewrite: ", .{});
+        // print("Match at {}, Rewrite: ", .{index});
         // try step.write(writer);
         // try writer.writeByte('\n');
 
-        // const eval = try trie.evaluate(allocator, pattern);
-        // defer if (comptime detect_leaks)
-        //     Ast.ofPattern(eval).deinit(allocator)
-        // else
-        //     eval.deinit();
+        var result = std.ArrayList(Node).init(allocator);
+        defer result.deinit();
+        const eval = try trie.evaluateSlice(allocator, pattern, &result);
+        defer if (comptime detect_leaks)
+            eval.deinit(allocator)
+        else
+            eval.deinit(allocator); // TODO: free an arena instead
         // try writer.print("Eval: ", .{});
         // for (eval) |pattern| {
         //     try pattern.writeSExp(writer, 0);
@@ -155,6 +159,7 @@ fn replStep(
         // }
         // try writer.writeByte('\n');
     }
-    try trie.pretty(writer);
+    // try trie.pretty(writer);
+    // print("\n", .{});
     try trie.writeCanonical(writer);
 }
